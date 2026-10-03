@@ -84,3 +84,20 @@ Recorded as a minimum bar plus a human decision, never an automatic threshold: a
 - `pi-verdict.ts` imports `parseJevConfidence` from the jev adapter (top-level side-effect-free — the import cannot register providers or touch the network; coupling noted in the PR).
 - The audit schema gains an optional `fallback` sub-object; consumers ignoring unknown fields are unaffected, and `fallback.effective` is the only place the enforced verdict lives.
 - The corpus question "is the first layer reliable?" becomes measurable once #62 ground truth accumulates; revisit shape (b) (judge everything) only if shadow data shows confidently-wrong first-layer allows are common.
+
+## Amendment (2026-10-04, this fork; upstream `8bcd08a`, `0d87e99`, `1c06365`)
+
+- **Default mode is `enforce`, not `shadow`** (upstream `8bcd08a`): a configured
+  `classifierFallbackModel` with no explicit mode adjudicates cascaded calls. A user who
+  configured a fallback before this change sees behavior change, so the fork's policy pins
+  the mode explicitly.
+- **The carve-out covers a demoted `ask` as well as a demoted `deny`** (upstream #71): the
+  one case the second layer may not decide alone is a demoted first-layer verdict the
+  fallback would *allow* — for a demoted deny (unsafe to relax) and now for a demoted ask
+  (the first layer requested a human). Every other combination applies as the fallback rules.
+- **Fail-closed rescue audit semantics** (upstream #71/#77): under `enforce`, a fail-closed
+  row whose rescue applied carries the applied ruling at the top-level verdict (source stays
+  `fail-closed`); a shadow rescue keeps `deny`. The `degraded` flag now marks only genuine
+  ask-degradation products on the early fail-closed path, not every headless outcome.
+  Analysis scripts must treat `verdict` on `fail-closed` rows as version-dependent.
+

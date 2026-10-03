@@ -74,7 +74,7 @@ pi-verdict runs on both [pi](https://github.com/badlogic/pi-mono) and [oh-my-pi]
 | user rules | `~/.pi/agent/config/pi-verdict.json` | `~/.omp/agent/config/pi-verdict.json` |
 | credential file (S0 hard deny) | `~/.pi/agent/auth.json` | `~/.omp/agent/auth.json` |
 
-- `/automode` — show current status: on/off + shadow-cache stats for the session
+- `/automode` — show the current Auto Mode status
 - `/automode on`
 - `/automode off`
 - `ctrl+shift+a` — toggle the master switch silently (the always-on footer is the only feedback; rebind or disable via `toggleShortcut`)
@@ -95,6 +95,7 @@ pi-verdict runs on both [pi](https://github.com/badlogic/pi-mono) and [oh-my-pi]
 {
   "allow": ["^ls\\b", "^git (status|log|diff)\\b"],
   "deny":  ["rm ", "docker ", "^/etc/"],
+  "tools": [],
   "denyPaths": [
     "~/.ssh/",
     "~/.profile",
@@ -104,7 +105,7 @@ pi-verdict runs on both [pi](https://github.com/badlogic/pi-mono) and [oh-my-pi]
     "~/.bashrc"
   ],
   "builtinDenyFloor": true,
-  "gateOmpDir": true,
+  "gateOmpDir": false,
   "footer": "full",
   "classifierModel": null,
   "explainGateModel": null,
@@ -114,24 +115,25 @@ pi-verdict runs on both [pi](https://github.com/badlogic/pi-mono) and [oh-my-pi]
   "notifyAllows": false,
   "classifierMinConfidence": null,
   "classifierFallbackModel": null,
-  "classifierFallbackMode": "shadow",
-  "subagentGate": "off",
+  "classifierFallbackMode": "enforce",
+  "subagentGate": "normal",
   "subagentAskTimeoutMs": 60000
 }
 ```
 
 - `allow`/`deny` are JS regex arrays; **`deny` wins over `allow`**, both beat the classifier
+- `ignoreTools` is accepted as a deprecated alias for `tools`; entries are merged and deduplicated, with a one-shot warning. Use `tools` in new configs
 - `denyPaths` are plain paths you declare **protected** — touches trigger a terminal ask you adjudicate (non-interactive → deny); the classifier never learns the paths themselves, only that they exist. `grep`/`find`/`ls` compare their whole **search scope**: an omitted `path` (pi's default: the current directory) or a parent directory of a declared path triggers the ask as well. A fresh install pre-fills a **starter list** (`~/.ssh/`, `~/.gnupg`, `~/.mc`, shell rc/profile files), active from the first session after the initial run (any config change applies to new sessions) — a pre-filled *user declaration*, not a built-in floor: edit or empty it freely, add your own (`~/Documents/private`, …) alongside; existing configs are never rewritten
-- `builtinDenyFloor: false` turns off the built-in danger/path floor (your risk)
-- `gateOmpDir` (default `true`) is the **forced `.omp` gate**: any file-tool path or bash command touching a `.omp` directory (lexical or symlink-resolved; `~/.omp`, `<project>/.omp`, …) triggers a terminal ask you adjudicate (non-interactive → deny). It runs after the built-in floor and your `deny` rules and before `denyPaths`/`allow`, so an `allow` regex cannot skip it. `false` disables it; toggle it from `/verdict`. `grep`/`find`/`ls` are checked on their own target only (a recursive search that merely traverses a nested `.omp` is not an access)
-- `footer` (default `"full"`): style of the footer status. `"full"` renders Nerd Font powerline blocks — gate state, risky settings (`floor off`, `.omp gate off`), the classifier model (`↺` = inherited session model, `⚠ ↺` = configured model unavailable so the session model is used, `↳ <id>·shadow|enforce` = fallback model), per-session verdict counters (allow / ask / deny: final pipeline verdicts of root-session calls, reset at session start) and info badges (`≥N%` for `classifierMinConfidence`, `autoDeny off`, `subagent normal|auto`). `"compact"` is one plain text line with the same content minus counters; `"off"` clears the status. Hosts whose theme lacks `bg`/`getBgAnsi` render compact. The footer never shows command or path text (ADR-0002). Editable from `/verdict`; an invalid value warns and falls back to `"full"`.
+- `builtinDenyFloor: false` turns off the built-in danger/path floor, but not the self-protection layer
+- `gateOmpDir` (default `false`) optionally forces a terminal ask for `.omp` directory accesses (non-interactive → deny). When enabled, it runs after the built-in floor and your `deny` rules and before `denyPaths`/`allow`, so an `allow` regex cannot skip it. Toggle it from `/verdict`. `grep`/`find`/`ls` are checked on their own target only; a recursive search that merely traverses a nested `.omp` is not an access
+- `footer` (default `"full"`): style of the footer status. `"full"` renders Nerd Font powerline blocks with gate state, risky settings (`floor off`, `subagent off`), classifier model, verdict counters, and badges; `"compact"` is one plain line, and `"off"` clears the status. The fallback model badge shows `↳ <id>·shadow|enforce`; `subagent off` is a warning badge, `subagent auto` is an info badge, and the default `subagent normal` shows no badge. Hosts whose theme lacks `bg`/`getBgAnsi` render compact. The footer never shows command or path text (ADR-0002). Editable from `/verdict`; an invalid value warns and falls back to `"full"`.
 - `classifierModel` pins the classifier model, e.g. `"zai/glm-5.3-flash:low"` (thinking suffix supported; default: session model with thinking off)
 - `classifierModel: "typesafe/jev-latest"` opts into the bundled **jev decisions adapter** — gray-zone verdicts via TypeSafe's jev (OpenRouter by default, or TypeSafe's official API directly with `PI_VERDICT_JEV_TRANSPORT=typesafe`); experimental, see [ADR-0003](docs/adr/0003-jev-decisions-adapter.md)
 - `explainGateModel` / `explainGatePrompt` configure the **EXPLAIN-GATE role** behind two extra options of the interactive ask dialog. **Explain…** asks an optional question of the EXPLAIN-GATE model (default: session model; `provider/id[:thinking]`) together with the held action and the gate's stated reason; the answer appears in the re-opened dialog (advisory — never sent to the agent), and with an empty question the default prompt (`explainGatePrompt`, built-in: "Explain what this action does and why the gate held it for confirmation.") is used. **No, with explanation…** declines and tells the agent why (`user declined, saying: "…"`). Explain is **not offered for protected-path asks** (`denyPaths`, `.omp` gate) because their path plaintext must not reach a model provider ([ADR-0002](docs/adr/0002-deny-paths-deterministic-ask.md)). RPC mode and hosts without the rich dialog keep the plain Yes/No confirm
 - `audit: true` records every **gray-zone adjudication** (the full transcript sent to the classifier, its raw response, the parsed verdict) as JSONL under `~/.pi/agent/verdicts/<sessionId>.jsonl` — one file per session, the 20 most recent kept. Interactive asks also record your answer (`userAnswer` ground truth, written after the confirm resolves), and protected-path asks are recorded too (#62); rule allow/deny stays unaudited. Local-only and full-fidelity (protected-path plaintext may appear — it never leaves your machine; [ADR-0002](docs/adr/0002-deny-paths-deterministic-ask.md) boundary note); the agent can neither read nor write the directory. `/automode` shows the audit state and path while on
-- `notifyAllows: true` notifies on every **classifier allow** (reason + action line — e.g. jev's probability breakdown); default `false` keeps passes silent. Mechanical passes (your own allow rules, protected-path confirms) never notify; shadow-cache annotations stay debug-only; with both switches on the notification appears once
-- `classifierMinConfidence` (optional, [ADR-0004](docs/adr/0004-classifier-fallback-cascade.md)) sets the **confidence floor**: a jev verdict below it is demoted — cascaded to `classifierFallbackModel` if set (`shadow` = the second layer records its opinion and you are asked; `enforce` = the second layer adjudicates, except a demoted deny can never be auto-allowed), otherwise asked of you directly. At/above the floor the first layer is autonomous. A natural pairing: jev first + a haiku-class fallback
-- `subagentGate` (omp only) decides what happens to `ask`s raised inside **subagents**, which have no UI of their own: `"off"` (default) leaves subagents ungated; `"normal"` shows the confirmation dialog on the root session's UI, labeled with the subagent; unanswered within `subagentAskTimeoutMs` (default 60000 ms) or with no root UI, it resolves via `classifierFallbackModel` — only an explicit `allow` from it permits the call, everything else denies; `"auto"` never prompts and always resolves that way. Protected-path / `.omp` asks never auto-allow. Set omp's `extensionHandlers.toolCallTimeoutMs` ≥ `subagentAskTimeoutMs + 60000`
+- `notifyAllows: true` notifies on every **classifier allow** (reason + action line, such as jev's probability breakdown); default `false` keeps passes silent. Mechanical passes (your own allow rules and protected-path confirms) never notify. Debug and `notifyAllows` are orthogonal; together they still show each classifier-allow notification once
+- `classifierMinConfidence` (optional, [ADR-0004](docs/adr/0004-classifier-fallback-cascade.md)) sets the **confidence floor**: a jev verdict below it is demoted and cascades to `classifierFallbackModel` if set, otherwise it asks you directly (non-interactive → deny). The default fallback mode is `enforce`, which adjudicates de novo; if a demoted first-layer `ask` or `deny` would become `allow`, the fallback result asks you instead. In `shadow` mode the fallback records its opinion without changing the result. At or above the floor the first layer is autonomous. A natural pairing: jev first + a haiku-class fallback
+- `subagentGate` (omp only) decides what happens to `ask`s raised inside **subagents**: `"normal"` (default) shows the confirmation dialog on the root session's UI, labeled with the subagent; unanswered within `subagentAskTimeoutMs` (default 60000 ms) or with no root UI, it resolves via `classifierFallbackModel` — only an explicit `allow` from an `enforce` fallback permits the call; shadow opinions do not. `"auto"` never prompts and always resolves that way; `"off"` leaves subagents ungated. Protected-path / `.omp` asks never auto-allow. Set omp's `extensionHandlers.toolCallTimeoutMs` ≥ `subagentAskTimeoutMs + 60000`; `subagent off` is a warning badge, `subagent auto` is an info badge, and default `normal` shows no badge
 
 No built-in allowlist — every "always allow" claim is yours ([why](docs/configuration.md#why-no-built-in-allowlist)). Full reference: [docs/configuration.md](docs/configuration.md).
 
@@ -173,10 +175,15 @@ Honest framing: pi-automode and pi-verdict have **converged on the same architec
 ```
 tool_call
   │
+  ├─ 0. Self-protection (snapshot-free, config-exempt hard deny)
+  │     ├─ writes to gate policy, trust store, installed copy → deny
+  │     ├─ policy reads pass
+  │     └─ <agentDir>/verdicts/ reads and writes → deny
+  │
   ├─ 1. Rule layer (deterministic, zero latency)
   │     ├─ built-in deny floor: bash danger regexes + path sensitivity S0–S5
   │     ├─ your rules: user deny beats user allow
-  │     ├─ gateOmpDir: any .omp directory access → terminal ask, before denyPaths
+  │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
   │     │   before user allow; classifier sees an existence hint only
   │     └─ no built-in allowlist — every "always allow" claim is yours to make
@@ -190,8 +197,6 @@ tool_call
         ├─ allow → pass
         ├─ deny  → block, reason returned to the agent
         └─ ask   → human confirm; non-interactive modes degrade to deny
-
-  [shadow cache] observe-only telemetry alongside 2/3, never changes a verdict
 ```
 
 **fail-closed**: classifier exception / timeout (25s) / contract violation → deny. Never silently allow.
@@ -200,7 +205,7 @@ tool_call
 
 Design decisions here are settled by measurement, and the lab notes ship with the repo:
 
-- [`research/cache-sim`](research/cache-sim/README.md) — replayed 1.2k+ real classifier verdicts to measure verdict-cache hit rate (**3.2%** → cache deferred, shadow-mode telemetry built instead)
+- [`research/cache-sim`](research/cache-sim/README.md) — replayed 1.2k+ real classifier verdicts and measured a **3.2%** would-be verdict-cache hit rate; this fork ships no cache or cache telemetry
 - [`research/thinking-param-blackhole.md`](research/thinking-param-blackhole.md) — three-layer forensic root-cause of thinking models burning the classifier budget; why the fix is `thinkingEnabled: false`
 - [`research/rule-engine-sim`](research/rule-engine-sim/README.md) — measured a tree-sitter rule-engine port against 746 real bash calls (**absorbs 0 gray calls**) and rejected it
 - [`research/pi-permission-landscape.md`](research/pi-permission-landscape.md) — the competitive landscape this README's positioning is checked against
@@ -213,13 +218,13 @@ Design decisions here are settled by measurement, and the lab notes ship with th
 - no built-in allowlist by design (see the [bypass writeup](research/rule-layer-security-audit.md)); with an empty `allow` config most commands go to the classifier — point `--auto-mode-model` at a fast model if per-call latency matters
 - the path sensitivity floor applies to file tools only: bash command strings are matched by the danger regexes alone, so e.g. `cat ~/.ssh/id_rsa` goes to the classifier rather than the deterministic S0 deny (the file-tool spelling `read ~/.ssh/id_rsa` does deny)
 - on Windows the built-in floor covers bash-shaped patterns only — PowerShell-native dangerous commands (`Remove-Item -Recurse -Force`, `Invoke-Expression`, `Set-ExecutionPolicy`, …) rely on the classifier (fail-closed)
+- On macOS, the per-user temp tree under `/var/folders/...` is exempt from S1 system-path treatment: reads there no longer go gray, and writes are not denied by S1
 - AGENTS.md is not passed to the classifier as downweighted intent evidence (Claude Code does this)
 - parallel gray-zone calls are adjudicated serially
 - self-reflection means the session model adjudicates — point `--auto-mode-model` at a lighter model if verdict latency/cost matters (open question tracked in the issue tracker)
-- shadow cache is observe-only by decision; the serving switch is a one-line change once measured hit rates justify it
-- `denyPaths` bash extraction is token-level ([ADR-0002](docs/adr/0002-deny-paths-deterministic-ask.md)): command substitution, base64-embedded paths and external script contents produce no hit signal — those calls fall back to the classifier's existence-hint vigilance. MCP and custom tools bypass the extractor entirely (their gray-zone adjudication still carries the hint). Path normalization is base-tier only (ADR-0002): a nonexistent target written through a symlinked directory rebuilds no real form and produces no hit — that indirection falls to the hint vigilance too. Honest framing: the deterministic layer is obfuscatable, which is exactly why a hit routes to *you* rather than silently deciding
+- `denyPaths` bash extraction uses a linear token scan with no fixed input-length cap ([ADR-0002](docs/adr/0002-deny-paths-deterministic-ask.md)): command substitution, base64-embedded paths and external script contents produce no hit signal, so those calls fall back to the classifier's existence-hint vigilance. MCP and custom tools bypass the extractor entirely (their gray-zone adjudication still carries the hint). Path normalization is base-tier only (ADR-0002): a nonexistent target written through a symlinked directory rebuilds no real form and produces no hit, which also falls to the hint. The deterministic layer remains obfuscatable, which is why a hit routes to *you* rather than silently deciding
 - `denyPaths` bash tokens contain no spaces: a *declared* path containing spaces cannot be spelled in a bash command in a way the extractor sees — `cat "/path with space/x"` splits into two tokens and never hits (file tools still hit, their path is not tokenized). A glob covering the final segment of a base (`cat /proj/pers*` against `denyPaths: ["/proj/personal"]`) also misses — the base's own name never appears literally. A recursive search issued from a shell misses in both spellings — no path argument (defaults to the cwd, e.g. a bare `rg foo`) or a parent-directory argument (`rg foo <parent-of-a-declared-path>`): an argument-less command contributes no token at all and bash tokens otherwise compare one-directionally, while the file tools' bidirectional subtree compare covers the same shapes issued through `grep`/`find`/`ls`. All three holes fall back to the classifier's existence hint, alongside substitution/base64 above
-- the gate's own config and installed extension copy carry no special protection — agent-side writes to them are graded like any other file, by the same rule layer and classifier as everything else (self-protection removed, see [ADR-0001](docs/adr/0001-self-protection-layer.md))
+- The snapshot-free self-protection layer hard-denies agent-side writes to `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, and the installed extension copy when it resolves under a recognized pi/omp install root; development checkouts are not protected. Reads of the policy pass; `<agentDir>/verdicts/` denies reads and writes. `builtinDenyFloor: false`, user `allow` rules, and `autoDeny: false` cannot lift these denies. There is no in-memory snapshot or automatic restore. Bash matching uses substrings and is obfuscatable; direct rewrites outside gated tool calls are not covered
 
 **verdict is not a sandbox.** It runs inside the pi process and adjudicates tool calls; it does not contain malicious code, protect against a compromised process, or guard manual `!` shell escapes. For isolation, use an OS-level sandbox.
 
@@ -230,7 +235,7 @@ The name: the three-state **verdict** is the core concept. The UX keeps `/automo
 ```bash
 bun install
 bun run typecheck
-bun test          # offline stub tests: deny floor, user rules, denyPaths, bypass regression, classifier retry, shadow cache, commands, toggle shortcut
+bun test          # offline stub tests: deny floor, user rules, denyPaths, bypass regression, classifier retry, commands, toggle shortcut
 ```
 
 Issue tracker and decision records live in the GitHub issues ("map" issue #1 indexes them).

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/
 
 ## [Unreleased]
 
+Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.1`.
+
+### Added
+
+- **Self-protection layer restored** (ADR-0005): pipeline layer 0, a hard, config-exempt deny over the gate's own files — `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, the installed extension copy (when `import.meta.url` sits under a recognized install root; dev checkouts are not protected) and `<agentDir>/verdicts/`; the audit directory additionally denies reads (raw model output must not reach agent context). `builtinDenyFloor: false`, user `allow` rules and `autoDeny: false` cannot lift it. Deliberately **snapshot-free** — no in-memory tamper baseline, so concurrent sessions never revert one another's legitimate edits. Bash-side matching is substring and obfuscatable (ADR-0001 caveat).
+- `ignoreTools` accepted as a deprecated alias for `tools`, merged and deduplicated with a one-shot warning, so an unmigrated policy keeps its exemption (`#pi-verdict local patch`).
+
+### Changed
+
+- **BREAKING**: `gateOmpDir` default flipped `true` → `false` (ADR-0006). The forced `.omp` terminal ask broke ordinary `.omp` work and could not be allowed by rule; the self-protection layer carries the protection. The footer no longer renders a `.omp gate off` warning badge; it now flags `subagent off` as the fail-open deviation, and shows `subagent auto` as an info badge.
+- **BREAKING**: `subagentGate` default raised `"off"` → `"normal"` (ADR-0006). `"off"` returned from the `tool_call` hook before `adjudicate`, so every subagent tool call skipped the rule layer, the floor and the classifier; `"normal"` adjudicates subagent calls and routes their asks to the root UI.
+- `classifierFallbackMode` default flipped `"shadow"` → `"enforce"`, matching upstream (`8bcd08a`); a shadow-mode fallback may no longer resolve a subagent ask without a human — the `autoResolve: "allow"` shortcut now requires `enforce` (ADR-0004 amendment, ADR-0006).
+- Project-config overrides are restricted to an explicit allowlist (ADR-0006): `classifierModel`, `explainGateModel`, `explainGatePrompt`, the free-text `rules` and `toggleShortcut` are user-only, ignored with a warning; the trust prompt now names the overridable set. Project trust is bound to a sha256 of the approved override content, so a trusted root whose override changes re-prompts instead of applying silently (TOCTOU guard); legacy trust entries without a hash re-prompt once.
+- `loadUserRules`' outer catch now surfaces an unexpected failure through the warning channel instead of returning empty rules silently.
+- Ported upstream hardening: linear `denyPaths` bash token extraction (`bb05e33`, no 8192-char cap) and the macOS per-user temp-tree S1 exemption (`bb6922a`, `/var/folders/...` reads no longer gray, writes no longer denied).
+- Ported upstream cascade semantics (`0d87e99`, `1c06365`): the ask-relaxation carve-out covers a demoted `ask` as well as a demoted `deny`; enforce fail-closed rescue rows carry the applied ruling at the top-level audit verdict (source stays `fail-closed`); the `degraded` flag marks only genuine ask-degradation on the early fail-closed path.
+- Rich approve dialog: `DynamicBorder`, `keyHint` and `rawKeyHint` are no longer destructured from the host namespace (omp 18.5 does not export them there, which silently degraded every ask to a plain confirm with no code preview, no jev bar and EXPLAIN-GATE unreachable); local theme-aware substitutes keep the rich dialog working on pi and omp.
+- jev adapter: corrected the stale header/doc claim that omp has no `registerProvider`, and dropped the ignored third `registerProvider` argument.
+
+### Removed
+
+- **BREAKING**: the shadow cache (dual-key LRU probe, `/automode` stats line, debug annotation, audit `shadow` field) — upstream retired it in `0.12.0` after measurements put its would-be hit rate near 3%; it never changed a verdict.
+
 ## [0.16.0] - 2026-10-02
 
 ### Added

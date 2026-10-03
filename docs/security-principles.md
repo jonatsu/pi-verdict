@@ -14,9 +14,15 @@ When the system cannot establish that an action is safe, it must not silently al
 uncertainty → friction     (never: uncertainty → permission)
 ```
 
-### 2. Deterministic floors come before AI
+### 2. Self-protection and deterministic floors come before AI
 
-Some security properties must never depend on an LLM. The built-in deny floor (bash danger regexes + path sensitivity grades) adjudicates before the classifier is ever consulted. The classifier may interpret ambiguity; it must not override a hard deny — and neither can user allow rules.
+The snapshot-free self-protection layer runs first. It hard-denies writes to `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, and the installed extension copy under a recognized root; policy reads pass.
+
+It also denies agent reads and writes to `<agentDir>/verdicts/`. No user `allow` rule, `builtinDenyFloor: false`, or `autoDeny: false` lifts these denies.
+
+Development checkouts are not protected, and the layer does not keep a baseline or restore files. Bash-side matching uses substrings and can be obfuscated.
+
+The built-in deny floor (bash danger regexes + path sensitivity grades) runs next, before the classifier. The classifier may interpret ambiguity; it cannot override a hard deny, and user allow rules cannot override one either.
 
 ### 3. The classifier judges semantics, not syntax
 
@@ -38,11 +44,11 @@ The classifier receives only what it needs to judge: a condensed transcript (use
 
 ### 7. Protected resources are matched by canonical identity
 
-Path decisions use canonical filesystem identity, not lexical strings: lexical + realpath dual-form matching (#20), case folding on case-insensitive filesystems, macOS firmlink prefixes (#21), relative/`~`/`$HOME`/env-var spellings, and ancestor-realpath reconstruction for not-yet-existing targets. A path that merely *looks* workspace-local is not trusted as workspace-local.
+Path matching compares lexical and realpath forms (#20), with case folding on case-insensitive filesystems and macOS firmlink prefixes (#21). Relative, `~`, `$HOME`, and environment-variable spellings are normalized. The path-sensitivity floor reconstructs non-existent targets from the nearest realpath ancestor; `denyPaths` uses base-tier matching only, so such targets may fall to the classifier's existence hint. A path that merely *looks* workspace-local is not trusted as workspace-local.
 
-### 8. User policy may restrict, and may only weaken by explicit opt-in
+### 8. User policy may weaken only the built-in floor by explicit opt-in
 
-User rules are the user's own security declarations (deny beats allow; denyPaths are the stronger declaration channel). The built-in deny floor *can* be turned off — but only by an explicit, documented `builtinDenyFloor: false` in the user's own config file, i.e. a deliberate downgrade the user owns, never a silent or accidental weakening.
+User rules are the user's own security declarations (deny beats allow; denyPaths are the stronger declaration channel). The built-in deny floor can be turned off only with an explicit `builtinDenyFloor: false` in the user's config. Self-protection is separate and remains enforced.
 
 ### 9. Platform differences are documented, not silently weaker
 
@@ -62,10 +68,18 @@ pi-verdict makes tool authorization safer and more explainable; it provides no O
 
 ## Summary
 
+The self-protection layer runs before configurable rules: it blocks gated writes to `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, and the recognized installed copy. Policy reads pass; reads and writes to `<agentDir>/verdicts/` are denied.
+
 ```text
                      Tool Call
                          │
                          ▼
+              ┌────────────────────────┐
+              │ Self-protection layer  │   (config-exempt hard denies)
+              └───────────┬────────────┘
+                  deny ◄───┼──► continue
+                           │
+                           ▼
               ┌─────────────────────┐
               │ Deterministic floor │   (regexes, path grades, denyPaths — no LLM)
               └──────────┬──────────┘
