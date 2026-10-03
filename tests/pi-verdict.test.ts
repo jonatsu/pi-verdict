@@ -54,7 +54,7 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 	const fgCalls: Array<[string, string]> = [];
 	let flags: Record<string, unknown> = {};
 	const branch: any[] = [];
-	const h: any = { handlers, commands, shortcuts, notifies, statusSets, fgCalls, branch, calls: [], responses: [], confirms: 0, confirmMsgs: [] as string[], confirmAnswer: true, confirmError: undefined, selects: 0, selectIndex: 0, selectPicks: null, inputs: [], editors: [], findMap: undefined };
+	const h: any = { handlers, commands, shortcuts, notifies, statusSets, fgCalls, branch, calls: [], responses: [], confirms: 0, confirmMsgs: [] as string[], confirmAnswer: true, confirmError: undefined, selects: 0, selectIndex: 0, selectPicks: null, selectMsgs: [] as string[], inputs: [], editors: [], findMap: undefined };
 	h.widgetSets = widgetSets;
 
 	const ctx: any = {
@@ -84,6 +84,7 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 			},
 			select: async (_t: string, options: string[]) => {
 				h.selects++;
+				h.selectMsgs.push(_t);
 				if (h.selectPicks === null) return h.selectIndex === null ? undefined : options[h.selectIndex];
 				const prefix = h.selectPicks.shift();
 				return prefix === undefined ? undefined : options.find((o) => o.startsWith(prefix));
@@ -305,6 +306,20 @@ describe("user rules (deny > allow > gray)", () => {
 		session({}); // 触发 loadUserRules → 生成模板
 		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
 		expect(fs.existsSync(p)).toBe(true);
+	});
+
+	test("an unknown user-config key warns and the rest still applies (R9)", async () => {
+		setConfig({ deny: ["^echo ok"] });
+		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
+		const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+		raw.denyPathz = ["~/.ssh/"]; // misspelled denyPaths
+		fs.writeFileSync(p, JSON.stringify(raw));
+		const h = makeHarness();
+		h.install();
+		await h.handlers.session_start({}, h.ctx);
+		const warns = h.notifies.filter(([, l]) => l === "warning").map(([m]) => m).join(" ");
+		expect(warns).toContain("unknown key: denyPathz");
+		expect((await toolCall(h, "bash", { command: "echo ok" }))?.block).toBe(true);
 	});
 });
 
@@ -907,16 +922,23 @@ describe("denyPaths (ADR-0002)", () => {
 	});
 
 	test("explicit parent-directory path hits (bidirectional compare)", async () => {
-		// descendant via explicit path: grep over the parent of the declaration
-		// previously fell through to the classifier (scope ignored)
-		const h = session({ denyPaths: [SENS] });
-		await toolCall(h, "grep", { pattern: "secret", path: TMP_AGENT });
-		expect(h.confirms).toBe(1);
-		expect(h.calls.length).toBe(0);
-		// ancestor via explicit relative path: "." resolves into the declaration
-		const h2 = session({ denyPaths: [SENS] }, { cwd: SENS });
-		await toolCall(h2, "grep", { pattern: "secret", path: "." });
-		expect(h2.confirms).toBe(1);
+		// A standalone parent, not the agent dir: grepping over the agent dir is itself a
+		// self-protection deny (R4), which would mask the denyPaths comparison under test.
+		await withTempDir("pv-denypaths-parent-", async (parent) => {
+			const sens = path.join(parent, "sensitive");
+			fs.mkdirSync(sens, { recursive: true });
+			fs.writeFileSync(path.join(sens, "secret.md"), "secret");
+			// descendant via explicit path: grep over the parent of the declaration
+			// previously fell through to the classifier (scope ignored)
+			const h = session({ denyPaths: [sens] });
+			await toolCall(h, "grep", { pattern: "secret", path: parent });
+			expect(h.confirms).toBe(1);
+			expect(h.calls.length).toBe(0);
+			// ancestor via explicit relative path: "." resolves into the declaration
+			const h2 = session({ denyPaths: [sens] }, { cwd: sens });
+			await toolCall(h2, "grep", { pattern: "secret", path: "." });
+			expect(h2.confirms).toBe(1);
+		});
 	});
 
 	test("omitted path: user allow cannot override the hit (denyPaths priority holds)", async () => {
@@ -1014,7 +1036,9 @@ describe("denyPaths (ADR-0002)", () => {
 		fs.rmSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), { force: true });
 		const bootstrap = makeHarness(); bootstrap.install(); // first run → template
 		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8"));
-		expect(raw.tools).toEqual(["ask", "todo", "wait", "task", "yield", "think", "checkpoint", "rewind", "recall", "reflect"]);
+		expect(raw.tools).toEqual(["ask", "todo", "wait", "yield", "think", "checkpoint", "rewind", "recall", "reflect"]);
+		// R8: no spawn or process/filesystem-side-effect tool starts exempt
+		expect(raw.tools).not.toContain("task");
 		// second session: listed tools skip the classifier, unlisted ones stay gray
 		const h = makeHarness();
 		h.install();
@@ -2434,6 +2458,42 @@ describe("project trust prompt", () => {
 		});
 	});
 
+	test("a project override narrows only: no widening allow/tools, no removing denies/denyPaths, no disabling the floor (R7)", async () => {
+		await withTempDir("pv-proj-narrow-", async (dir) => {
+			const keep = path.join(dir, "keep");
+			fs.mkdirSync(keep, { recursive: true });
+			fs.writeFileSync(path.join(keep, "secret.md"), "s");
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			fs.writeFileSync(
+				path.join(dir, ".pi", "pi-verdict.json"),
+				JSON.stringify({ allow: [".*"], tools: ["todo", "task"], deny: [], denyPaths: [], builtinDenyFloor: false }),
+			);
+			fs.rmSync(TRUST_FILE(), { force: true });
+			const h = session({ deny: ["^echo user-deny"], allow: ["^ls\\b"], tools: ["todo"], denyPaths: [keep] }, { cwd: dir });
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			(h as any).selectIndex = 0; // Trust
+			await h.handlers.session_start({}, h.ctx);
+			expect((h as any).selectMsgs.join(" ")).toContain("cannot widen");
+			// deny union survives (the project tried to clear it)
+			expect((await toolCall(h, "bash", { command: "echo user-deny" }))?.block).toBe(true);
+			// the floor cannot be disabled
+			expect((await toolCall(h, "bash", { command: "sudo ls" }))?.block).toBe(true);
+			// tools intersect: todo stays exempt, task does not
+			const before = h.calls.length;
+			expect(await toolCall(h, "todo", {})).toBeUndefined();
+			expect(h.calls.length).toBe(before);
+			expect(await toolCall(h, "task", { prompt: "x" })).toBeUndefined();
+			expect(h.calls.length).toBe(before + 1);
+			// denyPaths union survives
+			h.confirmAnswer = false;
+			expect((await toolCall(h, "read", { path: keep }))?.block).toBe(true);
+			// allow cannot widen: a command outside ^ls is gray, not rule-allowed
+			const a = h.calls.length;
+			await toolCall(h, "bash", { command: "echo hi" });
+			expect(h.calls.length).toBe(a + 1);
+		});
+	});
+
 	test("malformed trust file: Trust applies for the session, file untouched, warns", async () => {
 		await withProject(async (h) => {
 			fs.mkdirSync(path.dirname(TRUST_FILE()), { recursive: true });
@@ -2503,6 +2563,77 @@ describe("self-protection layer (ADR-0005)", () => {
 			expect(v).toMatchObject({ verdict: "allow", source: "rule" });
 			expect(v.reason).toContain("user tools allow rule");
 		}
+	});
+
+	test("unlisted tools cannot write the policy (R3: input-keyed, not name-keyed)", async () => {
+		for (const toolName of ["ast_edit", "mcp__fs__write_file", "some_future_tool"]) {
+			const h = session({});
+			const r = await toolCall(h, toolName, { path: CFG(), content: "x" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+			expect(h.calls.length).toBe(0); // never reaches the classifier
+		}
+	});
+
+	test("a nested path-shaped value is caught too (R3)", async () => {
+		const h = session({});
+		const r = await toolCall(h, "mcp__fs__batch", { operations: [{ filePath: CFG(), content: "x" }] });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("self-protection");
+	});
+
+	test("an ordinary unlisted-tool call with no protected path is unaffected (R3 control)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "ast_edit", { path: "/proj/src/a.ts", edits: [] })).toBeUndefined();
+	});
+
+	test("read-deny's bash and directory routes are closed (R4)", async () => {
+		for (const command of [`cd ${TMP_AGENT} && cat verdicts/*.jsonl`, `cat ${AUDIT()}/*.jsonl`]) {
+			const h = session({});
+			const r = await toolCall(h, "bash", { command });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+		}
+		for (const tool of ["grep", "find", "ls"]) {
+			const h = session({});
+			const r = await toolCall(h, tool, { path: TMP_AGENT });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("#54");
+		}
+	});
+
+	test("the gate's enablement surface is write-denied (R5)", async () => {
+		const targets = [
+			path.join(TMP_AGENT, "plugins", "omp-plugins.lock.json"),
+			path.join(TMP_AGENT, "plugins", "package.json"),
+			path.join(TMP_AGENT, "proj", ".omp", "plugin-overrides.json"),
+			path.join(TMP_AGENT, "proj", ".pi", "plugin-overrides.json"),
+		];
+		for (const p of targets) {
+			const h = session({});
+			const r = await toolCall(h, "write", { path: p, content: "{}" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+		}
+		// from a cwd inside the project, relative spelling
+		const h = session({}, { cwd: path.join(TMP_AGENT, "proj") });
+		const r = await toolCall(h, "write", { path: ".omp/plugin-overrides.json", content: "{}" });
+		expect(r?.block).toBe(true);
+	});
+
+	test("an ordinary project write is unaffected (R5 control)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "write", { path: path.join(TMP_AGENT, "proj", "src", "a.ts"), content: "x" })).toBeUndefined();
+	});
+
+	test("reads of the trust store are denied; the policy still reads (R6)", async () => {
+		const h = session({});
+		const r = await toolCall(h, "read", { path: TRUST() });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("#54");
+		expect(await toolCall(h, "read", { path: CFG() })).toBeUndefined();
 	});
 });
 

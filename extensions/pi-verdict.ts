@@ -487,18 +487,18 @@ function recordTrust(root: string, decision: "trusted" | "untrusted", configPath
  *  - ask:        prompts the user; the user is the gate
  *  - todo:       session task list (UI/session metadata only)
  *  - wait:       blocks on already-started background jobs
- *  - task:       spawns subagents; their tool calls pass this gate too (the extension is
- *                re-bound in every subagent session)
  *  - yield:      subagent result submission (hidden tool)
  *  - think:      private scratchpad (hidden tool)
- *  - checkpoint, rewind: prune session conversation context only (no file/git restore)
+ *  - checkpoint, rewind: in-memory session context only — message count + session-tree
+ *                entry id, no file or git restore (R8: verified in omp's checkpoint tool)
  *  - recall, reflect:    read from the configured memory backend
- * Deliberately NOT listed: glob/ast_grep/lsp (path-scoped reads that this tool-name
- * family skips denyPaths for), web_search (query text leaves the machine), retain/learn/
- * memory_edit/manage_skill (persist content into future prompts), eval/github/debug/ida/
- * security_scan/ast_edit (execute code or mutate state).
+ * Deliberately NOT listed: task (spawns a subagent — exempting it would be a fail-open
+ * relative to the subagent gate; gate its calls instead), glob/ast_grep/lsp (path-scoped
+ * reads that this tool-name family skips denyPaths for), web_search (query text leaves
+ * the machine), retain/learn/memory_edit/manage_skill (persist content into future
+ * prompts), eval/github/debug/ida/security_scan/ast_edit (execute code or mutate state).
  */
-const DEFAULT_ALLOWED_TOOLS = ["ask", "todo", "wait", "task", "yield", "think", "checkpoint", "rewind", "recall", "reflect"];
+const DEFAULT_ALLOWED_TOOLS = ["ask", "todo", "wait", "yield", "think", "checkpoint", "rewind", "recall", "reflect"];
 
 const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	_hint: "pi-verdict user rules — full reference: https://github.com/jesset/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor at your own risk. gateOmpDir (default false; the self-protection layer over the gate's own files stays on regardless): true makes any read/write touching a .omp directory ask for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools (the legacy key ignoreTools is accepted as a deprecated alias): exact names of non-path, non-command tools (e.g. todo, ask, task) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer is uncertain (ask / fail-closed / jev confidence below classifierFallbackConfidence, default 50); mode enforce (default) lets the second layer adjudicate, shadow only records its opinion while the human decides. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. \"npm install is expected in this repo\"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: normal default / off / auto; off makes the gate inert in subagents) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp's extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: \"full\" (Nerd Font powerline blocks, default) | \"compact\" (plain text) | \"off\" (no footer status).",
@@ -533,10 +533,13 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 
 interface LoadedRules { rules: UserRules; skipped: string[]; shortcutWarning: string | null; project: { path: string; trusted: boolean; applied: boolean } | null }
 
-/** Keys a project override may change (ADR-0006). The gate's decision inputs stay
- *  user-only: the classifier and EXPLAIN-GATE model specs (an egress channel), the
- *  free-text `rules` (injected into the classifier prompt with "takes precedence"
- *  wording), and toggleShortcut. The trust prompt names this set. */
+/** Keys a project override may change (ADR-0006, narrowed by R7). The gate's decision
+ *  inputs stay user-only: the classifier and EXPLAIN-GATE model specs (an egress
+ *  channel), the free-text `rules` (injected into the classifier prompt with "takes
+ *  precedence" wording), toggleShortcut, and the authority/egress keys `autoDeny`,
+ *  `audit`, `classifierMinConfidence` and `classifierFallbackModel`. The keys that do
+ *  merge can only narrow the gate — a project may add denials and remove exemptions, it
+ *  cannot widen allow/tools or disable the floor. The trust prompt names this. */
 const PROJECT_OVERRIDABLE_KEYS: Record<string, true> = {
 	allow: true,
 	deny: true,
@@ -545,15 +548,39 @@ const PROJECT_OVERRIDABLE_KEYS: Record<string, true> = {
 	ignoreTools: true,
 	builtinDenyFloor: true,
 	gateOmpDir: true,
-	autoDeny: true,
-	audit: true,
 	notifyAllows: true,
 	footer: true,
-	classifierMinConfidence: true,
-	classifierFallbackModel: true,
 	classifierFallbackMode: true,
 	subagentGate: true,
 	subagentAskTimeoutMs: true,
+};
+
+/** Every key the user config may carry; anything else warns (R9) — a typo in `deny`
+ *  or `denyPaths` would otherwise silently drop that protection. */
+const KNOWN_USER_KEYS: Record<string, true> = {
+	allow: true,
+	deny: true,
+	denyPaths: true,
+	tools: true,
+	ignoreTools: true,
+	builtinDenyFloor: true,
+	gateOmpDir: true,
+	classifierModel: true,
+	explainGateModel: true,
+	explainGatePrompt: true,
+	toggleShortcut: true,
+	audit: true,
+	notifyAllows: true,
+	classifierFallbackModel: true,
+	classifierFallbackConfidence: true,
+	classifierMinConfidence: true,
+	classifierFallbackMode: true,
+	footer: true,
+	subagentGate: true,
+	subagentAskTimeoutMs: true,
+	autoDeny: true,
+	rules: true,
+	_hint: true,
 };
 
 /**
@@ -581,7 +608,13 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			return { rules: EMPTY_RULES, skipped: [`config parse failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded (${p})`], shortcutWarning: null, project: null };
 		}
 		const skipped: string[] = [];
-		// [pi-verdict local patch: project overrides] shallow-merge the nearest trusted project's config over the global raw object
+		// R9: an unrecognised user-config key is a typo that would silently drop a
+		// protection — name it and the file, keep loading the rest.
+		for (const k of Object.keys(raw as Record<string, unknown>)) {
+			if (!Object.hasOwn(KNOWN_USER_KEYS, k)) skipped.push(`unknown key: ${k} — ignored (${p})`);
+		}
+		// [pi-verdict local patch: project overrides] merge the nearest trusted project's
+		// config over the global raw object, narrowing only (ADR-0006/R7)
 		const agentDir = agentDirPath();
 		let project: LoadedRules["project"] = null;
 		const pp = cwd === null ? null : findProjectConfig(cwd, agentDir);
@@ -609,12 +642,40 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 					// models are an egress channel and the free-text `rules` are injected into
 					// the classifier prompt with "takes precedence" wording, so a project must
 					// never steer either; toggleShortcut stays user-only too.
-					const over: Record<string, unknown> = {};
+					// R7 — narrowing only: a project may add denials and remove exemptions,
+					// never widen. deny/denyPaths union with the user's; allow/tools/ignoreTools
+					// intersect; builtinDenyFloor may only be set true.
+					const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+					const merged = { ...raw } as Record<string, unknown>;
 					for (const [k, v] of Object.entries(projRaw as Record<string, unknown>)) {
-						if (Object.hasOwn(PROJECT_OVERRIDABLE_KEYS, k)) over[k] = v;
-						else if (k !== "_hint") skipped.push(`${k}: not overridable per project — key ignored (${pp})`);
+						if (!Object.hasOwn(PROJECT_OVERRIDABLE_KEYS, k)) {
+							if (k !== "_hint") skipped.push(`${k}: not overridable per project — key ignored (${pp})`);
+							continue;
+						}
+						switch (k) {
+							case "deny":
+								merged.deny = [...new Set([...stringList(raw.deny), ...stringList(v)])];
+								break;
+							case "denyPaths":
+								merged.denyPaths = [...new Set([...stringList(raw.denyPaths), ...stringList(v)])];
+								break;
+							case "allow":
+								merged.allow = stringList(raw.allow).filter((x) => stringList(v).includes(x));
+								break;
+							case "tools":
+								merged.tools = stringList(raw.tools).filter((x) => stringList(v).includes(x));
+								break;
+							case "ignoreTools":
+								merged.ignoreTools = stringList(raw.ignoreTools).filter((x) => stringList(v).includes(x));
+								break;
+							case "builtinDenyFloor":
+								if (v === true) merged.builtinDenyFloor = true;
+								break;
+							default:
+								merged[k] = v;
+						}
 					}
-					raw = { ...raw, ...over } as typeof raw;
+					raw = merged as unknown as typeof raw;
 					project = { path: pp, trusted: true, applied: true };
 				}
 			}
@@ -1102,8 +1163,14 @@ interface ProtectedSet {
 	exact: string[];
 	/** protected directory prefixes (npm package install form: the whole package dir) */
 	prefixes: string[];
-	/** read-deny prefixes (#54): the verdicts audit dir */
-	readPrefixes: string[];
+	/** path-shaped write guards that name no fixed file (project `plugin-overrides.json`) */
+	writePatterns: RegExp[];
+	/** read-denied paths: the #54 audit dir and the trust store */
+	readDenied: string[];
+	/** trees within which an ancestor of a read-denied path is itself read-denied
+	 *  (`grep <agentDir>` reads every record through the directory); bounded to the
+	 *  gate's own trees so a home/root listing is not caught */
+	guardRoots: string[];
 	/** bash/powershell command-string signatures (substring match, obfuscatable) */
 	bashPatterns: RegExp[];
 }
@@ -1153,18 +1220,48 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 		}
 	}
 
-	// bash signatures: the config filename literal (any spelling contains it) + the trust
-	// filename + the installed-copy path variants
-	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/];
-	if (extTargets.size > 0) bashPatterns.push(pathAlternation([...extTargets], agentDir));
+	// Gate enablement surface (R5): the plugin workspace manifest/lock and any project
+	// `plugin-overrides.json` (`.omp`/`.pi`) can disable the gate for later sessions
+	// without a verdict. Writes deny; reads may pass. The plugin workspace is derived
+	// from the anchor (dot-dir sibling of `agent/`), not by counting path parents.
+	const pluginRoots = new Set<string>();
+	for (const root of [path.join(agentDir, "plugins"), path.join(path.dirname(agentDir), "plugins")]) {
+		for (const f of baseForms(root)) pluginRoots.add(f);
+	}
+	const enablementFiles = new Set<string>();
+	for (const root of pluginRoots) {
+		for (const name of ["omp-plugins.lock.json", "package.json"]) {
+			for (const f of baseForms(path.join(root, name))) {
+				exact.add(f);
+				enablementFiles.add(f);
+			}
+		}
+	}
+	const writePatterns = [/(?:^|[\\/])\.(?:omp|pi)[\\/]plugin-overrides\.json$/];
 
-	// #54 verdicts dir: gate-owned audit storage. Writes ride the normal prefixes; reads
-	// are denied separately — records carry raw model output that must not reach the agent.
+	// bash signatures: the gate filenames (any spelling contains them) + the installed-copy,
+	// enablement and #54 paths
+	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/, /plugin-overrides\.json/];
+	if (extTargets.size > 0) bashPatterns.push(pathAlternation([...extTargets], agentDir));
+	if (enablementFiles.size > 0) bashPatterns.push(pathAlternation([...enablementFiles], agentDir));
+
+	// #54 verdicts dir: gate-owned audit storage. The trust store joins it as read-denied
+	// (R6) — reading it is reconnaissance for the tampering route. Writes ride the normal
+	// prefixes; reads are denied separately.
 	const verdictsForms = baseForms(path.join(agentDir, "verdicts"));
+	const trustForms = baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"));
 	for (const f of verdictsForms) prefixes.add(f);
 	bashPatterns.push(pathAlternation(verdictsForms, agentDir));
+	const readDenied = [...verdictsForms, ...trustForms];
 
-	return { exact: [...exact], prefixes: [...prefixes], readPrefixes: verdictsForms, bashPatterns };
+	// Trees within which an ancestor directory of a read-denied path is itself read-denied
+	// (bounded: a home or root listing must not be caught).
+	const guardRoots = new Set<string>();
+	for (const root of [agentDir, path.dirname(agentDir), ...pluginRoots]) {
+		for (const f of baseForms(root)) guardRoots.add(f);
+	}
+
+	return { exact: [...exact], prefixes: [...prefixes], writePatterns, readDenied, guardRoots: [...guardRoots], bashPatterns };
 }
 
 /** Regex alternation matching any spelling of the given absolute paths in a shell command:
@@ -1194,53 +1291,94 @@ export function isProtectedWritePath(rawPath: string, cwd: string, prot: Protect
 		for (const p of prot.prefixes) {
 			if (c === p || c.startsWith(p + path.sep)) return true;
 		}
+		if (prot.writePatterns.some((re) => re.test(toRuleForm(c)))) return true;
 	}
 	return false;
 }
 
-/** Read-deny for the verdicts dir (#54): audit records contain raw fail-closed model
- *  output — untrusted text that must not flow back into agent context. Separated from
- *  write protection because it is read semantics. */
+/** Read-deny for the #54 audit dir and the trust store, ancestry-aware within the gate's
+ *  own trees: `grep <agentDir>` reads every record through the directory, so an ancestor
+ *  of a read-denied path denies too (bounded by guardRoots — a home/root listing passes). */
 export function isProtectedReadPath(rawPath: string | undefined, cwd: string, prot: ProtectedSet): boolean {
-	if (prot.readPrefixes.length === 0) return false;
+	if (prot.readDenied.length === 0) return false;
 	const target = rawPath ?? cwd; // #48: absent path → cwd is the effective target
 	for (const c of rebuiltForms(path.resolve(cwd, expandHome(target)))) {
-		for (const p of prot.readPrefixes) {
+		for (const p of prot.readDenied) {
 			if (c === p || c.startsWith(p + path.sep)) return true;
+		}
+		for (const root of prot.guardRoots) {
+			if ((c === root || c.startsWith(root + path.sep)) && prot.readDenied.some((p) => p === c || p.startsWith(c + path.sep))) return true;
 		}
 	}
 	return false;
 }
 
-/** Self-protection verdict (layer 0, before everything): touching the gate's own files
- *  → a non-exemptable deny; otherwise null, handing off to the later layers. */
-function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
-	switch (toolName) {
-		case "write":
-		case "edit":
-			if (isProtectedWritePath(String(input.path ?? ""), cwd, prot)) {
-				return { verdict: "deny", reason: `self-protection layer (ADR-0005): ${input.path} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`, selfProtect: true };
-			}
-			return null;
-		case "read":
-		case "grep":
-		case "find":
-		case "ls":
-			if (isProtectedReadPath(typeof input.path === "string" ? input.path : undefined, cwd, prot)) {
-				return { verdict: "deny", reason: `self-protection layer (#54): ${typeof input.path === "string" ? input.path : cwd} holds the gate's verdict audit records — agent reads are denied (untrusted raw model output inside); view them outside the agent`, selfProtect: true };
-			}
-			return null;
-		case "bash":
-		case "powershell": {
-			const cmd = String(input.command ?? "");
-			if (prot.bashPatterns.some((re) => re.test(cmd))) {
-				return { verdict: "deny", reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only", selfProtect: true };
-			}
-			return null;
-		}
-		default:
-			return null; // MCP/custom tools never reach the rule layer
+/** Direction the self-protection check applies to a call. The tool name only selects
+ *  whose semantics apply; the paths come from the call's inputs (R3), so an unenumerated
+ *  tool (ast_edit, an MCP filesystem tool, a later-added name) gets the write treatment. */
+function selfProtectDirection(toolName: string): "write" | "read" | "command" | "unknown" {
+	const kind = toolKind(toolName);
+	if (kind === "command") return "command";
+	if (toolName === "write" || toolName === "edit") return "write";
+	if (kind === "file") return "read";
+	return "unknown";
+}
+
+/** Every string value in a tool input, recursively — the candidates the protected-path
+ *  test runs over. A false positive on a legitimately-named path is visible and safe;
+ *  a missed write is not. */
+function inputStrings(value: unknown, out: string[] = [], depth = 0): string[] {
+	if (depth > 6 || value === null || value === undefined) return out;
+	if (typeof value === "string") out.push(value);
+	else if (Array.isArray(value)) for (const v of value) inputStrings(v, out, depth + 1);
+	else if (typeof value === "object") for (const v of Object.values(value)) inputStrings(v, out, depth + 1);
+	return out;
+}
+
+/** Directories a shell command changes into (`cd`/`pushd` targets), with ~/$HOME/
+ *  $PI_CODING_AGENT_DIR expanded. `cd <agentDir> && cat verdicts/*.jsonl` is the route
+ *  the absolute-path substring check cannot see. */
+function bashDirectoryTargets(command: string, agentDir: string): string[] {
+	const out: string[] = [];
+	const re = /(?:^|[;&|()\s])(?:cd|pushd)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|()]+))/g;
+	for (const m of command.matchAll(re)) {
+		let raw = m[1] ?? m[2] ?? m[3] ?? "";
+		if (!raw || raw === "-") continue;
+		raw = raw.replace(/^\$HOME(?=\/|$)/, os.homedir()).replace(/^\$PI_CODING_AGENT_DIR(?=\/|$)/, agentDir);
+		out.push(raw);
 	}
+	return out;
+}
+
+/** Self-protection verdict (layer 0, before everything): a call whose *inputs* touch the
+ *  gate's own files → a non-exemptable deny; otherwise null, handing off to the layers
+ *  below. Name-keyed routing selects direction; it is not the mechanism. */
+function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
+	const direction = selfProtectDirection(toolName);
+	if (direction === "command") {
+		const cmd = String(input.command ?? "");
+		const cdHit = bashDirectoryTargets(cmd, agentDirPath()).some((t) => isProtectedReadPath(t, cwd, prot));
+		if (prot.bashPatterns.some((re) => re.test(cmd)) || cdHit) {
+			return { verdict: "deny", reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only", selfProtect: true };
+		}
+		return null;
+	}
+	const strings = inputStrings(input);
+	if (direction === "read") {
+		for (const s of strings) {
+			if (isProtectedReadPath(s, cwd, prot)) {
+				return { verdict: "deny", reason: `self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`, selfProtect: true };
+			}
+		}
+		return null;
+	}
+	// write + unknown: any input string landing in the protected set is a write, fail-safe
+	for (const s of strings) {
+		if (isProtectedWritePath(s, cwd, prot)) {
+			return { verdict: "deny", reason: `self-protection layer (ADR-0005): ${s} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`, selfProtect: true };
+		}
+	}
+	return null;
 }
 
 /**
@@ -3080,7 +3218,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			// (hash mismatch) — the user is asked about the new content (ADR-0006).
 			if (projectTrustState(root, pp, store) === "undecided" && ctx.hasUI && !isSub) {
 				const choice = await ctx.ui.select(
-					`🛡️ pi-verdict: ${pp} can override these gate keys — allow, deny, denyPaths, tools, builtinDenyFloor, gateOmpDir, autoDeny, audit, notifyAllows, footer, classifierMinConfidence, classifierFallbackModel/Mode, subagentGate, subagentAskTimeoutMs. The classifier and EXPLAIN-GATE models, the free-text rules, and the toggle shortcut stay user-only. Trust this project?`,
+					`🛡️ pi-verdict: this project may add deny rules and protected paths, and remove tool exemptions (allow/tools can only narrow); it cannot widen the gate, disable the built-in floor, or change the classifier/EXPLAIN-GATE models, the free-text rules, the toggle shortcut, autoDeny or audit. Trust this project (${pp})?`,
 					[TRUST_CHOICE, NOT_NOW_CHOICE, NEVER_CHOICE],
 				);
 				if (choice === TRUST_CHOICE) {
