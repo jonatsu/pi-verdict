@@ -786,7 +786,7 @@ const S2_USER_RC = [/\.(bashrc|zshrc|profile|bash_profile|gitconfig)$/i, /cronta
 const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitmodules$/i];
 
 /** read 类工具:S0 读取即高危(deny),其余读取放行。isWrite: write/edit 走完整分级 */
-function classifyPath(toolName: string, rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
+function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
 	const abs = path.resolve(cwd, expandHome(rawPath));
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
@@ -1264,15 +1264,15 @@ function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: 
 		base = classifyBash(String(input.command ?? ""), user.builtinDenyFloor);
 	} else if (toolName === "write" || toolName === "edit") {
 		// isWrite grading nuance stays per-tool (not part of the family map)
-		base = classifyPath(toolName, String(input.path ?? ""), cwd, true, user.builtinDenyFloor);
+		base = classifyPath(String(input.path ?? ""), cwd, true, user.builtinDenyFloor);
 	} else if (toolName === "read") {
 		// read keeps classifyPath even with an empty path: resolved to cwd, it still
 		// carries the system-directory gray grading (bit-for-bit with the old switch)
-		base = classifyPath(toolName, String(input.path ?? ""), cwd, false, user.builtinDenyFloor);
+		base = classifyPath(String(input.path ?? ""), cwd, false, user.builtinDenyFloor);
 	} else if (kind === "file") { // grep/find/ls: optional path; absent → cwd is the
 		// effective target, so user rules and denyPaths compare against it (#48)
 		const p = typeof input.path === "string" ? input.path : undefined;
-		base = p ? classifyPath(toolName, p, cwd, false, user.builtinDenyFloor) : { verdict: "allow" };
+		base = p ? classifyPath(p, cwd, false, user.builtinDenyFloor) : { verdict: "allow" };
 	} else if (user.tools.includes(toolName)) {
 		base = { verdict: "allow", reason: "user tools allow rule" };
 	} else {
@@ -2379,7 +2379,9 @@ export function approveCodeMarkdown(
 		const n = texts.length;
 		const lang = langFromPath(input.path) ?? "";
 		const parts: string[] = [];
-		texts.slice(0, MAX_DIALOG_EDIT_BLOCKS).forEach((t, i) => parts.push(`edit ${i + 1} of ${n}`, fencedBlock(t, lang)));
+		texts.slice(0, MAX_DIALOG_EDIT_BLOCKS).forEach((t, i) => {
+			parts.push(`edit ${i + 1} of ${n}`, fencedBlock(t, lang));
+		});
 		if (n > MAX_DIALOG_EDIT_BLOCKS) parts.push(`… ${n - MAX_DIALOG_EDIT_BLOCKS} more edits not shown`);
 		return { header: displaySafe(`${toolName}: ${input.path} (${n} edit${n === 1 ? "" : "s"})`), markdown: parts.join("\n\n") };
 	}
@@ -2621,7 +2623,9 @@ export function buildApproveDialog(
 		const list = new Container();
 		const updateList = (): void => {
 			list.clear();
-			choices.forEach((c, i) => list.addChild(new Text(i === index ? theme.fg("accent", "→ ") + theme.fg("accent", ASK_LABELS[c]) : `  ${theme.fg("text", ASK_LABELS[c])}`, 1, 0)));
+			choices.forEach((c, i) => {
+				list.addChild(new Text(i === index ? theme.fg("accent", "→ ") + theme.fg("accent", ASK_LABELS[c]) : `  ${theme.fg("text", ASK_LABELS[c])}`, 1, 0));
+			});
 		};
 		updateList();
 		root.addChild(list);

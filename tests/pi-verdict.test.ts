@@ -90,7 +90,12 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 			},
 			input: async () => h.inputs.shift(),
 			editor: async () => h.editors.shift(),
-			setStatus: (id: string, text: string) => statusSets.push([id, text]), theme: { fg: (c: string, s: string) => (fgCalls.push([c, s]), s) },
+			setStatus: (id: string, text: string) => statusSets.push([id, text]), theme: {
+				fg: (c: string, s: string) => {
+					fgCalls.push([c, s]);
+					return s;
+				},
+			},
 			setWidget: (key: string, content: string[] | undefined) => widgetSets.push([key, content]),
 		},
 	};
@@ -297,7 +302,7 @@ describe("user rules (deny > allow > gray)", () => {
 
 	test("first run generates config template", async () => {
 		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
-		const h = session({}); // 触发 loadUserRules → 生成模板
+		session({}); // 触发 loadUserRules → 生成模板
 		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
 		expect(fs.existsSync(p)).toBe(true);
 	});
@@ -1163,7 +1168,10 @@ describe("bash path-token extraction (#32: linear tokenizer, regex as oracle)", 
 
 	test("tokenization matches the regex oracle across edge cases and deterministic fuzz input", () => {
 		let seed = 0x2f6e2b1 % 2_147_483_647;
-		const random = () => ((seed = (seed * 48271) % 2_147_483_647) / 2_147_483_647);
+		const random = () => {
+			seed = (seed * 48271) % 2_147_483_647;
+			return seed / 2_147_483_647;
+		};
 		const alphabet = [..."ab/.-~$HOMEx_ *@\t"];
 		const corpus: string[] = [
 			"", "~", "$HOME", "~/", "$HOME/", "~/.ssh/id_ed25519", "/a//b", "a//b", "//", "///x",
@@ -1278,7 +1286,6 @@ describe("agent-facing block reason form (#53)", () => {
 	const HEAD = "BLOCKED — this action did NOT run. Reason: ";
 	const TAIL = ". Report the block to the user; never claim it succeeded or completed.";
 	const SENS = path.join(TMP_AGENT, "sensitive-53");
-	const CFG = () => path.join(TMP_AGENT, "config", "pi-verdict.json");
 	fs.mkdirSync(SENS, { recursive: true });
 
 	test("classifier with empty reason → fallback detail, exact canonical form", async () => {
@@ -1995,7 +2002,7 @@ describe("completion fallback (omp runtime shape, #35)", () => {
 		let loads = 0;
 		const fn = bindCompletion({}, async () => { loads += 1; return compat; });
 		const r1 = await fn({ id: "mock/glm" } as any, { systemPrompt: "sys", messages: [{ role: "user", content: "q" }] }, { signal: "s", maxTokens: 512, temperature: 0, thinkingEnabled: false, cacheRetention: "short", sessionId: "s1" });
-		const r2 = await fn({ id: "mock/glm" } as any, { systemPrompt: "sys", messages: [] }, { maxTokens: 1024 });
+		await fn({ id: "mock/glm" } as any, { systemPrompt: "sys", messages: [] }, { maxTokens: 1024 });
 		expect(loads).toBe(1); // loader resolved once, then cached
 		expect(seen.length).toBe(2);
 		expect(seen[0].o.maxTokens).toBe(512);

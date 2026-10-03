@@ -25,6 +25,7 @@ Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff ra
 - Ported upstream cascade semantics (`0d87e99`, `1c06365`): the ask-relaxation carve-out covers a demoted `ask` as well as a demoted `deny`; enforce fail-closed rescue rows carry the applied ruling at the top-level audit verdict (source stays `fail-closed`); the `degraded` flag marks only genuine ask-degradation on the early fail-closed path.
 - Rich approve dialog: `DynamicBorder`, `keyHint` and `rawKeyHint` are no longer destructured from the host namespace (omp 18.5 does not export them there, which silently degraded every ask to a plain confirm with no code preview, no jev bar and EXPLAIN-GATE unreachable); local theme-aware substitutes keep the rich dialog working on pi and omp.
 - jev adapter: corrected the stale header/doc claim that omp has no `registerProvider`, and dropped the ignored third `registerProvider` argument.
+- Tooling: Biome (lint + formatter) pinned via `mise.toml`/`mise.lock`, with `bun run lint` / `bun run format` scripts; CI runs `biome lint` (formatting is configured but not yet enforced — a single formatting pass lands after review).
 
 ### Removed
 

@@ -47,7 +47,9 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit -p tsconfig.json",
-		"test": "bun test"
+		"test": "bun test",
+		"lint": "mise exec -- biome lint .",
+		"format": "mise exec -- biome format --write ."
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.84.0"
