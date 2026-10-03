@@ -92,3 +92,19 @@ prompt states:
   `gateOmpDir:true enables the gate` test, the shadow-mode subagent tests, the
   `ignoreTools is a working alias` test, the `TOCTOU` test, and the project-override
   allowlist test.
+
+## Amendment (2026-10-04, review pass — R7)
+
+Project overrides **narrow only**. The shallow merge could delete every user deny rule and
+protected path for sessions under a trusted root, and could switch off the floor; decision 5's
+allowlist is refined:
+
+- `deny` and `denyPaths` **union** with the user's;
+- `allow`, `tools` and `ignoreTools` **intersect** with them (a project cannot widen a pass);
+- `builtinDenyFloor` may only be set `true`;
+- `autoDeny`, `audit`, `classifierMinConfidence` and `classifierFallbackModel` leave the
+  overridable set (authority and egress channels);
+- the trust prompt states that accepting means the project may add deny rules and remove
+  exemptions, and cannot widen the gate.
+
+Pinned by the `narrows only` test in the `project trust prompt` suite.

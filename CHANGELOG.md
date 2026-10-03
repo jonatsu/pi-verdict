@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/
 
 ## [Unreleased]
 
-Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.1`.
+Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.2`.
 
 ### Added
 
 - **Self-protection layer restored** (ADR-0005): pipeline layer 0, a hard, config-exempt deny over the gate's own files — `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, the installed extension copy (when `import.meta.url` sits under a recognized install root; dev checkouts are not protected) and `<agentDir>/verdicts/`; the audit directory additionally denies reads (raw model output must not reach agent context). `builtinDenyFloor: false`, user `allow` rules and `autoDeny: false` cannot lift it. Deliberately **snapshot-free** — no in-memory tamper baseline, so concurrent sessions never revert one another's legitimate edits. Bash-side matching is substring and obfuscatable (ADR-0001 caveat).
 - `ignoreTools` accepted as a deprecated alias for `tools`, merged and deduplicated with a one-shot warning, so an unmigrated policy keeps its exemption (`#pi-verdict local patch`).
+- Reads of the project trust store are denied (R6), alongside the audit dir.
+- Host contract documented (R2, [`docs/host-contract.md`](docs/host-contract.md)): the extensions' bare host imports (`@earendil-works/pi-ai`, its `/compat` subpath, `pi-coding-agent`, `pi-tui`) are declared as optional peers and devDependencies, and omp's `legacy-pi-compat` resolution path is recorded.
 
 ### Changed
 
@@ -25,7 +27,13 @@ Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff ra
 - Ported upstream cascade semantics (`0d87e99`, `1c06365`): the ask-relaxation carve-out covers a demoted `ask` as well as a demoted `deny`; enforce fail-closed rescue rows carry the applied ruling at the top-level audit verdict (source stays `fail-closed`); the `degraded` flag marks only genuine ask-degradation on the early fail-closed path.
 - Rich approve dialog: `DynamicBorder`, `keyHint` and `rawKeyHint` are no longer destructured from the host namespace (omp 18.5 does not export them there, which silently degraded every ask to a plain confirm with no code preview, no jev bar and EXPLAIN-GATE unreachable); local theme-aware substitutes keep the rich dialog working on pi and omp.
 - jev adapter: corrected the stale header/doc claim that omp has no `registerProvider`, and dropped the ignored third `registerProvider` argument.
-- Tooling: Biome (lint + formatter) pinned via `mise.toml`/`mise.lock`, with `bun run lint` / `bun run format` scripts; CI runs `biome lint` (formatting is configured but not yet enforced — a single formatting pass lands after review).
+- Tooling: Biome (lint + formatter + import sorting) pinned via `mise.toml`/`mise.lock`, with `bun run lint` / `bun run format` scripts; formatting is applied across `extensions/` and `tests/` and CI runs `biome ci .`, so lint, format and import order are enforced by one command.
+- Self-protection keys on the call's inputs, not a switch over tool names (R3): every string value in the tool input is resolved and tested for a protected path, so `ast_edit`, an MCP filesystem tool or a later-added name gets the same hard deny; the tool name only selects write/read/command direction, and an unenumerated tool is treated as a write.
+- The read-deny is ancestry-aware and closes the bash/directory routes (R4): `grep`/`find`/`ls` over `<agentDir>` deny rather than ask, and `cd`/`pushd` targets are resolved so `cd <agentDir> && cat verdicts/*.jsonl` is caught; the honest residual (command text built at runtime) is recorded in ADR-0005.
+- The gate's enablement surface is write-protected (R5): the plugin workspace `omp-plugins.lock.json`/`package.json` and any project `.omp`/`.pi` `plugin-overrides.json` — which can disable the gate for later sessions with no verdict.
+- **BREAKING**: project overrides narrow only (R7) — `deny`/`denyPaths` union with the user's, `allow`/`tools`/`ignoreTools` intersect, `builtinDenyFloor` may only be set `true`, and `autoDeny`/`audit`/`classifierMinConfidence`/`classifierFallbackModel` leave the overridable set; the trust prompt states the project cannot widen the gate.
+- `task` removed from the starter `tools` allowlist (R8): it spawns a subagent, so the exemption was a fail-open relative to the subagent gate; `checkpoint`/`rewind` stay (in-memory session context only).
+- Unknown keys in the user config now warn (R9) instead of silently dropping a protection.
 
 ### Removed
 

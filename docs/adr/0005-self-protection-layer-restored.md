@@ -69,3 +69,23 @@ session's legitimate edit is never reverted by another that never touched the fi
 - Verified: the write-deny holds against the policy, the trust file, the install copy and
   the audit dir, and neither `builtinDenyFloor: false` nor `allow: [".*"]` lifts it
   (pinned by `self-protection layer (ADR-0005)` in `tests/pi-verdict.test.ts`).
+
+## Amendment (2026-10-04, review pass — R3/R4/R5/R6)
+
+- **R3 — keyed on the inputs, not a tool-name switch.** Every string value in the tool input is
+  resolved and tested against the protected set, before any direction logic, so `ast_edit`, an
+  MCP filesystem tool or a later-added name gets the same hard deny. The tool name now only
+  selects write/read/command direction; an unenumerated tool is treated as a **write**
+  (fail-safe: a false positive on a legitimately-named path is visible, a missed write is not).
+- **R4 — ancestry-aware reads, and the bash directory route.** A directory that contains a
+  read-denied path (`grep <agentDir>`) **denies rather than asks** — bounded to the gate's own
+  trees so a home/root listing is not caught — and the bash route resolves `cd`/`pushd` targets,
+  so `cd <agentDir> && cat verdicts/*.jsonl` is caught, not only the absolute spelling. The
+  honest residual stands: command text can be built at runtime (variables, `$()`, `printf`, a
+  hardlink), so the bash side raises the bar; the guarantee lives on the path-shaped tools.
+- **R5 — the gate's enablement surface.** The plugin workspace `omp-plugins.lock.json` and
+  `package.json` (plugin root derived from the anchor, `<dotDir>/plugins`) and any project
+  `.omp`/`.pi` `plugin-overrides.json` join the protected set: a single write there can disable
+  the gate for later sessions with no trust prompt and no verdict. Writes deny; reads pass.
+- **R6 — the trust store is read-denied** alongside the audit dir: its contents are
+  reconnaissance for the tampering route and the agent has no legitimate use for it.
