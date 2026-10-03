@@ -4,7 +4,7 @@
 
 **pi-verdict** (`@frapetti-dev/pi-verdict`) is a minimal permission-gate extension for [Pi](https://github.com/earendil-works/pi-coding-agent) and oh-my-pi (`omp`): a deterministic **rule layer** plus a **model classifier** for the gray zone. Every tool call is adjudicated to one of three states: `allow` / `ask` / `deny`. Default posture is allow-unless-intercepted ("Auto Mode"), the reverse of Claude Code.
 
-Domain terms live in `CONTEXT.md` (glossary, mostly Chinese); decisions live in `docs/adr/`; design conclusions are backed by measurements under `research/`. Read those before changing behavior, and use the glossary terms exactly (e.g. 判定管线 / adjudication pipeline, 双形匹配 / dual-form matching, 灰区 / gray zone, `denyPaths` — always plural).
+Domain terms live in `CONTEXT.md` (glossary); decisions live in `docs/adr/`; design conclusions are backed by measurements under `research/`. Read those before changing behavior, and use the glossary terms exactly (e.g. adjudication pipeline, dual-form matching, gray zone, `denyPaths` — always plural).
 
 ## Architecture & Data Flow
 

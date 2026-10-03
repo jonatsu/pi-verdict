@@ -1,42 +1,42 @@
-# 裁决缓存收益离线回放(.issue #5 决议依据)
+# Offline Replay of Verdict-Cache Benefits (.issue #5 Decision Basis)
 
-用 Langfuse 中 Claude Code 权限分类器的历史裁决,离线回放「双键 LRU(128) 裁决缓存」的命中率与反事实一致性。**结论:双键命中率仅 3.2%,收益集中于重试/轮询循环,不支持整体显著收益的判断 → 缓存暂缓引入,改以影子缓存实测 pi 自身命中率。**
+We replayed historical Claude Code permission-classifier verdicts from Langfuse offline to measure the hit rate and counterfactual consistency of a “two-key LRU (128) verdict cache.” **Conclusion: the two-key hit rate was only 3.2%, with benefits concentrated in retry/polling loops. This does not support a claim of significant overall benefit → defer the cache and measure pi’s own hit rate with a shadow cache.**
 
-## 数据与方法
+## Data and Method
 
-- 数据源:自托管 Langfuse v4 实例(地址不公开),2026-08-24 → 08-26 窗口,`type=GENERATION` + `max_tokens=64` 特征筛出 CC stage-1 分类器调用 **1,2xx 条 / 2x 会话**(计数脱敏;元数据数百 MB 拉取 + 按 id 并行拉 io,零失败)
-- 关键结构发现:CC 分类器输入的 transcript 是**追加式 text parts**(每 part 恰好一个条目),待审动作 = `</transcript>` 前最后一个 part,user 消息 = `User: ` 开头的 part —— 条目边界精确,无需启发式切分
-- 键设计(对齐 #5 定案):`commandKey` = 待审动作 part 原文;`contextKey` = hash(最近 5 条 User 条目);LRU 128 按会话回放;失败输出(`<block>` 不可解析,47 条)不入缓存(对齐 fail-closed 不入缓存)
-- 一致性反事实:历史数据中每次调用都真实发生了,命中时可对比「缓存裁决 vs 实际产出裁决」
+- Data source: self-hosted Langfuse v4 instance (address undisclosed), 2026-08-24 → 08-26 window; `type=GENERATION` + `max_tokens=64` features selected **1,2xx CC stage-1 classifier calls / 2x sessions** (counts redacted; hundreds of MB of metadata fetched + I/O fetched in parallel by ID, with zero failures)
+- Key structural finding: the CC classifier input transcript consists of **append-only text parts** (exactly one entry per part); the action under review is the last part before `</transcript>`, and a user message is a part beginning with `User: ` — entry boundaries are exact, with no need for heuristic splitting
+- Key design (matching the #5 decision): `commandKey` = the raw action part; `contextKey` = hash of the most recent 5 User entries; replay an LRU of 128 per session; failed outputs (`<block>` unparseable, 47 entries) are not cached (matching the rule that fail-closed outcomes are not cached)
+- Counterfactual consistency: every historical call actually occurred, so on a hit we can compare the “cached verdict vs. actual output verdict”
 
-## 脚本
+## Scripts
 
-- `fetch-io.ts` — 按 id 并发 10 拉取观测 io,落 NDJSON(凭证走 `LANGFUSE_*` 环境变量)
-- `simulate.ts` — 双键 LRU 会话级回放:命中率/miss 构成/一致性/节省估算/高频重复动作
-- `kinds.ts` — 灰区构成按工具族拆分(MCP vs Bash 的重复率差异)
+- `fetch-io.ts` — fetch observed I/O concurrently, 10 requests at a time, by ID; write NDJSON (credentials use `LANGFUSE_*` environment variables)
+- `simulate.ts` — session-level two-key LRU replay: hit rate/miss composition/consistency/savings estimate/high-frequency repeated actions
+- `kinds.ts` — split gray-zone composition by tool family (MCP vs. Bash repetition-rate differences)
 
-复现:`npx langfuse-cli api observations list --type GENERATION --from-start-time <t> --fields core,basic,model,usage --limit 500 --all --json` → 过滤 `max_tokens==64` 得 `cand-ids.json` → `bun fetch-io.ts` → `bun simulate.ts`
+Reproduce: `npx langfuse-cli api observations list --type GENERATION --from-start-time <t> --fields core,basic,model,usage --limit 500 --all --json` → filter for `max_tokens==64` to get `cand-ids.json` → `bun fetch-io.ts` → `bun simulate.ts`
 
-## 结果(2026-08-26 回放)
+## Results (2026-08-26 Replay)
 
-| 指标 | 数值 |
+| Metric | Value |
 |---|---|
-| 双键命中率 | **41/1265 = 3.2%** |
-| 命令键上界(忽略 context) | 8.2%(contextHash 砍掉 45% 命令级重复) |
-| miss 构成 | no-entry 1144(90%)/ context-changed 33 |
-| 命中时一致性 | 39/41 一致;**危险分歧(缓存 allow/实际 deny)0**;保守分歧 2 |
-| 命中重放分布 | allow 39 / deny 2 |
-| 节省(CC 侧口径) | 606s 延迟 + 40K input tokens / 2 天 |
+| Two-key hit rate | **41/1265 = 3.2%** |
+| Command-key upper bound (ignoring context) | 8.2% (`contextHash` removes 45% of command-level repeats) |
+| Miss composition | no-entry 1144(90%)/ context-changed 33 |
+| Consistency on hits | 39/41 consistent; **0 dangerous disagreements (cached allow/actual deny)**; 2 conservative disagreements |
+| Replay distribution on hits | allow 39 / deny 2 |
+| Savings (CC-side measure) | 606s latency + 40K input tokens / 2 days |
 
-结构性分布:
+Structural distribution:
 
-- 收益集中:**重试/轮询循环**——`Bash sleep 115; cat …` 轮询 ×18(单会话命中率 38%,贡献 44% 全部命中);MCP 验证循环(`browser_snapshot` 23 次 14 重复、`browser_navigate` 15 次 10 重复)
-- 按工具族:MCP 调用重复率 ~29%(38/130),Bash 仅 6%(CC 灰区 84% 是一次性 bash)
-- 会话级:多数 <3%,最大会话(202 次裁决)0%
+- Benefits concentrated in **retry/polling loops** — `Bash sleep 115; cat …` polling ×18 (38% hit rate in one session, contributing 44% of all hits); MCP validation loops (`browser_snapshot` 23 calls, 14 repeats; `browser_navigate` 15 calls, 10 repeats)
+- By tool family: MCP call repetition rate ~29%(38/130), while Bash is only 6% (84% of CC gray-zone calls are one-off Bash)
+- By session: most are <3%; the largest session (202 adjudications) is 0%
 
-对 pi 的外推(偏保守):pi 原型 bash 白名单更厚、**所有 MCP/自定义工具进灰区**,灰区构成更偏高重复的 MCP 类 → pi 实际命中率预期高于 3.2%,需影子缓存实测。
+Conservative extrapolation to pi: the pi prototype has a broader Bash allowlist, and **all MCP/custom tools enter the gray zone**. Its gray-zone mix is more heavily weighted toward the higher-repetition MCP class → pi’s actual hit rate is expected to exceed 3.2%; measure it with a shadow cache.
 
-## 附:ai-guard 语义核实(源码 `pi-permission-ai-guard@0.7.0`)
+## Appendix: Verifying ai-guard Semantics (source `pi-permission-ai-guard@0.7.0`)
 
-- 「可恢复档」是节流阀:连续 3 deny 仅短路**下一次**调用后清零计数;真保险丝是会话累计 20 deny 硬顶(永不复位)
-- 熔断检查在缓存查询**之前**;`contextHash` = sanitized user 消息流哈希(不含工具调用流)——双键设计依据
+- The “recoverable tier” is a throttle: 3 consecutive denies short-circuit **only the next** call, then reset the count; the actual fuse is a hard cap of 20 cumulative session denies (never resets)
+- The circuit-breaker check runs **before** the cache lookup; `contextHash` = hash of the sanitized user-message stream (excluding the tool-call stream) — the basis for the two-key design

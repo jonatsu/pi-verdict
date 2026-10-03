@@ -1,102 +1,102 @@
-# 分类器 thinking 参数黑洞:GLM 系思考模型 灰区系统性 fail-closed 的根因(#7 可选修复项实证)
+# Classifier thinking parameter black hole: root cause of systematic fail-closed in the gray area for GLM-family thinking models (empirical evidence for optional fix item #7)
 
-**结论:扩展传的 `reasoning: "minimal"` 在某内部 provider 插件的网关栈上被折叠为「不发任何思考参数」,GLM 系思考模型 按自身默认档开思考,烧尽 512 maxTokens → 输出空/截断 → fail-closed;重思考拉长时延 → 15s 超时 aborted。**
+**Conclusion: the `reasoning: "minimal"` passed by the extension is collapsed on the gateway stack of an internal provider plugin into “send no thinking parameters”; the GLM-family thinking model turns on thinking at its own default level, burns through 512 maxTokens → empty/truncated output → fail-closed; heavy thinking lengthens latency → 15s timeout aborted.**
 
-## 现象(本会话 5 次活体样本)
+## Symptoms (5 live samples in this session)
 
-| 时间(本地) | stopReason | 原始输出 | 对应 Langfuse 观测 |
+| Time (local) | stopReason | Raw output | Corresponding Langfuse observation |
 |---|---|---|---|
-| 12:53:32 | length | `""` | (id 略) |
-| 12:53:53 | length | `""` | (id 略) |
-| 12:54:16 | length | `""` | (id 略) |
-| ~14:4x | length | `"<verdict>allow"`(截断) | (另一会话样本) |
-| ~14:4x | aborted | `""` | (15s 超时) |
+| 12:53:32 | length | `""` | (id omitted) |
+| 12:53:53 | length | `""` | (id omitted) |
+| 12:54:16 | length | `""` | (id omitted) |
+| ~14:4x | length | `"<verdict>allow"`(truncated) | (another session sample) |
+| ~14:4x | aborted | `""` | (15s timeout) |
 
-## 源码层(内部 provider 插件@0.9.0,名称不公开)
+## Source layer (internal provider plugin@0.9.0, name undisclosed)
 
-插件**不碰请求体**(只做 OAuth/header 注入/成本追踪/模型清单),但给所有推理模型(正则匹配 `glm-` 等)统一附加模型元数据:
+The plugin **does not touch the request body** (only does OAuth/header injection/cost tracking/model list), but uniformly attaches model metadata to all reasoning models (regex matching `glm-`, etc.):
 
 ```js
 A = { thinkingLevelMap: { max: "max" }, compat: { forceAdaptiveThinking: true } }
 ```
 
-- `forceAdaptiveThinking` → pi 核心对 anthropic-messages 改发 adaptive thinking(预算式 thinking 字段被放弃)
-- `thinkingLevelMap` 只有 `max` 一个键:按 pi 文档,**omitted 键走默认映射**;`minimal` 在 adaptive 栈上无有效映射 → **整个思考字段被省略**
+- `forceAdaptiveThinking` → pi core changes anthropic-messages to send adaptive thinking (budget-based thinking field is abandoned)
+- `thinkingLevelMap` has only one key, `max`: according to pi docs, **omitted keys use the default mapping**; `minimal` has no valid mapping on the adaptive stack → **the entire thinking field is omitted**
 
-## 数据层(Langfuse 实证,2026-08-26)
+## Data layer (Langfuse empirical evidence, 2026-08-26)
 
-同实例同模型(GLM 系思考模型)三类调用的 `modelParameters` 对比:
+Comparison of `modelParameters` for three call types on the same instance and same model (GLM-family thinking model):
 
-| 调用类型 | max_tokens | thinking 字段 |
+| Call type | max_tokens | thinking field |
 |---|---|---|
-| **auto-mode 分类器**(3 条,时间与 fail-closed 分秒吻合,input 含 `<transcript>…<verdict>` 契约,output 空串) | 512 | **缺失(不发)** |
-| 会话级对话(扩展外) | 64000/131072 | `{"type":"adaptive"}` |
-| 显式关思考的调用 | 64/8192 | `{"type":"disabled"}` |
+| **auto-mode classifier** (3 entries, times match fail-closed to the second, input contains the `<transcript>…<verdict>` contract, output is an empty string) | 512 | **missing (not sent)** |
+| Session-level dialogue (outside the extension) | 64000/131072 | `{"type":"adaptive"}` |
+| Call with thinking explicitly disabled | 64/8192 | `{"type":"disabled"}` |
 
-→ pi **有能力**发 `thinking: disabled`,但需要正确的 level;`minimal` 在此栈上既不映射为 disabled 也不映射为 effort,直接蒸发。
+→ pi **is capable** of sending `thinking: disabled`, but needs the correct level; on this stack, `minimal` maps neither to disabled nor to effort, and simply evaporates.
 
-注:LiteLLM 上报丢弃 system 参数(分类器 system prompt 不在 Langfuse input 里,与 #4 调研一致),识别调用需靠 user message 特征(`<transcript>` + `<verdict>` 契约 + max_tokens 512 + temperature 0)。
+Note: LiteLLM reporting drops the system parameter (the classifier system prompt is not in the Langfuse input, consistent with the #4 investigation); identifying calls must rely on user message characteristics (`<transcript>` + `<verdict>` contract + max_tokens 512 + temperature 0).
 
-## 因果链
+## Causal chain
 
 ```
-扩展 reasoning:"minimal"
-  → pi 核心: adaptive 栈 + map{max} 无 minimal 映射 → 思考字段省略
-  → LiteLLM 网关原样转发(GLM 系思考模型 默认开思考)
-  → 按默认高档推理 → 512 maxTokens 全烧(空输出/截断)或超 15s(超时)
-  → fail-closed deny → 灰区系统性拦截
+Extension reasoning:"minimal"
+  → pi core: adaptive stack + map{max} has no minimal mapping → thinking field omitted
+  → LiteLLM gateway forwards as-is (GLM-family thinking model has thinking on by default)
+  → reasons at the default high level → all 512 maxTokens burned (empty output/truncation) or exceeds 15s (timeout)
+  → fail-closed deny → systematic interception of the gray area
 ```
 
-「插件覆盖思考级别」的假设:**效果上成立,机制上不成立**——不是运行时覆盖,而是插件模型元数据使 minimal 折叠为省略参数,与 GLM 默认开思考两头合谋。
+The assumption that “the plugin overrides the thinking level”: **holds in effect, but not in mechanism**—it is not a runtime override; rather, the plugin's model metadata collapses minimal into an omitted parameter, colluding with GLM's thinking-on-by-default on both ends.
 
-## 兼容性:`reasoning: "off"` 是否通用?(BigModel 官方映射表 + 实证)
+## Compatibility: is `reasoning: "off"` universal? (BigModel official mapping table + empirical evidence)
 
-BigModel 官方文档(GLM Coding Plan 模型切换指南)的 effort 处理表:
+BigModel official documentation (GLM Coding Plan model switching guide)'s effort handling table:
 
-| 工具传入值 | GLM 实际档位 | 处理 |
+| Value passed by tool | Actual GLM level | Handling |
 |---|---|---|
-| thinking.type 未传/true/enabled/adaptive | **max** | 使用默认档(本次事故根因:省略参数 = max) |
-| thinking.type 为 false/disabled/none/off | **low** | 继续请求;仍会轻量思考 |
-| reasoning_effort 为 minimal/light/low | low | 自动转换 |
-| reasoning_effort 为 medium/high | high | 自动转换 |
-| reasoning_effort 为 xhigh/max/ultra | max | 自动转换 |
-| 优先级 | 显式 Effort > thinking 开关 > 默认 max | |
+| thinking.type not passed/true/enabled/adaptive | **max** | Uses default level (root cause of this incident: omitted parameter = max) |
+| thinking.type is false/disabled/none/off | **low** | Continue request; still does light thinking |
+| reasoning_effort is minimal/light/low | low | Automatically converted |
+| reasoning_effort is medium/high | high | Automatically converted |
+| reasoning_effort is xhigh/max/ultra | max | Automatically converted |
+| Priority | Explicit Effort > thinking switch > default max | |
 
-结论:`off` 是**通用请求**而非**通用保证**:
+Conclusion: `off` is a **universal request**, not a **universal guarantee**:
 
-| 模型/栈 | `off` 的实际效果 | 证据 |
+| Model/stack | Actual effect of `off` | Evidence |
 |---|---|---|
-| 真实 Anthropic | 完全关思考 | pi 标准 anthropic 行为 |
-| GLM/BigModel(经内部网关实证) | 降到 effort low,无法归零 | 官方表 + 实测 |
-| 无思考能力的模型(reasoning:false) | 无参数可发,no-op | pi 模型元数据 |
-| 无法关思考且拒收 disabled 的模型 | 可能报错 → fail-closed | 理论风险,需兜底 |
+| Real Anthropic | Completely disables thinking | pi standard anthropic behavior |
+| GLM/BigModel (empirically verified via internal gateway) | Drops to effort low, cannot go to zero | Official table + actual testing |
+| Model without thinking capability (reasoning:false) | No parameter to send, no-op | pi model metadata |
+| Model that cannot disable thinking and rejects disabled | May error → fail-closed | Theoretical risk, needs fallback |
 
-关键实证:同网关 GLM 系思考模型 上,CC 分类器以 `thinking:{disabled}` + **max_tokens 64** 运行,输出 `<block>no` 成功(当日数十条,偶发空输出 ~3.5%)——「effort low 轻思考 + 小预算」在真实流量中成立,512 余量更宽畅。
+Key empirical evidence: on the same gateway, on a GLM-family thinking model, the CC classifier runs with `thinking:{disabled}` + **max_tokens 64**, and successfully outputs `<block>no` (dozens of entries that day, occasional empty output ~3.5%)—“effort low light thinking + small budget” holds in real traffic, and a 512 margin is even more ample.
 
-另一关键推论:除 `off` 外的低档(`minimal`/`low`)在本 provider 栈上同样面临「map 无键 → 省略参数 → GLM max」黑洞;`off` 是唯一有专用线上形态(`thinking:{type:disabled}`)且已在本网关验证送达的档位。
+Another key inference: low levels other than `off` (`minimal`/`low`) also face the “map has no key → omitted parameter → GLM max” black hole on this provider stack; `off` is the only level that has a dedicated wire form (`thinking:{type:disabled}`) and has been verified as delivered on this gateway.
 
-## 修复建议(兼容性修正版)
+## Fix recommendations (compatibility-corrected version)
 
-1. **扩展侧主修**:`reasoning: "off"` 替代 `"minimal"`——唯一有专用线上形态的档位;GLM 上降为 effort low 轻思考(64 tokens 实证够用,512 余量充足)。
-2. **防御兜底(必须保留,非可选)**:契约失败/空输出时重试一次并提高 maxTokens(如 1024)——覆盖「无视 disabled 的模型」与「无法关思考拒收参数的模型」两类长尾,这是模型无关的真正兼容层。
-3. **maxTokens 维持 512**:CC 在 64 下已验证 low 档可行,512 对其他模型的轻思考留了余量;重试时提升到 1024。
-4. **上游(内部 provider 插件)**:`thinkingLevelMap` 宜补全低档映射(minimal/low → 低档或 disabled),消除「省略参数 = GLM max」陷阱;至少 README 标注。
-5. **上游 pi 核心**:per-call reasoning 在 adaptive 栈上折叠为省略参数,对「默认档=max」的模型不安全,值得提报讨论。
+1. **Primary fix on the extension side**: use `reasoning: "off"` instead of `"minimal"`—the only level with a dedicated wire form; on GLM it drops to effort low light thinking (64 tokens empirically suffices, 512 margin is ample).
+2. **Defensive fallback (must keep, not optional)**: on contract failure/empty output, retry once and raise maxTokens (e.g., 1024)—covering the two long-tail cases of “models that ignore disabled” and “models that cannot disable thinking and reject parameters”; this is the truly model-agnostic compatibility layer.
+3. **Keep maxTokens at 512**: CC has already verified low level works at 64; 512 leaves margin for light thinking in other models; raise to 1024 on retry.
+4. **Upstream (internal provider plugin)**: `thinkingLevelMap` should complete the low-level mappings (minimal/low → low level or disabled), eliminating the “omitted parameter = GLM max” trap; at minimum document it in the README.
+5. **Upstream pi core**: per-call reasoning collapsing to an omitted parameter on the adaptive stack is unsafe for models whose “default level = max”, and is worth reporting for discussion.
 
-## 终版根因修正(第三层,决定性):`reasoning` 从未离开过扩展
+## Final root cause correction (third layer, decisive): `reasoning` never left the extension
 
-前两轮分析(thinkingLevelMap 折叠、off 映射)是**错误层级**的推理——那是对 simple 层(`streamSimple`)行为的正确刻画,但扩展的调用根本没走到那里:
+The previous two rounds of analysis (thinkingLevelMap collapse, off mapping) were reasoning at the **wrong level**—they correctly characterized the behavior of the simple layer (`streamSimple`), but the extension's call never reaches there:
 
-1. 扩展调用 `ctx.modelRegistry.complete()` —— **API 层**方法,选项类型 `ModelsApiStreamOptions<TApi> = AnthropicOptions & ...`;
-2. `AnthropicOptions` 的思考字段是 `thinkingEnabled/thinkingBudgetTokens/effort/thinkingDisplay`,**没有 `reasoning`**(后者属于 `SimpleStreamOptions`,由 `streamSimple` 映射;扩展侧 `ModelRegistry` 不暴露 `completeSimple`);
-3. TS 为何放行:扩展持有宽类型 `Model<Api>`,条件类型 `ApiStreamOptions<Api>` 落入兜底分支 `StreamOptions & Record<string, unknown>`,**索引签名吞掉了未知属性检查**;
-4. 运行时序化:`if (options?.reasoning)` 恒 false,`thinkingEnabled === false` 也未设置 → **任何思考参数都不发** → GLM 默认 max 档(与 BigModel 表第一行吻合)。
+1. The extension calls `ctx.modelRegistry.complete()` — an **API-layer** method, with option type `ModelsApiStreamOptions<TApi> = AnthropicOptions & ...`;
+2. The thinking fields of `AnthropicOptions` are `thinkingEnabled/thinkingBudgetTokens/effort/thinkingDisplay`, **there is no `reasoning`** (the latter belongs to `SimpleStreamOptions`, mapped by `streamSimple`; on the extension side `ModelRegistry` does not expose `completeSimple`);
+3. Why TS allows it: the extension holds the broad type `Model<Api>`, and the conditional type `ApiStreamOptions<Api>` falls into the fallback branch `StreamOptions & Record<string, unknown>`, **the index signature swallows unknown-property checks**;
+4. Runtime sequencing: `if (options?.reasoning)` is always false, and `thinkingEnabled === false` is also not set → **no thinking parameters are sent** → GLM default max level (consistent with the first row of the BigModel table).
 
-**中途实验的教训**:`reasoning: "off"` 修复部署后 Langfuse 实测仍无 thinking 字段——正是这个实验暴露了真正根因。(另注:simple 层若真收到字符串 "off",`!options?.reasoning` 为 false → forceAdaptive 分支 → `mapThinkingLevelToEffort` switch default → **effort "high"**,字符串 "off" 在该层也≠关思考;等价关思考的是省略 reasoning。)
+**Lesson from the mid-course experiment**: after deploying the `reasoning: "off"` fix, Langfuse still measured no thinking field—precisely this experiment exposed the true root cause. (Also note: if the simple layer actually receives the string "off", `!options?.reasoning` is false → forceAdaptive branch → `mapThinkingLevelToEffort` switch default → **effort "high"**; the string "off" at that layer also does not equal disabling thinking; what equivalently disables thinking is omitting reasoning.)
 
-**终版修复**:`thinkingEnabled: false`(anthropic-messages 原生字段,序列化条件 `thinkingLevelMap?.off !== null` 对内部插件的 `{max:"max"}` map 成立)→ 实测送达 `thinking:{"type":"disabled"}`;其他 API 为无害多余属性,由防御重试(512→1024)兜底。
+**Final fix**: `thinkingEnabled: false` (native field for anthropic-messages; the serialization condition `thinkingLevelMap?.off !== null` holds for the internal plugin's `{max:"max"}` map) → empirically delivered `thinking:{"type":"disabled"}`; for other APIs it is a harmless extra property, with defensive retry (512→1024) as fallback.
 
-## 复现/验证方法
+## Reproduction/verification method
 
-- 查询:`GET /api/public/v2/observations?type=GENERATION&fromStartTime=…&fields=core,model,io`,按 `modelParameters.max_tokens==512 && temperature==0` + input 含 `<verdict>` 契约识别分类器调用
-- 判据:分类器调用的 modelParameters 缺 thinking 字段;output content 空串;对照 64000/131072(adaptive)与 64/8192(disabled)
+- Query: `GET /api/public/v2/observations?type=GENERATION&fromStartTime=…&fields=core,model,io`, identify classifier calls by `modelParameters.max_tokens==512 && temperature==0` + input containing the `<verdict>` contract
+- Criteria: the classifier call's modelParameters lacks the thinking field; output content is an empty string; compare against 64000/131072 (adaptive) and 64/8192 (disabled)

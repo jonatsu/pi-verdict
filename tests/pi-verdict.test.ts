@@ -1,9 +1,9 @@
 /**
- * pi-verdict 扩展桩测试:内置 floor / 用户规则优先级 / 分类器重试 / 命令语义
- * 全部离线:mock ExtensionAPI/ExtensionContext,无网络、无真实模型。
- * 用户规则经 PI_CODING_AGENT_DIR 指向临时目录的真实 JSON 配置驱动(非注入 mock)。
- * 会话装配统一走 session(cfg, opts)(配置 → harness → 装载,顺序约束内化);
- * 临时目录夹具走 withTempDir(建 → fn → 清理)。
+ * pi-verdict extension stub tests: built-in floor / user-rule priority / classifier retries / command semantics
+ * Entirely offline: mock ExtensionAPI/ExtensionContext, no network or real model.
+ * User rules are driven by a real JSON config in a temporary directory selected by PI_CODING_AGENT_DIR (not an injected mock).
+ * Session setup consistently uses session(cfg, opts) (config → harness → install, ordering constraint internalized);
+ * temporary-directory fixtures use withTempDir (create → fn → cleanup).
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -29,7 +29,7 @@ import autoMode, {
 	setTmpdirBasesForTests,
 } from "../extensions/pi-verdict.ts";
 
-// ── 桩设施 ──────────────────────────────────────────────
+// ── Stub utilities ───────────────────────────────────────
 
 const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-verdict-test-"));
 let config: { allow: string[]; deny: string[] } = { allow: [], deny: [] };
@@ -256,7 +256,7 @@ function setConfig(
 	// tools / ignoreTools (the deprecated alias): unknown[] lets negative tests mix in non-string entries
 	if (cfg.tools !== undefined) raw.tools = cfg.tools;
 	if (cfg.ignoreTools !== undefined) raw.ignoreTools = cfg.ignoreTools;
-	// 非法正则测试:把 invalid 条目直接混入 allow 数组
+	// Invalid-regex test: insert invalid entries directly into the allow array
 	if (invalid) raw.allow = [...config.allow, ...invalid];
 	fs.writeFileSync(p, JSON.stringify(raw));
 }
@@ -264,9 +264,9 @@ function setConfig(
 const userMsg = (h: Harness, t: string) => h.branch.push({ type: "message", message: { role: "user", content: t } });
 const toolCall = (h: Harness, toolName: string, input: any) => h.handlers.tool_call({ toolName, input }, h.ctx);
 
-/** 开一个会话:按 cfg 写真实配置 → 建 harness → 装载扩展。顺序约束(配置先于装载)
- *  内化于此;opts 统一收纳全部变体:cwd/ompRegistry 给 makeHarness,
- *  invalid/flag/debug/modelFlag/compatLoader 分别传给 setConfig 与 install。 */
+/** Start a session: write real config from cfg → build harness → install extension. The ordering constraint (config before install)
+ *  is internalized here; opts consolidates all variants: cwd/ompRegistry go to makeHarness,
+ *  and invalid/flag/debug/modelFlag/compatLoader go to setConfig and install. */
 function session(
 	cfg: Parameters<typeof setConfig>[0],
 	opts: {
@@ -285,8 +285,8 @@ function session(
 	return h;
 }
 
-/** 临时目录夹具:建 → fn(dir) → 无条件清理;base 默认 os.tmpdir(),家目录夹具传 os.homedir()。
- *  fn 可为 async:清理等待其完成后执行。 */
+/** Temporary-directory fixture: create → fn(dir) → unconditional cleanup; base defaults to os.tmpdir(), and home-directory fixtures pass os.homedir().
+ *  fn may be async: cleanup runs after it completes. */
 async function withTempDir(prefix: string, fn: (dir: string) => void | Promise<void>, base: string = os.tmpdir()): Promise<void> {
 	const dir = fs.mkdtempSync(path.join(base, prefix));
 	try {
@@ -296,12 +296,12 @@ async function withTempDir(prefix: string, fn: (dir: string) => void | Promise<v
 	}
 }
 
-// ── 1. 内置 deny floor(不可覆盖)+ 无内置白名单 ─────────
+// ── 1. Built-in deny floor (not overridable) + no built-in allowlist ─────────
 
 describe("built-in deny floor", () => {
 	test("danger regex (rm -rf) → deny, zero model calls", async () => {
 		const h = session({});
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }); // 拼接防测试文件被危险正则误拦
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }); // Assemble to prevent the dangerous regex from accidentally blocking the test file
 		expect(r?.block).toBe(true);
 		expect(r.reason).toContain("rm-recursive");
 		expect(h.calls.length).toBe(0);
@@ -317,7 +317,7 @@ describe("built-in deny floor", () => {
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		const r = await toolCall(h, "bash", { command: "ls -la" });
 		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(1); // 无白名单:进分类器
+		expect(h.calls.length).toBe(1); // No allowlist: goes to classifier
 	});
 	test("write to S0 secret path → deny", async () => {
 		const h = session({});
@@ -332,7 +332,7 @@ describe("built-in deny floor", () => {
 	});
 });
 
-// ── 2. 用户规则(黑名单优先于白名单) ─────────────────────
+// ── 2. User rules (denylist takes precedence over allowlist) ────────────────
 
 describe("user rules (deny > allow > gray)", () => {
 	test("user allow matches full command string → zero-latency allow", async () => {
@@ -363,7 +363,7 @@ describe("user rules (deny > allow > gray)", () => {
 		const h = session({ allow: ["^ls\\b"] }, ["[unclosed"]);
 		const r = await toolCall(h, "bash", { command: "ls -la" });
 		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(0); // 合法条目仍生效
+		expect(h.calls.length).toBe(0); // Valid entry still applies
 	});
 	// #25 (F6): a malformed config must not silently disarm the user's rules
 	test("malformed config JSON warns at session_start; floor unaffected", async () => {
@@ -400,27 +400,27 @@ describe("user rules (deny > allow > gray)", () => {
 	test("builtinDenyFloor: false disables the whole built-in deny floor (risk accepted by user)", async () => {
 		const h = session({ builtinDenyFloor: false });
 		h.responses = [{ text: "<verdict>deny</verdict> floor off" }];
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }); // 危险正则被关
-		expect(h.calls.length).toBe(1); // 交分类器
-		expect(r?.block).toBe(true); // 分类器裁决仍生效
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }); // Dangerous regex is disabled
+		expect(h.calls.length).toBe(1); // Send to classifier
+		expect(r?.block).toBe(true); // Classifier verdict still applies
 	});
 	test("builtinDenyFloor: false downgrades S0 path deny to gray (never to allow)", async () => {
 		const h = session({ builtinDenyFloor: false });
 		h.responses = [{ text: "<verdict>deny</verdict> floor off" }];
 		const r = await toolCall(h, "write", { path: "~/.ssh/authorized_keys", content: "x" });
-		expect(h.calls.length).toBe(1); // gray 而非 deny → 分类器
+		expect(h.calls.length).toBe(1); // Gray, not deny → classifier
 		expect(r?.block).toBe(true);
 	});
 	test("builtinDenyFloor default true keeps the floor", async () => {
 		const h = session({ allow: ["^rm"] });
 		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
-		expect(r?.block).toBe(true); // 默认开:floor 仍优先于用户 allow
+		expect(r?.block).toBe(true); // On by default: floor still takes precedence over user allow
 		expect(h.calls.length).toBe(0);
 	});
 
 	test("first run generates config template", async () => {
 		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
-		session({}); // 触发 loadUserRules → 生成模板
+		session({}); // Trigger loadUserRules → generate template
 		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
 		expect(fs.existsSync(p)).toBe(true);
 	});
@@ -443,7 +443,7 @@ describe("user rules (deny > allow > gray)", () => {
 	});
 });
 
-// ── 3. 安全审计回归(8/8 载荷,#12) ─────────────────────
+// ── 3. Security-audit regression (8/8 payloads, #12) ───────────────────────
 
 describe("security audit regression (all payloads must NOT be rule-allowed)", () => {
 	const payloads: Array<[string, string, any]> = [
@@ -460,8 +460,8 @@ describe("security audit regression (all payloads must NOT be rule-allowed)", ()
 			const h = session({});
 			h.responses = [{ text: "<verdict>deny</verdict> audit payload" }];
 			const r = await toolCall(h, tool, input);
-			expect(h.calls.length).toBe(1); // 未被规则层短路
-			expect(r?.block).toBe(true); // 分类器裁决生效
+			expect(h.calls.length).toBe(1); // Not short-circuited by the rule layer
+			expect(r?.block).toBe(true); // Classifier verdict applies
 		});
 	}
 	test("V8 read ~/.npmrc → S0 deny (list expanded)", async () => {
@@ -707,7 +707,7 @@ describe("transcript line injection (#22)", () => {
 	});
 });
 
-// ── 3.5 分类器模型解析(flag > env > config > 自省) ─────
+// ── 3.5 Classifier model resolution (flag > env > config > session-model fallback) ─────
 
 describe("classifier model resolution", () => {
 	test("config classifierModel is used when flag/env absent", async () => {
@@ -722,9 +722,9 @@ describe("classifier model resolution", () => {
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }, { text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
 		await toolCall(h, "bash", { command: "cargo build" });
-		expect(h.calls[0].model).toBe("mock/glm"); // 回退自省
+		expect(h.calls[0].model).toBe("mock/glm"); // Fall back to the session model
 		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("nope/missing"));
-		expect(warns.length).toBe(1); // 仅一次
+		expect(warns.length).toBe(1); // Only once
 	});
 	test("pi-native thinking suffix: zai/flash:low → effort low (adaptive)", async () => {
 		const h = session({ classifierModel: "zai/flash:low" });
@@ -740,18 +740,18 @@ describe("classifier model resolution", () => {
 		h.findMap = { "zai/flash": { id: "glm-4-flash" } };
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }, { text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
-		expect(h.calls[0].effort).toBe("low"); // minimal → low(anthropic effort 无 minimal)
+		expect(h.calls[0].effort).toBe("low"); // minimal → low (Anthropic effort has no minimal)
 		setConfig({ classifierModel: "zai/flash" });
-		h.handlers.session_start?.({}, h.ctx); // 重载配置
+		h.handlers.session_start?.({}, h.ctx); // Reload config
 		h.findMap = { "zai/flash": { id: "glm-4-flash" } };
 		await toolCall(h, "bash", { command: "cargo build" });
-		expect(h.calls[1].thinkingEnabled).toBe(false); // 无后缀 = 显式关思考
+		expect(h.calls[1].thinkingEnabled).toBe(false); // No suffix = explicitly disable thinking
 		expect(h.calls[1].effort).toBeUndefined();
 	});
 	test("invalid suffix warned once and ignored", async () => {
 		const h = session({ classifierModel: "zai/flash:ultra" });
-		h.findMap = {}; // 真实注册表找不到 flash:ultra 这样的 id
-		// 后缀 ultra 非法 → 忽略后缀,specPart = zai/flash:ultra 注册表查无 → 回退自省 + 警告
+		h.findMap = {}; // The real registry cannot find an ID such as flash:ultra
+		// Invalid suffix ultra → ignore suffix; specPart = zai/flash:ultra is unregistered → fall back to session model + warning
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
 		expect(h.calls[0].model).toBe("mock/glm");
@@ -767,7 +767,7 @@ describe("classifier model resolution", () => {
 	});
 });
 
-// ── 4. 分类器(重试矩阵 + 参数形态) ─────────────────────
+// ── 4. Classifier (retry matrix + parameter shapes) ────────────────────────
 
 describe("classifier", () => {
 	test("success on first try: single call, thinkingEnabled=false, maxTokens=512", async () => {
@@ -815,7 +815,7 @@ describe("classifier", () => {
 	});
 });
 
-// ── 6. /automode 命令语义(显式 on/off + 只读状态) ───────
+// ── 6. /automode command semantics (explicit on/off + read-only status) ───────
 
 describe("/automode command", () => {
 	test("bare call is read-only status with usage", async () => {
@@ -824,20 +824,20 @@ describe("/automode command", () => {
 		expect(h.notifies[0][0]).toContain("Auto Mode: on");
 		expect(h.notifies[0][0]).toContain("Usage");
 	});
-	test("on/off are idempotent, annotated (未变化) when same", async () => {
+	test("on/off are idempotent, annotated (unchanged) when same", async () => {
 		const h = session({});
 		await h.commands.automode.handler("on", h.ctx);
 		expect(h.notifies.at(-1)![0]).toContain("enabled (unchanged)");
 		await h.commands.automode.handler("off", h.ctx);
 		expect(h.notifies.at(-1)![0]).toContain("disabled");
 		await h.commands.automode.handler("OFF", h.ctx);
-		expect(h.notifies.at(-1)![0]).toContain("disabled (unchanged)"); // 大小写归一化
+		expect(h.notifies.at(-1)![0]).toContain("disabled (unchanged)"); // Case normalized
 	});
 	test("off actually disables gating", async () => {
 		const h = session({});
 		await h.commands.automode.handler("off", h.ctx);
 		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
-		expect(r).toBeUndefined(); // 关闭后危险命令也不再拦
+		expect(r).toBeUndefined(); // After turning it off, even dangerous commands are no longer blocked
 	});
 	test("unknown arg → warning with usage", async () => {
 		const h = session({});
@@ -847,7 +847,7 @@ describe("/automode command", () => {
 	});
 });
 
-// ── 6.5 toggle 快捷键(#15:默认 ctrl+shift+a,可配可禁用)──
+// ── 6.5 Toggle shortcut (#15: default ctrl+shift+a, configurable and disableable) ──
 
 describe("toggle shortcut", () => {
 	test("default installs ctrl+shift+a with description", () => {
@@ -858,7 +858,7 @@ describe("toggle shortcut", () => {
 	test("custom key from config wins; default not registered", () => {
 		const h = session({ toggleShortcut: "ctrl+shift+x" });
 		expect(Object.keys(h.shortcuts)).toEqual(["ctrl+shift+x"]);
-		const h2 = session({ toggleShortcut: "f9" }); // 裸功能键合法(不与文本输入冲突)
+		const h2 = session({ toggleShortcut: "f9" }); // Bare function key is valid (does not conflict with text input)
 		expect(Object.keys(h2.shortcuts)).toEqual(["f9"]);
 	});
 	test("null / empty string disable registration entirely", () => {
@@ -872,19 +872,19 @@ describe("toggle shortcut", () => {
 		expect(Object.keys(h.shortcuts)).toEqual([]);
 		await h.handlers.session_start({}, h.ctx);
 		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("toggleShortcut"));
-		expect(warns.length).toBe(1); // 对齐 classifierModel:一次,不刷屏
-		const h2 = session({ toggleShortcut: "a" }); // 裸可打印字符:会劫持文本输入,拒绝
+		expect(warns.length).toBe(1); // As with classifierModel: once, no spam
+		const h2 = session({ toggleShortcut: "a" }); // Bare printable character would hijack text input; reject
 		expect(Object.keys(h2.shortcuts)).toEqual([]);
 	});
 	test("handler flips master switch silently — footer refresh, no notify, gating off", async () => {
 		const h = session({});
-		expect((await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }))?.block).toBe(true); // 开:floor 拦
+		expect((await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }))?.block).toBe(true); // On: floor blocks
 		const notifiesBefore = h.notifies.length;
 		h.shortcuts["ctrl+shift+a"].handler(h.ctx);
-		expect(h.notifies.length).toBe(notifiesBefore); // 静默:无新增 notify
-		expect(h.statusSets.at(-1)![0]).toBe("auto-mode"); // footer 刷新
-		expect(await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined(); // 关:放行
-		h.shortcuts["ctrl+shift+a"].handler(h.ctx); // 再按:恢复开启
+		expect(h.notifies.length).toBe(notifiesBefore); // Silent: no additional notification
+		expect(h.statusSets.at(-1)![0]).toBe("auto-mode"); // Refresh footer
+		expect(await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined(); // Off: allow
+		h.shortcuts["ctrl+shift+a"].handler(h.ctx); // Press again: restore enabled state
 		expect((await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }))?.block).toBe(true);
 	});
 	test("footer status colors: on → success, off → warning", async () => {
@@ -907,11 +907,11 @@ describe("toggle shortcut", () => {
 	test("config template contains toggleShortcut with default key", () => {
 		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
 		const h = makeHarness();
-		h.install(); // 无既有配置 → loadUserRules 生成模板
+		h.install(); // No existing config → loadUserRules generates the template
 		const raw = fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8");
 		expect(raw).toContain("toggleShortcut");
 		expect(raw).toContain("ctrl+shift+a");
-		expect(raw).toContain("toggleShortcut sets the master-switch toggle key"); // _hint 说明文案
+		expect(raw).toContain("toggleShortcut sets the master-switch toggle key"); // _hint explanatory text
 	});
 });
 
@@ -1508,7 +1508,7 @@ describe("macOS tmpdir S1 exemption (#83)", () => {
 	});
 });
 
-// ── 10.5 agent-facing block reason(#53:每个 block 站点的 canonical 形态)──
+// ── 10.5 Agent-facing block reason (#53: canonical form at each block site) ──
 
 describe("agent-facing block reason form (#53)", () => {
 	const HEAD = "BLOCKED — this action did NOT run. Reason: ";
@@ -2234,7 +2234,7 @@ describe("notifyAllows (#60)", () => {
 	});
 });
 
-// ── 11. omp 宿主支持(#35:completion 降级 / agentDir 自锚定 / omp 形态保护)──
+// ── 11. omp host support (#35: completion fallback / agentDir self-anchoring / omp shape protection) ──
 
 describe("completion fallback (omp runtime shape, #35)", () => {
 	test("bindCompletion: registry with complete binds it directly, loader untouched", async () => {
@@ -2518,9 +2518,9 @@ describe("omp host forms: S0 floor (#35)", () => {
 	});
 });
 
-// ── 20. 判定管线 interface 级(adjudicate):source-driven presentation / ask degradation ──
+// ── 20. Adjudication pipeline interface-level (adjudicate): source-driven presentation / ask degradation ──
 
-/** 构造直接驱动 adjudicate 的最小环境:fake complete + 空 branch 的 host */
+/** Construct a minimal environment to drive adjudicate directly: fake complete + host with an empty branch */
 function adjudicateEnv(overrides: { text?: string; hasUI?: boolean; model?: any; failModel?: boolean; fallback?: any } = {}) {
 	return {
 		cwd: "/proj",
@@ -2537,7 +2537,7 @@ function adjudicateEnv(overrides: { text?: string; hasUI?: boolean; model?: any;
 }
 
 describe("adjudicate pipeline (interface level)", () => {
-	const secret = "/proj/secret-project"; // 虚构路径:避开 /var 等 S1 系统目录 floor,且落在会话 cwd 内
+	const secret = "/proj/secret-project"; // Fictitious path: avoids S1 system directories such as /var and stays within the session cwd
 
 	test("ask degradation is unified: protected-path ask degrades to deny without UI", async () => {
 		setConfig({ denyPaths: [secret] });
@@ -2635,7 +2635,7 @@ describe("adjudicate pipeline (interface level)", () => {
 
 	test("denyPaths zero-leak regression: no protected-path plaintext in any reason or notification (ADR-0002 story 11)", async () => {
 		const protectedPath = path.join(secret, "notes.md");
-		// Verdict 面:ask 与降级 deny 的 reason 都不得含路径明文
+		// Verdict surface: neither ask nor degraded-deny reasons may contain plaintext paths
 		setConfig({ denyPaths: [secret] });
 		const state = new SessionState();
 		const vAsk = await adjudicate(state, { toolName: "write", input: { path: protectedPath, content: "x" } }, adjudicateEnv());
@@ -2648,7 +2648,7 @@ describe("adjudicate pipeline (interface level)", () => {
 			adjudicateEnv({ hasUI: false }),
 		);
 		expect(vDegraded.reason).not.toContain("secret-project");
-		// Handler 面:非交互降级的 block reason 与全部 notify 文案都不得含路径明文
+		// Handler surface: neither non-interactive degraded block reasons nor any notification text may contain plaintext paths
 		const h = session({ denyPaths: [secret] });
 		h.ctx.hasUI = false;
 		const r = await toolCall(h, "write", { path: protectedPath, content: "x" });

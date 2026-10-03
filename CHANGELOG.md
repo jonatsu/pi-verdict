@@ -235,105 +235,105 @@ Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff ra
 
 ### Changed
 
-- 定位语统一为「极简权限门禁」——README 双语标语、AGENTS.md 与 npm `description` 同步(随本发布生效于 npm registry 与 pi.dev 包目录);「几百行极简代码」要点在特性列表置顶;用户规则小节标题改用完整路径 `~/.pi/agent/config/pi-verdict.json`;「为什么没有内置白名单」段首加粗。纯文档与包元数据表述优化,无代码变更
+- Standardized the positioning statement as “minimal permission gate” — synchronized the bilingual README tagline, AGENTS.md, and npm `description` (effective with this release in the npm registry and pi.dev package directory); moved the “hundreds of lines of minimal code” point to the top of the feature list; changed the user-rules subsection heading to the full path `~/.pi/agent/config/pi-verdict.json`; bolded the opening of “Why No Built-In Allowlist.” Documentation and package-metadata wording only; no code changes
 
 ## [0.4.0] - 2026-08-31
 
 ### Added
 
-- 主开关 toggle 快捷键(#15):默认 `ctrl+shift+a` 一键切换 Auto Mode 开/关,静默反馈(footer 始终显示为唯一确认,不弹通知)。`config/pi-verdict.json` 新增 `toggleShortcut` 字段——任意 pi 键组合可重绑,`null`/空串禁用,非法组合会话启动时一次性警告并跳过注册(对齐 `classifierModel` 的降级模式),新会话生效。与 `/automode on|off` 语义等价:运行中生效、无确认弹窗、不持久化写回(扩展运行时从不写自己的受保护配置,ADR-0001「仅用户手编」边界不变);`/automode` 状态输出 Usage 行同步显示当前键位
+- Master-switch toggle shortcut (#15): defaults to `ctrl+shift+a` to switch Auto Mode on/off with one keystroke and silent feedback (the footer always shows the state as the sole confirmation; no notification). Added the `toggleShortcut` field to `config/pi-verdict.json` — any pi key combination can be rebound; `null`/an empty string disables it; invalid combinations produce a one-time warning at session startup and skip registration (matching `classifierModel` fallback behavior); effective in new sessions. Semantically equivalent to `/automode on|off`: takes effect at runtime, with no confirmation dialog and no persistent write-back (the extension runtime never writes its own protected config, so ADR-0001’s “user-edited only” boundary is unchanged); the `/automode` status output’s Usage line also shows the current key binding
 
 ## [0.3.1] - 2026-08-29
 
 ### Changed
 
-- 文档(en/zh README、本文件 0.2.0 条目):移除「第三方安全审计」表述,统一为事实性描述——规则层绕过测试 8 项发现、每项可复现载荷、0.2.0 架构性移除内置白名单
+- Documentation (en/zh READMEs, this file’s 0.2.0 entry): removed the “third-party security audit” claim and replaced it with factual descriptions — 8 findings in rule-layer bypass tests, a reproducible payload for each, and the architectural removal of the built-in allowlist in 0.2.0
 
 ## [0.3.0] - 2026-08-27
 
 ### Added
 
-- 自保护层(self-protection layer,ADR-0001):门禁自身文件不可被 agent 侧修改——`config/pi-verdict.json` + 扩展安装副本(运行时 `import.meta.url` 自锚定,覆盖单文件/npm 目录两种安装形态,dev checkout 除外)。write/edit 走 realpath 归一化精确比对(防 symlink 旁路);bash/powershell 命令串覆盖字面量/`~`/`$HOME`/`$PI_CODING_AGENT_DIR` 拼写;读放行;不可经任何配置豁免(`builtinDenyFloor: false` 关不掉,用户 allow 越不过)。`~/.pi/agent/` 全域(mcp.json、skills 等)显式不在保护范围——需要该层保护的用户应经用户规则 deny 正则自表达(ADR-0001 否决项)
-- 变更检测(ADR-0001):受保护文件 `session_start` 全文快照,每次裁决前复核,处置按文件差分——扩展副本被改或无 UI → 从内存快照自动还原 + 本会话 fail-closed;交互会话中仅配置文件被改 → `ctx.ui.select` 双选处置,选项文案即动作(Accept = 重建基线会话照常,Decline = 回滚 + fail-closed;关闭对话框取安全侧同 Decline);会话间隙合法手工编辑照旧新会话生效
+- Self-protection layer (self-protection layer, ADR-0001): prevents agent-side changes to the gate’s own files — `config/pi-verdict.json` + installed extension copies (runtime self-anchoring through `import.meta.url`, covering both single-file and npm-directory install layouts, excluding dev checkouts). `write`/`edit` use realpath normalization and exact comparison (preventing symlink bypass); bash/powershell command strings cover literal/`~`/`$HOME`/`$PI_CODING_AGENT_DIR` spellings; reads are allowed; no configuration can exempt it (`builtinDenyFloor: false` cannot turn it off, and user `allow` cannot override it). The entire `~/.pi/agent/` tree (mcp.json, skills, etc.) is explicitly outside the protected scope — users who need that layer of protection should express it themselves with user-rule `deny` regexes (an ADR-0001 rejected option)
+- Change detection (ADR-0001): take full snapshots of protected files at `session_start` and recheck before every adjudication; handle changes per file — if the extension copy changes or no UI is available, automatically restore it from the in-memory snapshot + fail-closed for the session; if only the config changes during an interactive session, use `ctx.ui.select` for a two-option disposition, with the option text specifying the action (Accept = rebuild the baseline and continue the session; Decline = roll back + fail-closed; closing the dialog takes the safe option, same as Decline); legitimate manual edits between sessions still take effect in the next session
 
 ### Changed
 
-- `builtinDenyFloor: false` 语义收窄:只关闭内置危险正则与路径敏感度拦截,不再能间接关闭自保护层;配置模板 `_hint` 同步说明
-- README(en/zh):管线图新增第 0 层;新增「自保护」小节;限制清单补充 bash 子串正则可被混淆、跨会话基线为二期、dev checkout 不受保护的诚实声明;测试计数 42 → 62
-- 文档清理:移除根部过时研究笔记(research-pi-auto-mode.md、research.md)
+- Narrowed the semantics of `builtinDenyFloor: false`: it now disables only the built-in danger regexes and path-sensitivity checks, and can no longer indirectly disable the self-protection layer; updated the config template `_hint` accordingly
+- README (en/zh): added layer 0 to the pipeline diagram; added a “Self-Protection” subsection; added candid statements to the limitations list that Bash substring regexes can be obfuscated, the cross-session baseline was deferred to phase two, and dev checkouts are not protected; test count 42 → 62
+- Documentation cleanup: removed outdated research notes from the repository root (research-pi-auto-mode.md, research.md)
 ## [0.2.4] - 2026-08-27
 
 ### Changed
 
-- package.json `description` 对齐 README 一句话定位(pi.dev catalog 列表页与 npm 搜索结果显示该字段,旧值为高密度技术罗列)
-- 文档清理:移除 research/pi-observational-memory.md,README(en/zh)微调
+- Aligned the `package.json` `description` with the README’s one-line positioning (pi.dev catalog listings and npm search results display this field; its previous value was a dense list of technical details)
+- Documentation cleanup: removed research/pi-observational-memory.md and made small changes to the READMEs (en/zh)
 
 ## [0.2.3] - 2026-08-27
 
 ### Changed
 
-- 运行时 UI 提示统一英文化:bash 危险规则 reason、路径敏感度 reason、用户规则 reason、分类器失败诊断、影子缓存摘要/标注、notify/confirm 文案、配置模板 `_hint` 与 block reason 前缀;代码注释保持中文,测试断言同步(42 项全过)
-- README 开头重写(en/zh):一句话定位(pi 的 Claude Code auto mode 式权限门禁)+ 机制三要点列表;新增「问题 / 为什么是三态」小节,Quick start 上移至品类对比之前;弃用非官方术语 YOLO(pi 文档无此词,问题陈述改用 pi 官方表述并附安全文档链接)
+- Standardized runtime UI notices in English: Bash danger-rule reasons, path-sensitivity reasons, user-rule reasons, classifier-failure diagnostics, shadow-cache summaries/annotations, notify/confirm wording, the config template `_hint`, and block-reason prefixes; code comments remained in Chinese, and test assertions were updated in sync (all 42 tests passed)
+- Rewrote the README opening (en/zh): one-line positioning (a pi permission gate in the style of Claude Code Auto Mode) + a three-point mechanism list; added a “Problem / Why Three States?” subsection; moved Quick start above the category comparison; retired the unofficial term YOLO (it does not appear in pi documentation, so the problem statement now uses pi’s official wording and links to its security documentation)
 
 ## [0.2.2] - 2026-08-27
 
 ### Changed
 
-- package.json 元数据接入 pi 官方包目录(pi.dev/packages):keywords 新增 `pi-package`(目录收录条件,实测对比已收录/未收录包确认)与 `extension`(目录类型标签显示为 extension 而非泛化 package);新增 `pi` manifest 显式声明 `extensions/` 资源(此前依赖约定目录发现);README 安装段同步目录链接
-- keywords 新增 `auto-mode`/`automode`(对齐直接对标包 @czottmann/pi-automode 的主流写法,命中 /automode 命令名与仓库名搜索;经评估不引入 claude/claudecode —— 本包为 pi 扩展而非 Claude Code 插件,误导性关键字与诚实定位相悖,且两个直接竞品均未使用)
+- Connected `package.json` metadata to pi’s official package directory (pi.dev/packages): added the `pi-package` keyword (a directory listing requirement, confirmed by empirical comparison of listed and unlisted packages) and the `extension` keyword (the directory type label displays “extension” rather than the generic “package”); added an explicit `pi` manifest declaration for the `extensions/` resource (previously relying on convention-based directory discovery); updated the README installation section with the directory link
+- Added the `auto-mode`/`automode` keywords (matching the common usage of the direct comparison package @czottmann/pi-automode, and matching searches for the `/automode` command name and repository name; after evaluation, excluded claude/claudecode — this package is a pi extension, not a Claude Code plugin, so misleading keywords would contradict its truthful positioning, and neither of the two direct competitors uses them)
 
 ## [0.2.1] - 2026-08-27
 
 ### Added
 
-- 配置文件支持 `classifierModel`(provider/id):分类器模型持久配置;优先级 CLI flag > env > config > 自省;无效值回退会话模型并一次性警告(与非法正则同款「不失效」处置)
-- spec 支持 pi 原生思考级别后缀 `provider/id:thinking`(对齐 pi `--model` 语法):`off`(缺省,显式关思考)/`low`/`medium`/`high`/`xhigh`/`max` 经 adaptive effort 送达,`minimal` 映射 `low`;无效后缀警告一次并忽略
-- README 基于收敛分析更新定位(#14):诚实框架 + 证据库七份
+- Config files now support `classifierModel` (provider/id): persistent classifier-model configuration; priority is CLI flag > env > config > self-reflection; invalid values fall back to the session model with a one-time warning (the same non-failing handling as for an invalid regex)
+- The spec supports pi’s native thinking-level suffix `provider/id:thinking` (matching pi `--model` syntax): `off` (default, explicitly disables thinking)/`low`/`medium`/`high`/`xhigh`/`max` are passed through adaptive effort, and `minimal` maps to `low`; invalid suffixes produce one warning and are ignored
+- Updated the README positioning based on convergence analysis (#14): truthful framing + a seven-item evidence base
 
 ## [0.2.0] - 2026-08-26
 
 ### Changed
 
-- 规则层重构:移除内置 bash 白名单,改为**用户可配置** allow/deny 正则(`<agentDir>/config/pi-verdict.json`,黑名单优先于白名单,首启生成模板);内置危险正则 + 路径敏感度保留为 deny floor(默认开启,`builtinDenyFloor: false` 可整体关闭)
-- 分类器超时 15s → 25s(本网关 CC 分类器分布 p90=19.8s,15s 会误杀约 15%,见 `research/cache-sim/`)
+- Rule-layer refactor: removed the built-in Bash allowlist and replaced it with **user-configurable** allow/deny regexes (`<agentDir>/config/pi-verdict.json`, deny blacklist takes precedence over allowlist, template generated on first startup); built-in danger regexes + path sensitivity remain as the deny floor (enabled by default; `builtinDenyFloor: false` disables it entirely)
+- Classifier timeout increased from 15s → 25s (the p90 of this gateway’s CC classifier distribution is 19.8s; 15s would falsely deny about 15% of calls; see `research/cache-sim/`)
 
 ### Security
 
-- 规则层绕过测试 8 项发现全部修复(`research/rule-layer-security-audit.md`):V1-V7(内置白名单结构性绕过)由架构重构**结构性消除**——无内置白名单即无短路通道;V8(S0 密钥清单遗漏)扩充 `.netrc/.npmrc/.pypirc/.envrc/.vault-token/.kube/.docker config.json/.gem credentials`;全部 8 攻击载荷进回归测试(36 桩测试)
+- All 8 findings from the rule-layer bypass tests were fixed (`research/rule-layer-security-audit.md`): V1–V7 (structural bypasses of the built-in allowlist) were **structurally eliminated** by the architectural refactor — without a built-in allowlist there is no short-circuit path; V8 (omission from the S0 secret list) expanded the list to `.netrc/.npmrc/.pypirc/.envrc/.vault-token/.kube/.docker config.json/.gem credentials`; all 8 attack payloads were added to regression tests (36 stub tests)
 
 ### Added
 
-- `research/pi-automode-convergence.md`:与 @czottmann/pi-automode 的收敛度对照——架构已收敛(10 项趋同),残余差异分级(本质:floor 可关/极简形态/方法论;可复制:三态 ask/AST 规则/防篡改);战略建议 B 独立实验场+A 上游输送(#14)
-- `tests/auto-mode.test.ts`:21 个离线桩测试(规则层/分类器重试矩阵/影子缓存 observe-only/命令语义/debug 标注)——开发期冒烟三件套转正入库
-- `.github/workflows/ci.yml`:push/PR 上 typecheck + test(bun)
-- `.github/workflows/publish.yml`:v* tag 触发 npm 发布(OIDC trusted publishing + provenance,tag/版本一致性断言,pack 白名单检查)
-- `package.json`:npm 发布就绪(去 private、main 入口、files 白名单、peerDeps 可选声明、keywords/repository)
-- `research/pi-permission-landscape.md`:权限自动裁决品类竞品全景——7 项目一手调研(czottmann/pi-automode、gotgenes/pi-permission-system、cc-safety-net、r4vi/pi-auto-mode、flaxodev/pi-perms、zhushanwen/pi-permission、wangzexi/pi-auto-approve),定位结论与 README 措辞启示(#10)
-- :MIT 许可证(开源准备)
+- `research/pi-automode-convergence.md`: comparison of convergence with @czottmann/pi-automode — the architectures have converged (10 areas of convergence); remaining differences are ranked (fundamental: the floor can be disabled/minimal form/methodology; replicable: three-state asks/AST rules/anti-tampering); strategic recommendation: B as an independent testbed + A as upstream contributions (#14)
+- `tests/auto-mode.test.ts`: 21 offline stub tests (rule layer/classifier retry matrix/shadow-cache observe-only/command semantics/debug annotations) — promoted the three-part development smoke-test set into the permanent test suite
+- `.github/workflows/ci.yml`: typecheck + test (bun) on push/PR
+- `.github/workflows/publish.yml`: npm publishing triggered by v* tags (OIDC trusted publishing + provenance, tag/version consistency assertion, package allowlist check)
+- `package.json`: ready for npm publishing (`private` removed, main entry, files allowlist, optional peerDeps declaration, keywords/repository)
+- `research/pi-permission-landscape.md`: competitor landscape for the permission auto-adjudication category — first-hand research on 7 projects (czottmann/pi-automode, gotgenes/pi-permission-system, cc-safety-net, r4vi/pi-auto-mode, flaxodev/pi-perms, zhushanwen/pi-permission, wangzexi/pi-auto-approve), with positioning conclusions and README wording implications (#10)
+- MIT license (open-source preparation)
 
-- 影子缓存遥测(observe-only):灰区裁决同步回放双键 LRU(128) 的 would-be 命中率,只记录永不生效,为 #5「是否引入生效缓存」积累实测数据;`/automode` 附带会话统计(命中率/miss 构成/命令重复/反事实分歧),`PI_AUTO_MODE_DEBUG=1` 时通知附 would-hit/miss 标注(#7)
-- `--auto-mode-debug` CLI flag:开启全量裁决通知与影子缓存标注,等价并优先于 `PI_AUTO_MODE_DEBUG=1`(pi 配置文件无通用 env 注入机制,flag 为原生开关)
+- Shadow-cache telemetry (observe-only): gray-zone adjudications synchronously replay the two-key LRU (128) to measure its would-be hit rate; results are only recorded and never take effect, building empirical data for #5 (“whether to introduce an active cache”). `/automode` includes session statistics (hit rate/miss composition/command repetition/counterfactual disagreements); notifications include would-hit/miss annotations when `PI_AUTO_MODE_DEBUG=1` (#7)
+- `--auto-mode-debug` CLI flag: enables all adjudication notifications and shadow-cache annotations, is equivalent to and takes precedence over `PI_AUTO_MODE_DEBUG=1` (pi config files have no generic env-injection mechanism; the flag is the native switch)
 
 ### Fixed
 
-- 分类器灰区系统性 fail-closed(GLM 系思考模型):扩展在 API 层 `complete()` 上传的 `reasoning` 选项并非该层字段(`SimpleStreamOptions` 才有;宽类型 `Model<Api>` 的索引签名使 TS 静默放行,运行时被丢弃)→ 请求不带思考参数 → GLM 按默认 max 档思考烧尽预算/超时。改传 API 原生 `thinkingEnabled: false`(anthropic-messages 栈实测送达 `thinking:{"type":"disabled"}`,GLM 降为 effort low 轻思考+ 两档防御重试(512 → 1024,覆盖空输出/截断/超时/异常与其他 API 长尾)。根因与三层取证:`research/thinking-param-blackhole.md`
+- Classifier gray-zone calls systematically failed closed (GLM-family reasoning models): the extension passed the `reasoning` option to API-level `complete()`, but that option is not a field at that layer (`SimpleStreamOptions` is the only type with it; the index signature on the broad `Model<Api>` type let TypeScript silently accept it, but it was discarded at runtime) → the request omitted the reasoning parameter → GLM used its default max-effort reasoning, exhausting the budget or timing out. Switched to the API-native `thinkingEnabled: false` (verified delivery by the anthropic-messages stack as `thinking:{"type":"disabled"}`; GLM dropped to light reasoning at effort low, with two defensive retry tiers (512 → 1024) covering empty output/truncation/timeouts/exceptions and long-tail failures on other APIs). Root cause and three layers of evidence: `research/thinking-param-blackhole.md`
 
 ### Changed
 
-- README 重写面向 public:英文主文档 + 对等中文 README.zh-CN.md(头部互链);一句话定位(三态裁决)、品类对比轻量表、证据驱动章节(五份研究)、免责声明(非沙箱)、命名说明
+- Rewrote the README for a public audience: English main document + equivalent Chinese README.zh-CN.md (cross-linked at the top); one-line positioning (three-state adjudication), lightweight category-comparison table, evidence-driven sections (five research documents), disclaimer (not a sandbox), and naming note
 
-- statusline 状态文案明确化:off 态由隐藏改为暗色恒显,双态显示 `auto mode on`(高亮)/ `auto mode off`(暗色)
+- Clarified statusline wording: the off state is now always visible in dim text instead of hidden; both states show `auto mode on` (highlighted) / `auto mode off` (dim)
 
-- `/automode` 命令语义明确化:裸调用改为**只读状态展示**(修复查看即翻转状态的副作用);`/automode on|off` 幂等设定(与现值相同不翻转);未知参数严格拒绝并列出用法,大小写归一化
+- Clarified `/automode` command semantics: a bare call now displays **read-only status** (fixing the side effect where checking the status flipped the state); `/automode on|off` sets the state idempotently (does not toggle if it already matches); strictly rejects unknown arguments and lists usage; normalizes case
 
-- `extensions/auto-mode.ts`:Auto Mode 扩展原型 —— 在 `tool_call` 钩子上实现「规则层前置 + 模型分类器兜灰区」的三态裁决(allow / ask / deny)(#3)
-  - 规则层:bash 无条件/条件白名单 + 危险正则(对完整命令串匹配)+ 文件路径敏感度六级(S0 密钥 ~ S5 CWD 外)
-  - 模型分类器:Claude Code 风格 `<transcript>` 精简转录 + `<verdict>` 前缀输出契约;默认"自省"(继承当前会话模型),可用 `--auto-mode-model` / `PI_AUTO_MODE_MODEL` 指定
-  - fail-closed:分类器异常/超时(15s)/输出违反契约 → 拦截;非交互模式 ask → 拦截
-  - 透明性:`/automode` 开关命令、footer `🛡️ auto` 状态、拦截通知含裁决理由、`PI_AUTO_MODE_DEBUG=1` 全量裁决通知
-- `research/claude-code-classifier-prompts.md`:从 Langfuse 还原 Claude Code 权限分类器提示词(数百条样本/24h)(#4)
-- `research/cache-sim/`:裁决缓存收益离线回放——CC 分类器历史裁决(1,2xx 条/2x 会话)双键 LRU 回放,命中率 3.2%、危险分歧 0 例;#5 决议依据与可复现脚本(fetch-io / simulate / kinds)
-- `research/rule-engine-sim/`:规则引擎收益测量——746 条真实 bash 调用双引擎交叉回放(tree-sitter AST × 本层),移植收益实测为零、真安全洞为零,真靶点=白名单广度与分类器成本(#6)
-- `research/pi-model-call-and-ref-implementations.md`:Pi 扩展模型调用/配置 API 调研与三个开源权限扩展实现提取,含规则层种子集(#2)
-- `CONTEXT.md`:领域术语表(Auto Mode / 裁决 / 规则层 / 灰区 / 分类器 / 自省 / fail-closed / 三态裁决 / ask 降级)
-- `package.json` + `tsconfig.json`:扩展类型检查(`bun run typecheck`)
+- `extensions/auto-mode.ts`: Auto Mode extension prototype — implements three-state adjudication (allow / ask / deny) on the `tool_call` hook with “rule layer first + model classifier handles the gray zone” (#3)
+  - Rule layer: unconditional/conditional Bash allowlists + danger regexes (match the complete command string) + six file-path sensitivity tiers (S0 credentials to S5 outside CWD)
+  - Model classifier: Claude Code-style compact `<transcript>` transcript + `<verdict>` prefix output contract; defaults to “self-reflection” (inherits the current session model), configurable with `--auto-mode-model` / `PI_AUTO_MODE_MODEL`
+  - Fail-closed: classifier exceptions/timeouts (15s)/output that violates the contract → block; non-interactive ask → block
+  - Transparency: `/automode` toggle command, footer `🛡️ auto` status, block notifications include the verdict reason, and `PI_AUTO_MODE_DEBUG=1` enables all verdict notifications
+- `research/claude-code-classifier-prompts.md`: reconstructed Claude Code permission-classifier prompts from Langfuse (hundreds of samples/24h) (#4)
+- `research/cache-sim/`: offline replay of verdict-cache benefits — replayed historical CC classifier verdicts (1,2xx calls / 2x sessions) through a two-key LRU; 3.2% hit rate and 0 dangerous disagreements; #5 decision basis and reproducible scripts (fetch-io / simulate / kinds)
+- `research/rule-engine-sim/`: rule-engine benefit measurement — dual-engine cross-replay of 746 real Bash calls (tree-sitter AST × this layer); measured zero benefit from the port and zero real security holes; actual targets are allowlist breadth and classifier cost (#6)
+- `research/pi-model-call-and-ref-implementations.md`: research on Pi extension model-call/configuration APIs and analysis of implementations from three open-source permission extensions, including a rule-layer seed set (#2)
+- `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
+- `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)

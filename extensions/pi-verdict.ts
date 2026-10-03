@@ -89,10 +89,10 @@ import {
 } from "./jev-adapter";
 
 // ============================================================================
-// 规则层:bash
+// Rule layer: bash
 // ============================================================================
 
-/** 危险模式:对完整命令串匹配(覆盖管道/复合命令),命中即 deny(源自研究报告 §4.3) */
+/** Dangerous patterns: match the full command string (including pipelines and compound commands); any match denies (from research report §4.3). */
 const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> = [
 	{
 		id: "rm-recursive",
@@ -152,18 +152,18 @@ function classifyBash(command: string, floorOn: boolean): RuleResult {
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command" };
-	// 无内置白名单(#12):一切非危险命令交用户规则与分类器
+	// No built-in allowlist (#12): all non-dangerous commands go to user rules and the classifier.
 	return { verdict: "gray", reason: "no built-in allowlist" };
 }
 
 // ============================================================================
-// 规范形:双形匹配两档的唯一实现(纪律见 CONTEXT.md「双形匹配」词条)
+// Canonical forms: the only implementation of both tiers of dual-form matching (see the “dual-form matching” entry in CONTEXT.md).
 // ============================================================================
 
 /**
- * 基础档(ADR-0002):词法绝对形 + 整路径 realpath 形(realpath 解析 symlink
- * 间接;失败——目标不存在、glob token——降级为仅词法形)。denyPaths 与一切
- * 「基址侧」双形集合(cwd 基址、agentDir、安装根)走这一档。
+ * Base tier (ADR-0002): lexical absolute form + full-path realpath form (realpath resolves symlinks transitively;
+ * on failure—target does not exist, glob token—downgrade to lexical form only). denyPaths and all
+ * “base-side” dual-form sets (cwd base, agentDir, install root) use this tier.
  */
 function baseForms(p: string): string[] {
 	const out = [p];
@@ -171,15 +171,16 @@ function baseForms(p: string): string[] {
 		const r = fs.realpathSync(p);
 		if (r !== p) out.push(r);
 	} catch {
-		/* 不存在:仅词法形 */
+		/* Does not exist: lexical form only */
 	}
 	return out;
 }
 
 /**
- * 祖先重建档(#20):基础形之外,目标尚不存在时自最近存在祖先的 realpath 逐级
- * 重建真实形——symlink 别名即使最终段不存在也暴露其真实位置。误放行代价高的
- * 判定(路径敏感度 floor)走这一档;denyPaths 不升档(ADR-0002)。
+ * Ancestor-rebuilt tier (#20): beyond base forms, when the target does not exist, rebuild its real form stepwise
+ * from the nearest existing ancestor's realpath—symlink aliases expose their real location even if the final
+ * segment does not exist. Use this tier for decisions where accidental allows are costly (path-sensitivity floor);
+ * denyPaths do not move up a tier (ADR-0002).
  */
 function rebuiltForms(abs: string): string[] {
 	const out = new Set<string>([abs]);
@@ -202,54 +203,54 @@ function rebuiltForms(abs: string): string[] {
 /** Case-insensitive filesystems (default macOS APFS, Windows) compare path strings
  *  case-folded; realpath already normalizes case whenever it resolves, this covers
  *  the lexical-only forms of nonexistent targets (#21). Linux stays case-sensitive.
- *  折叠比较仅 denyPaths 消费(S-rules 的比较纪律在正则 /i
- *  ——各自持有,不因本模块统一,见双形匹配词条)。 */
+ * Folded comparison is used only by denyPaths (S-rule comparison discipline lives in regex /i
+ * —each keeps its own and is not unified by this module; see the “dual-form matching” entry). */
 const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
 const fold = (s: string): string => (CASE_INSENSITIVE_FS ? s.toLowerCase() : s);
 const pathEquals = (a: string, b: string): boolean => fold(a) === fold(b);
 const pathStartsWith = (child: string, base: string): boolean => fold(child).startsWith(fold(base) + path.sep);
 
 // ============================================================================
-// 用户规则:白名单/黑名单(可配置;#12 审计响应)
+// User rules: allowlist/denylist (configurable; #12 audit response)
 //
-// 配置:<agentDir>/config/pi-verdict.json(尊重 PI_CODING_AGENT_DIR 覆盖):
+// Config: <agentDir>/config/pi-verdict.json (respects PI_CODING_AGENT_DIR override):
 //   { "allow": ["^ls\\b", "^git (status|log|diff)\\b"], "deny": ["rm ", "^/etc/"], "tools": ["ask", "propose_commit"] }
-// 匹配目标:bash/powershell = 完整命令串;read/write/edit/grep/find/ls = 解析后绝对路径;
-// 其余工具(MCP/自定义,如 ask/propose_commit/propose_changelog/todo)默认恒走分类器——
-// tools 是这一族的精确 tool 名例外声明:命中即直接 allow,越过分类器(不途经
-// built-in floor / denyPaths,这些本就不覆盖这一族)。
-// 优先级:内置 deny floor → 用户 deny → 用户 allow → gray;floor 默认开,可经 builtinDenyFloor:false 关闭。
-// 非法正则跳过并通知(配置错误不导致扩展失效);新会话生效。
+// Match target: bash/powershell = full command string; read/write/edit/grep/find/ls = parsed absolute path;
+// other tools (MCP/custom, e.g. ask/propose_commit/propose_changelog/todo) always go to the classifier by default—
+// tools is the exact tool-name exception declaration for this group: a match directly allows, bypassing the classifier
+// (not through the built-in floor / denyPaths, which do not cover this group anyway).
+// Priority: built-in deny floor → user deny → user allow → gray; floor is on by default and can be disabled with builtinDenyFloor:false.
+// Invalid regexes are skipped and reported (a config error does not disable the extension); takes effect next session.
 // ============================================================================
 
 // ============================================================================
-// 主开关 toggle 快捷键(#15)
+// Master toggle shortcut (#15)
 //
-// 与 /automode 命令语义等价:同一翻转入口,不因操作面引入额外规则
-// (运行中生效 / 无确认弹窗 / 无持久化写回——写回会模糊「仅用户手编」边界)。
-// 反馈静默:footer 始终显示(auto-mode 双态)是唯一反馈,不 notify。
-// 键位:config 的 toggleShortcut 字段,缺省 ctrl+shift+a(与 pi 全部默认键位无冲突,
-// 双修饰降误触,避开依赖 Kitty 协议的 super);null/空串禁用;新会话生效。
+// Equivalent to the /automode command: one shared toggle entry point, with no extra rules from a different interaction surface
+// (takes effect while running / no confirmation dialog / no persisted writeback—writeback would blur the “user-edited only” boundary).
+// Silent feedback: the footer always shows the two auto-mode states and is the only feedback; no notify.
+// Key: config's toggleShortcut field, default ctrl+shift+a (no conflicts with any pi default shortcut,
+// two modifiers reduce accidental triggers, and avoid super, which depends on the Kitty protocol); null/empty string disables; takes effect next session.
 // ============================================================================
 
-/** toggle 快捷键默认键位:主编辑器上下文空闲、语义好记(A for Auto)、不易误触 */
+/** Default toggle shortcut: free in the main editor context, memorable meaning (A for Auto), hard to trigger accidentally. */
 const DEFAULT_TOGGLE_SHORTCUT = "ctrl+shift+a";
 
-/** 键名词表(功能键与特殊键;词表对齐 pi keybindings 文档) */
+/** Key-name list (function and special keys; aligned with pi keybindings docs). */
 const KEY_NAME_ALT =
 	"f(?:[1-9]|1[0-2])|escape|esc|enter|return|tab|space|backspace|delete|insert|clear|home|end|pageup|pagedown|up|down|left|right";
 const KEY_PRINTABLE = "[a-z0-9]|[-=`\\[\\];',./!@#$%^&*()_+|~{}:<>?]";
 /**
- * key 组合格式校验:修饰键 ≥1(modifier+任意键),或裸键为功能/特殊键——
- * 裸可打印字符(如 "a")拒绝,会劫持正常文本输入。词表对齐 pi keybindings 文档,
- * 零依赖约束下不引入 pi 内部校验 API;pi 侧另有兜底:与内置键冲突自动跳过并提示。
+ * Key-combination format validation: at least one modifier + any key, or a bare function/special key—
+ * bare printable characters (e.g. “a”) are rejected because they hijack normal text input. The list is aligned with pi keybindings docs;
+ * under the zero-dependency constraint, do not import pi's internal validation API; pi provides a fallback: conflicts with built-in keys are automatically skipped and reported.
  */
 const KEY_COMBO_RE = new RegExp(`^(?:(?:ctrl|shift|alt|super)\\+)+(?:${KEY_NAME_ALT}|${KEY_PRINTABLE})$|^(?:${KEY_NAME_ALT})$`, "i");
 
 /**
- * 解析配置 toggleShortcut:缺省 → 默认键位;null/空白/类型错误 → 禁用;
- * 非法格式 → 禁用 + 警告文案(session_start 经 ctx 发出,对齐 skipped 正则的模式;
- * 配置错误不静默失效,但也不阻止扩展其余部分工作)。
+ * Parse toggleShortcut config: missing → default key; null/blank/wrong type → disabled;
+ * invalid format → disabled + warning message (emitted via ctx at session_start, matching the skipped-regex pattern;
+ * config errors do not fail silently, but also do not prevent the rest of the extension from working).
  */
 function resolveToggleShortcut(raw: unknown): { key: string | null; warning: string | null } {
 	if (raw === undefined) return { key: DEFAULT_TOGGLE_SHORTCUT, warning: null };
@@ -278,7 +279,7 @@ interface UserRules {
 	denyPaths: string[];
 	/** [tools allowlist] exact tool-name allowlist for the MCP/custom family (toolKind() === null, e.g. "ask", "propose_commit", "propose_changelog") — a case-sensitive exact match on the tool's registered name bypasses the classifier and returns allow directly. Does not touch the built-in floor or denyPaths (none of those cover this family either). Empty = unchanged default (always classifier). Config key: "tools". */
 	tools: string[];
-	/** 内置 deny floor 开关(危险正则 + 路径敏感度 deny),默认 true;关闭后依赖用户规则与分类器 */
+	/** Built-in deny floor switch (danger regexes + path-sensitivity deny), true by default; when off, relies on user rules and the classifier. */
 	builtinDenyFloor: boolean;
 	/** Forced gate on `.omp` directories: any file-tool path or bash token that resolves into a `.omp` path segment (lexical or realpath form) is a terminal ask (non-interactive → deny). Default false (fork decision: the self-protection layer carries the protection; ADR-0005); checked after the built-in floor and user deny, before denyPaths/user allow. Config key: "gateOmpDir". */
 	gateOmpDir: boolean;
@@ -286,13 +287,13 @@ interface UserRules {
 	autoDeny: boolean;
 	/** [pi-verdict local patch: rules] user-authored free-text rules appended to every classifier prompt (LLM + jev). Config key: "rules". */
 	classifierRules: string[];
-	/** 分类器模型 spec(provider/id);null = 未配置(自省继承会话模型) */
+	/** Classifier model spec (provider/id); null = not configured (self-inspection inherits the session model). */
 	classifierModel: string | null;
 	/** EXPLAIN-GATE role model spec (provider/id[:thinking]) behind the dialog's "Explain" option; null = inherit the session model */
 	explainGateModel: string | null;
 	/** EXPLAIN-GATE role: replaces the built-in default explanation prompt; null = EXPLAIN_GATE_DEFAULT_PROMPT */
 	explainGatePrompt: string | null;
-	/** 主开关 toggle 快捷键键位(#15);null = 禁用;缺省 DEFAULT_TOGGLE_SHORTCUT */
+	/** Master toggle shortcut key (#15); null = disabled; defaults to DEFAULT_TOGGLE_SHORTCUT. */
 	toggleShortcut: string | null;
 	/** Opt-in gray-zone adjudication audit (#54): per-session JSONL under <agentDir>/verdicts/ */
 	audit: boolean;
@@ -652,9 +653,9 @@ const KNOWN_USER_KEYS: Record<string, true> = {
 };
 
 /**
- * 加载用户规则。首启生成带注释模板(allow 内示例默认仅 ^ls\b 可用,其余为说明占位);
- * 配置缺失/损坏/字段非法一律回退空规则(安全默认,不失效),非法正则收集回报,
- * 非法 toggleShortcut 收集警告文案(与 skipped 同经 session_start 发出)。
+ * Load user rules. On first run, create a commented template (only the ^ls\b example in allow is usable by default; the rest are explanatory placeholders);
+ * if the config is missing/corrupt/has invalid fields, fall back to empty rules (safe default, does not fail); collect invalid regexes for reporting,
+ * and collect invalid toggleShortcut warning text (emitted at session_start along with skipped regexes).
  */
 function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | null = null): LoadedRules {
 	try {
@@ -664,7 +665,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				fs.mkdirSync(path.dirname(p), { recursive: true });
 				fs.writeFileSync(p, USER_CONFIG_TEMPLATE);
 			} catch {
-				/* 只读环境静默跳过 */
+				/* Silently skip in read-only environments */
 			}
 			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null, project: null };
 		}
@@ -887,7 +888,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 }
 
 // ============================================================================
-// 规则层:文件路径敏感度(源自研究报告 §4.4)
+// Rule layer: file-path sensitivity (from research report §4.4)
 // ============================================================================
 
 /** S-rule regexes are written against POSIX spelling. On win32 (path.sep "\\") convert
@@ -916,7 +917,7 @@ const S0_SECRET = [
 	/_history$/i,
 	/\.config\/gh(\/|$)/i,
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
-	// V8(安全审计):常见明文凭证文件补全
+	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
 	/(^|\/)\.npmrc$/i,
 	/(^|\/)\.pypirc$/i,
@@ -975,7 +976,7 @@ const S2_USER_RC = [
 ];
 const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitmodules$/i];
 
-/** read 类工具:S0 读取即高危(deny),其余读取放行。isWrite: write/edit 走完整分级 */
+/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
 function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
 	const abs = path.resolve(cwd, expandHome(rawPath));
 	// Dual-form matching (#20): rules test every canonical form of the target —
@@ -984,7 +985,7 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 	const forms = rebuiltForms(abs);
 	const ruleForms = forms.map(toRuleForm);
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
-	// floor 关闭时:内置 deny 一律降级 gray(永不升格 allow);非 deny 分支(allow/gray)保持
+	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
 	const D = floorOn
 		? (reason: string): RuleResult => ({ verdict: "deny", reason })
 		: (reason: string): RuleResult => ({ verdict: "gray", reason });
@@ -1036,7 +1037,7 @@ function isScopeTool(toolName: string): boolean {
 	return toolName === "grep" || toolName === "find" || toolName === "ls";
 }
 
-/** 用户规则匹配目标:bash/powershell=完整命令串;路径类工具=解析后绝对路径;其余工具不参与。
+/** User-rule match target: bash/powershell = full command string; path tools = parsed absolute path; other tools do not participate.
  *  Scope tools with an omitted path resolve to the cwd (#48) — user rules match
  *  the effective target, never a null that skips the whole rule block. */
 function userRuleTarget(toolName: string, input: Record<string, unknown>, cwd: string): string | null {
@@ -1564,7 +1565,7 @@ function classifyByRules(
 	} else {
 		base = { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 	}
-	if (base.verdict === "deny") return base; // 内置 floor:deny 优先于一切用户规则
+	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
 
 	const target = userRuleTarget(toolName, input, cwd);
 	if (target !== null) {
@@ -1592,7 +1593,7 @@ function classifyByRules(
 }
 
 // ============================================================================
-// 分类器:CC 风格 transcript + <verdict> 前缀契约
+// Classifier: CC-style transcript + <verdict> prefix contract
 // ============================================================================
 
 const CLASSIFIER_SYSTEM = `You are a permission classifier for tool calls in an AI coding agent. You see a condensed transcript of the session: genuine user messages and past tool calls. The LAST line of the transcript is the action under review.
@@ -1628,7 +1629,7 @@ const MAX_USER_MESSAGES = 5;
 const MAX_TOOL_CALLS = 10;
 const MAX_ENTRY_CHARS = 1000;
 
-/** 去零宽字符 + 限长(头 60% + 尾 40%),防注入基础清洗(借鉴 ai-guard) */
+/** Strip zero-width characters + cap length (head 60% + tail 40%), basic injection sanitization (inspired by ai-guard). */
 function sanitize(text: string): string {
 	// eslint-disable-next-line no-control-regex
 	const cleaned = text.replace(/[​-‍⁠﻿]/g, "");
@@ -1654,13 +1655,13 @@ function toolCallLine(name: string, args: Record<string, unknown>): string {
 	return `${name}: ${transcriptSafe(JSON.stringify(args))}`;
 }
 
-/** 判定管线对宿主会话的最小结构需求(转录源 + 会话 id)——adjudicate 不接完整
- *  ExtensionContext,测试只喂这两个成员即可 */
+/** Minimum structure required from the host session by the adjudication pipeline (transcript source + session id)—adjudicate does not take a full
+ *  ExtensionContext; tests need only these two members. */
 export type PipelineHost = Pick<ExtensionContext["sessionManager"], "getBranch" | "getSessionId">;
 
 /**
- * 从会话分支收集精简转录原料:user 消息行与 assistant 工具调用行。
- * 丢弃 assistant 叙述/thinking 与 toolResult(注入面与 token 大头)。
+ * Collect minimal transcript material from the session branch: user-message lines and assistant tool-call lines.
+ * Discard assistant narration/thinking and toolResult (injection surface and token bulk).
  */
 function collectTranscriptParts(host: PipelineHost): { userLines: string[]; toolLines: string[] } {
 	const userLines: string[] = [];
@@ -1686,7 +1687,7 @@ function collectTranscriptParts(host: PipelineHost): { userLines: string[]; tool
 	return { userLines, toolLines };
 }
 
-/** 精简转录:最近 user 消息 + 最近工具调用,待审查动作固定为最后一行(位置约定,借鉴 CC) */
+/** Compact transcript: most recent user messages + tool calls; action under review is fixed as the final line (positional convention, inspired by CC). */
 function buildTranscript(host: PipelineHost, actionLine: string): string {
 	const { userLines, toolLines } = collectTranscriptParts(host);
 	const lines = [...userLines.slice(-MAX_USER_MESSAGES), ...toolLines.slice(-MAX_TOOL_CALLS)];
@@ -1694,7 +1695,7 @@ function buildTranscript(host: PipelineHost, actionLine: string): string {
 	return lines.join("\n");
 }
 
-/** 前缀契约解析:必须以 <verdict> 开头,取值 allow|ask|deny;违反契约 → null(fail-closed 走 deny) */
+/** Parse the prefix contract: must begin with <verdict>, values allow|ask|deny; contract violation → null (fail-closed to deny). */
 function parseVerdict(text: string): { verdict: "allow" | "ask" | "deny"; reason: string } | null {
 	const m = text.match(/^\s*<verdict>\s*(allow|ask|deny)\s*<\/verdict>\s*(.*)$/is);
 	if (!m) return null;
@@ -1709,10 +1710,10 @@ interface ClassifierOutcome {
 	auditRaw?: { transcript: string; rawResponse: string; modelId: string; thinking: ThinkingLevel };
 }
 
-const CLASSIFIER_TIMEOUT_MS = 25_000; // 本网关 CC 分类器分布 p90=19.8s(15s 会误杀 ~15%),research/cache-sim 数据
+const CLASSIFIER_TIMEOUT_MS = 25_000; // This gateway's CC classifier latency distribution: p90=19.8s (15s would kill ~15%); research/cache-sim data
 const FALLBACK_TIMEOUT_MS = 15_000; // #63: second-layer per-attempt budget — matches the first layer's per-attempt discipline (the two-tier retry can spend it twice)
 const CLASSIFIER_MAX_TOKENS = 512;
-const CLASSIFIER_RETRY_MAX_TOKENS = 1024; // 防御重试档:覆盖无视 reasoning:off 或轻思考仍超预算的模型
+const CLASSIFIER_RETRY_MAX_TOKENS = 1024; // Defensive retry tier: covers models that ignore reasoning:off or still exceed budget with light thinking
 const APIS_WITHOUT_TEMPERATURE = new Set<string>(["openai-codex-responses"]);
 
 // Models whose provider rejected a temperature-bearing request ("`temperature`
@@ -1851,7 +1852,7 @@ function completeForClassifier(registry: ClassifierRegistry, deps: AutoModeDeps)
 	};
 }
 
-/** 分类器思考级别(pi 原生词表;后缀语法对齐 pi --model provider/id:thinking) */
+/** Classifier thinking levels (pi's native vocabulary; suffix syntax aligned with pi --model provider/id:thinking). */
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
@@ -1931,10 +1932,10 @@ async function callClassifierOnce(
 }
 
 /**
- * 灰区分类:两档尝试(512 → 失败重试 1024)。
- * 重试触发:中止/出错/异常/输出违反契约(含空输出)——覆盖思考模型轻思考偶发空输出、
- * 无视 disabled 的模型、拒收思考参数报错的模型;重试是模型无关的兼容层。
- * 两档皆失败 → fail-closed deny(理由含两次诊断)。
+ * Gray-zone classification: two attempts (512 → retry with 1024 on failure).
+ * Retry on abort/error/exception/output violating the contract (including empty output)—covers occasional empty output
+ * from thinking models with light thinking, models ignoring disabled, and models rejecting thinking parameters; the retry is a model-independent compatibility layer.
+ * If both tiers fail → fail-closed deny (reason includes both diagnostics).
  */
 async function classifyWithModel(
 	host: PipelineHost,
@@ -1957,7 +1958,7 @@ async function classifyWithModel(
 	const failures: string[] = [];
 	let rawResponse = ""; // #54: raw output of the last attempt ("" for exception attempts — diagnostics already live in failures)
 	for (const [n, maxTokens] of attempts) {
-		if (signal?.aborted) break; // 用户已取消,不再重试
+		if (signal?.aborted) break; // User canceled; do not retry
 		const r = await callClassifierOnce(host, signal, complete, model, userMessage, maxTokens, thinking, systemPrompt, timeoutMs);
 		if (r.ok) {
 			rawResponse = r.text;
@@ -2139,7 +2140,7 @@ export class AuditLog {
 }
 
 // ============================================================================
-// 会话态:判定管线的会话期状态(复位清单集中一处)
+// Session state: session-scoped state of the adjudication pipeline (reset list centralized in one place)
 // ============================================================================
 
 /** Outcome of a rules (re)load, for the presentation layer to notify on */
@@ -2150,9 +2151,9 @@ export interface RulesLoadReport {
 }
 
 /**
- * 判定管线的会话期状态。session_start 的复位清单归 reset() 拥有——新增会话态只改
- * 这里,install 与 session_start 不再各持一份初始化点。导出仅为测试(内部 seam 的
- * 测试面,与 adjudicate 同组)。
+ * Session-scoped state of the adjudication pipeline. reset() owns the session_start reset list—add new session state
+ * here only, so install and session_start no longer each maintain an initialization point. Exported only for tests (the internal seam's
+ * test surface, grouped with adjudicate).
  */
 export class SessionState {
 	readonly fallback = new FallbackCascade();
@@ -2194,8 +2195,8 @@ export class SessionState {
 		return report;
 	}
 
-	/** denyPaths 基址:session_start 已锚定;此惰性回退仅守护乱序的首次 tool_call
-	 *  (pi 正常次序 session_start 先行),一旦锚定不再重derive。 */
+	/** denyPaths bases: anchored at session_start; this lazy fallback only guards an out-of-order first tool_call
+	 *  (pi normally runs session_start first); once anchored, do not derive again. */
 	anchoredDenyPathBases(cwd: string): string[] {
 		if (this.denyPathBases === null) this.denyPathBases = anchorDenyPaths(this.userRules.denyPaths, cwd);
 		return this.denyPathBases;
@@ -2203,12 +2204,12 @@ export class SessionState {
 }
 
 // ============================================================================
-// 判定管线(adjudicate):tool_call → Verdict 的唯一裁决入口,零 UI 依赖
+// Adjudication pipeline (adjudicate): the sole verdict entry point for tool_call → Verdict, with no UI dependency
 // ============================================================================
 
-/** 裁决来源:呈现模板的键之一(与 degraded 正交分解)。rule = 规则层;
- *  protected-path = denyPaths 命中;classifier = 灰区分类器
- *  结果(含其 fail-closed——呈现模板相同);fail-closed = 无可用分类器模型 */
+/** Verdict source: a key in the presentation template (orthogonal to degraded). rule = rule layer;
+ *  protected-path = denyPaths match; classifier = gray-zone classifier
+ *  result (including its fail-closed result, which uses the same presentation template); fail-closed = no classifier model available. */
 export type VerdictSource = "rule" | "protected-path" | "classifier" | "fail-closed";
 
 /** Pipeline output for one tool call. Protected-path detail is UI-only; `degraded`
@@ -2228,9 +2229,9 @@ export interface Verdict {
 	autoResolve?: "consult" | "allow" | "deny";
 }
 
-/** 逐调用环境:呈现无关的宿主能力。model 经 getModel 惰性求值——保持「仅灰区才
- *  解析」的原行为(回退警告不会出现在规则已裁决的调用上);null → fail-closed。
- *  getFallbackModel(#63)更惰性:仅在门控触发后才解析。 */
+/** Per-call environment: host capabilities unrelated to presentation. model is lazily evaluated through getModel—preserving the original “resolve only for gray zone”
+ *  behavior (fallback warnings do not appear on calls already decided by rules); null → fail-closed.
+ *  getFallbackModel(#63) is even lazier: resolve only after the gate is triggered. */
 export interface AdjudicateEnv {
 	cwd: string;
 	hasUI: boolean;
@@ -2470,7 +2471,7 @@ export async function adjudicate(
 	});
 
 	if (rule.verdict === "ask") {
-		// denyPaths 命中 → ask 终局(ADR-0002):声明者本人裁决例外;无 UI 降级为 deny
+		// denyPaths match → terminal ask (ADR-0002): exception for the declaring user to decide; no UI degrades to deny
 		if (env.hasUI) {
 			const ppRecord: AuditRecord = {
 				...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: "protected-path", degraded: false }, null),
@@ -2494,7 +2495,7 @@ export async function adjudicate(
 		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: true };
 	}
 
-	// 灰区 → 分类器;无可用模型 → fail-closed
+	// Gray zone → classifier; no available model → fail-closed
 
 	const resolved = env.getModel();
 	if (!resolved) {
@@ -3305,7 +3306,7 @@ function serializeDialog<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // ============================================================================
-// 扩展主体
+// Extension body
 // ============================================================================
 
 /** Agent-facing block reason (#53): the text must be self-sufficient — structural
@@ -3436,7 +3437,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 	let enabled = pi.getFlag("auto-mode") !== false;
 	const debug = pi.getFlag("auto-mode-debug") === true || process.env.PI_AUTO_MODE_DEBUG === "1";
-	// 会话态:复位清单归 SessionState.reset
+	// Session state: reset list belongs to SessionState.reset
 	const state = new SessionState(undefined, agentDirPath());
 
 	/** Verdict → UI (the extension's single presentation point): presentation keys on
@@ -3466,7 +3467,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		}
 		if (v.verdict === "deny") {
 			if (v.source === "protected-path") {
-				// 无 action 行:action 串可内嵌被触路径,通知不得携带受保护路径明文
+				// No action line: the action string may include the touched path; notifications must not carry protected-path plaintext
 				note(`🛡️ Auto Mode blocked (non-interactive, protected-path ask→deny): ${v.reason}`, "warning");
 				return { block: true, reason: blockedReason("protected-path", `ask degraded to block in non-interactive mode: ${v.reason}`) };
 			}
@@ -3481,7 +3482,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
 			return { block: true, reason: blockedReason("classifier", v.reason) };
 		}
-		// ask → 人工确认;非交互已在管线内降级,能走到这里的必有 UI
+		// ask → human confirmation; non-interactive calls were degraded inside the pipeline, so reaching here means UI is available
 		if (v.source === "protected-path") {
 			// no EXPLAIN-GATE here: the protected path plaintext must not reach a model provider (ADR-0002)
 			const d = await confirmAsk(
@@ -3502,7 +3503,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			);
 			if (d === "aborted") return "aborted";
 			if (d.allow) {
-				// debug notify 不带 action 行:同上,通知不得携带受保护路径明文
+				// Debug notification omits the action line: as above, notifications must not carry protected-path plaintext
 				if (debug) note("🛡️ allow (protected-path confirm)", "info");
 				return undefined;
 			}
@@ -3572,7 +3573,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		ctx.ui.setStatus("auto-mode", renderFooter(footerInfo(ctx), ctx.ui.theme, style));
 	}
 
-	/** 主开关设定(共用,#15):/automode 命令与 toggle 快捷键同一入口,不因操作面引入额外规则 */
+	/** Set the master toggle (shared, #15): /automode command and toggle shortcut use the same entry point, with no extra rules from the interaction surface. */
 	function setMasterSwitch(next: boolean, ctx: ExtensionContext) {
 		enabled = next;
 		refreshStatus(ctx);
@@ -3649,20 +3650,20 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 	pi.on("model_select", (_e, ctx) => refreshStatus(ctx));
 
-	// 主开关 toggle 快捷键(#15):键位取首次加载的用户规则(会话内固定——改配置后
-	// /reload 重载扩展或新会话生效);handler 与 /automode 语义等价,静默切换,
-	// footer 始终显示是唯一反馈
+	// Master toggle shortcut (#15): key comes from the user rules loaded first (fixed for the session—takes effect after config changes on
+	// /reload or a new session); handler matches /automode semantics, toggles silently,
+	// footer display is the only feedback
 	const registeredToggleKey = state.userRules.toggleShortcut;
 	if (registeredToggleKey) {
-		// KeyId 是 pi 的编译期联合类型(运行时即 string);用户配置键位经 KEY_COMBO_RE
-		// 运行时校验后断言转入,零依赖约束下不引入 pi 内部类型路径
+		// KeyId is pi's compile-time union type (a string at runtime); user-configured keys are validated at runtime by KEY_COMBO_RE
+		// before an assertion cast; the zero-dependency constraint means no pi internal type path is imported
 		type PiShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
 		pi.registerShortcut(registeredToggleKey as PiShortcutKey, {
 			description: "Toggle Auto Mode (pi-verdict)",
 			handler: (ctx) => setMasterSwitch(!enabled, ctx),
 		});
 	}
-	/** Usage 行的 toggle 提示(#15):无注册键位时不显示;显示注册时固定的键 */
+	/** Toggle hint on the Usage line (#15): hidden when no key is registered; otherwise shows the registered key. */
 	const toggleHint = () => (registeredToggleKey ? ` · toggle: ${registeredToggleKey}` : "");
 	/** Status line denyPaths count (ADR-0002): shown only when configured */
 	const denyPathsHint = () => (state.userRules.denyPaths.length > 0 ? `\ndenyPaths: ${state.userRules.denyPaths.length} active` : "");
@@ -3686,7 +3687,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				);
 				return;
 			}
-			// 幂等设定:与现值相同不翻转,仅确认
+			// Idempotent set: if the value matches the current state, do not toggle; only confirm
 			if (arg === "on" || arg === "off") {
 				const next = arg === "on";
 				const changed = next !== enabled;
@@ -3697,7 +3698,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				ctx.ui.notify(`${head}${fallbackHint()}`, "info");
 				return;
 			}
-			// 未知参数:严格拒绝并列出用法(大小写已归一化)
+			// Unknown argument: reject strictly and show usage (case has been normalized)
 			ctx.ui.notify(`unknown argument: ${arg}\nUsage: /automode (status) | /automode on | /automode off${toggleHint()}`, "warning");
 		},
 	});
@@ -3948,7 +3949,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	});
 
 	let warnedClassifierModel = false;
-	/** 思考级别集(pi 原生 EXTENDED_THINKING_LEVELS;后缀语法对齐 pi --model provider/id:thinking) */
+	/** Thinking-level set (pi's native EXTENDED_THINKING_LEVELS; suffix syntax aligned with pi --model provider/id:thinking). */
 	const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 	/** Parse "provider/id:thinking" → { specPart, level }. An invalid suffix is ignored and
@@ -3973,10 +3974,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return model && ctx.modelRegistry.hasConfiguredAuth(model) ? model : null;
 	}
 
-	/** 解析分类器模型与思考级别:CLI flag > 环境变量 > 配置文件(classifierModel) >
-	 *  自省(会话模型)。不可用回退会话模型并警告一次;null = 连会话模型都没有 →
-	 *  fail-closed。经 AdjudicateEnv.getModel 惰性调用(仅灰区),回退警告不会出现在
-	 *  规则已裁决的调用上。 */
+	/** Resolve the classifier model and thinking level: CLI flag > environment variable > config file (classifierModel) >
+	 *  session-model fallback. If unavailable, fall back to the session model and warn once; null means no session model either →
+	 *  fail-closed. Called lazily through AdjudicateEnv.getModel (only in the gray zone), so fallback warnings do not appear
+	 *  on calls already decided by rules. */
 	function resolveClassifier(ctx: ExtensionContext): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
 		const raw = (pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
 		let thinking: ThinkingLevel = "off";
@@ -3990,14 +3991,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const model = findAuthedModel(ctx, specPart);
 			if (model) return { model, thinking };
 			if (!warnedClassifierModel) {
-				warnedClassifierModel = true; // 每会话仅警告一次,避免逐调用刷屏
+				warnedClassifierModel = true; // Warn once per session to avoid per-call spam
 				ctx.ui.notify(
 					`pi-verdict: classifier model "${raw}" unavailable (not found or no configured auth), falling back to session model (self-reflection)`,
 					"warning",
 				);
 			}
 		}
-		// 自省:继承当前会话模型;显式指定的思考级别在回退时仍生效(原语义)
+		// Session-model fallback: inherit the current session model; explicitly specified thinking level remains in effect on fallback (original semantics)
 		return ctx.model ? { model: ctx.model, thinking } : null;
 	}
 
