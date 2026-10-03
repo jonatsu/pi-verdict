@@ -1,15 +1,16 @@
 /**
- * pi-verdict 扩展桩测试:内置 floor / 用户规则优先级 / 分类器重试 / 影子缓存 / 命令语义
+ * pi-verdict 扩展桩测试:内置 floor / 用户规则优先级 / 分类器重试 / 命令语义
  * 全部离线:mock ExtensionAPI/ExtensionContext,无网络、无真实模型。
  * 用户规则经 PI_CODING_AGENT_DIR 指向临时目录的真实 JSON 配置驱动(非注入 mock)。
  * 会话装配统一走 session(cfg, opts)(配置 → harness → 装载,顺序约束内化);
  * 临时目录夹具走 withTempDir(建 → fn → 清理)。
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterEach, afterAll } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import autoMode, { adjudicate, approveCodeMarkdown, BASH_MAX_MATCH_LEN, bindCompletion, declineDetail, displaySafe, EXPLAIN_GATE_DEFAULT_PROMPT, renderJevBar, resolveAgentDir, SessionState } from "../extensions/pi-verdict.ts";
+import autoMode, { adjudicate, approveCodeMarkdown, BASH_MAX_MATCH_LEN, BASH_PATH_TOKENS, bashPathTokens, bindCompletion, computeTmpdirBases, declineDetail, displaySafe, EXPLAIN_GATE_DEFAULT_PROMPT, renderJevBar, resolveAgentDir, SessionState, setTmpdirBasesForTests, type AdjudicateEnv, type CompletionFn } from "../extensions/pi-verdict.ts";
 
 // ── 桩设施 ──────────────────────────────────────────────
 
@@ -121,7 +122,7 @@ const clearAudit = () => fs.rmSync(VERDICTS(), { recursive: true, force: true })
 beforeAll(() => { process.env.PI_CODING_AGENT_DIR = TMP_AGENT; });
 afterAll(() => { delete process.env.PI_CODING_AGENT_DIR; });
 
-function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown[]; builtinDenyFloor?: boolean; gateOmpDir?: unknown; classifierModel?: string | null; explainGateModel?: string | null; explainGatePrompt?: string | null; toggleShortcut?: string | null; audit?: boolean; notifyAllows?: boolean; footer?: unknown; classifierFallbackModel?: string | null; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; autoDeny?: boolean; subagentGate?: unknown; subagentAskTimeoutMs?: unknown }, invalid?: string[]): void {
+function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown[]; tools?: unknown[]; ignoreTools?: unknown[]; builtinDenyFloor?: boolean; gateOmpDir?: unknown; classifierModel?: string | null; explainGateModel?: string | null; explainGatePrompt?: string | null; toggleShortcut?: string | null; audit?: boolean; notifyAllows?: boolean; footer?: unknown; classifierFallbackModel?: string | null; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; autoDeny?: boolean; subagentGate?: unknown; subagentAskTimeoutMs?: unknown }, invalid?: string[]): void {
 	config = { allow: cfg.allow ?? [], deny: cfg.deny ?? [] };
 	const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
 	fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -144,6 +145,9 @@ function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown
 	if (cfg.subagentAskTimeoutMs !== undefined) raw.subagentAskTimeoutMs = cfg.subagentAskTimeoutMs;
 	// denyPaths (ADR-0002): unknown[] lets negative tests mix in non-string entries
 	if (cfg.denyPaths !== undefined) raw.denyPaths = cfg.denyPaths;
+	// tools / ignoreTools (the deprecated alias): unknown[] lets negative tests mix in non-string entries
+	if (cfg.tools !== undefined) raw.tools = cfg.tools;
+	if (cfg.ignoreTools !== undefined) raw.ignoreTools = cfg.ignoreTools;
 	// 非法正则测试:把 invalid 条目直接混入 allow 数组
 	if (invalid) raw.allow = [...config.allow, ...invalid];
 	fs.writeFileSync(p, JSON.stringify(raw));
@@ -648,72 +652,14 @@ describe("classifier", () => {
 	});
 });
 
-// ── 5. 影子缓存(observe-only:行为零变化 + 统计正确) ────
-
-function shadowStats(h: Harness): Record<string, number> {
-	h.notifies.length = 0;
-	h.commands.automode.handler("", h.ctx); // 裸调用 = 只读状态
-	const line = h.notifies[0]?.[0].split("\n")[1] ?? "";
-	const out: Record<string, number> = { gray: 0, hits: 0, rate: 0, missNoEntry: 0, missCtx: 0, cmdRepeats: 0, dangerous: 0, conservative: 0 };
-	const m = line.match(/gray (\d+).*hits (\d+) \(([\d.]+)%\).*no-entry (\d+)\/ctx-changed (\d+).*repeats (\d+).*dangerous (\d+)\/conservative (\d+)/);
-	if (m) [out.gray, out.hits, out.rate, out.missNoEntry, out.missCtx, out.cmdRepeats, out.dangerous, out.conservative] =
-		[+m[1], +m[2], +m[3], +m[4], +m[5], +m[6], +m[7], +m[8]];
-	return out;
-}
-
-describe("shadow cache (observe-only)", () => {
-	test("rule verdicts never enter the shadow stats", async () => {
-		const h = session({});
-		await toolCall(h, "write", { path: "/proj/a.ts", content: "x" }); // 规则 allow(路径层)
-		expect(shadowStats(h).gray).toBe(0);
-	});
-	test("repeat gray call: would-hit counted, model still called (never short-circuits)", async () => {
-		const h = session({}); userMsg(h, "任务");
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		const r1 = await toolCall(h, "bash", { command: "cargo build" });
-		const r2 = await toolCall(h, "bash", { command: "cargo build" });
-		const s = shadowStats(h);
-		expect(s.gray).toBe(2);
-		expect(s.hits).toBe(1);
-		expect(h.calls.length).toBe(2); // observe-only:模型两次都真实调用
-		expect(r1).toBeUndefined();
-		expect(r2).toBeUndefined();
-	});
-	test("new user message → context-changed miss and overwrite", async () => {
-		const h = session({}); userMsg(h, "任务");
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		await toolCall(h, "bash", { command: "cargo build" });
-		userMsg(h, "新指令");
-		await toolCall(h, "bash", { command: "cargo build" });
-		expect(shadowStats(h).missCtx).toBe(1);
-	});
-	test("ask and fail-closed never enter the cache", async () => {
-		const h = session({});
-		h.responses = [{ text: "<verdict>ask</verdict> risky" }];
-		await toolCall(h, "mcp__x__y", { a: 1 });
-		await toolCall(h, "mcp__x__y", { a: 1 });
-		expect(shadowStats(h).missNoEntry).toBe(2);
-	});
-	test("LRU(128) evicts the oldest entry", async () => {
-		const h = session({}); userMsg(h, "任务");
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		for (let i = 0; i < 129; i++) await toolCall(h, "mcp__e__t", { i });
-		await toolCall(h, "mcp__e__t", { i: 0 });   // evicted → no-entry
-		await toolCall(h, "mcp__e__t", { i: 128 }); // recent → hit
-		const s = shadowStats(h);
-		expect(s.missNoEntry).toBeGreaterThanOrEqual(130);
-		expect(s.hits).toBe(1);
-	});
-});
 
 // ── 6. /automode 命令语义(显式 on/off + 只读状态) ───────
 
 describe("/automode command", () => {
-	test("bare call is read-only status with stats and usage", async () => {
+	test("bare call is read-only status with usage", async () => {
 		const h = session({});
 		h.commands.automode.handler("", h.ctx);
 		expect(h.notifies[0][0]).toContain("Auto Mode: on");
-		expect(h.notifies[0][0]).toContain("shadow cache");
 		expect(h.notifies[0][0]).toContain("Usage");
 	});
 	test("on/off are idempotent, annotated (未变化) when same", async () => {
@@ -806,19 +752,6 @@ describe("toggle shortcut", () => {
 	});
 });
 
-// ── 7. debug 通知标注 ───────────────────────────────────
-
-describe("debug annotations", () => {
-	test("--auto-mode-debug: allows notify with shadow would-hit tag", async () => {
-		const h = session({}, { debug: true });
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		await toolCall(h, "bash", { command: "cargo build" });
-		await toolCall(h, "bash", { command: "cargo build" });
-		const allowNotifies = h.notifies.filter(([m]) => m.includes("allow (classifier)"));
-		expect(allowNotifies.length).toBe(2);
-		expect(allowNotifies[1][0]).toContain("would-hit");
-	});
-});
 
 // ── denyPaths (ADR-0002): deterministic ask + classifier existence hint ──
 // A local extractor (evidence producer, never an adjudicator) feeds a per-segment
@@ -1195,6 +1128,150 @@ describe("denyPaths (ADR-0002)", () => {
 	});
 });
 
+// ── 10.4b linear bash path-token extraction (#32) ──
+
+describe("bash path-token extraction (#32: linear tokenizer, regex as oracle)", () => {
+	const oracle = (s: string) => [...s.matchAll(BASH_PATH_TOKENS)].map((m) => m[0]);
+
+	test("200k-character adversarial shapes extract in well under a second", () => {
+		const shapes: Array<[string, string]> = [
+			["pure word run, no slash", "a".repeat(200_000)],
+			["word run + single trailing slash", "a".repeat(199_999) + "/"],
+			["absolute, no closing segment", "/" + "a".repeat(199_999)],
+			["slash-terminated segment flood", ("ab" + "/").repeat(66_666)],
+			["alt1 prefix flood, no slash", "~".repeat(200_000)],
+		];
+		for (const [name, command] of shapes) {
+			const start = performance.now();
+			const tokens = bashPathTokens(command);
+			const elapsed = performance.now() - start;
+			expect(elapsed, `#32 performance: ${name} took ${elapsed.toFixed(1)}ms`).toBeLessThan(250);
+			expect(Array.isArray(tokens)).toBe(true);
+		}
+	});
+
+	test("denyPaths-configured adjudication stays fast on a 200k flood", async () => {
+		setConfig({ denyPaths: [path.join(TMP_AGENT, "sensitive")] });
+		const state = new SessionState();
+		const command = ("ab" + "/").repeat(66_666);
+		const start = performance.now();
+		const verdict = await adjudicate(state, { toolName: "bash", input: { command } }, adjudicateEnv({ failModel: true }));
+		const elapsed = performance.now() - start;
+		expect(elapsed, `#32 configured-chain performance took ${elapsed.toFixed(1)}ms`).toBeLessThan(250);
+		expect(verdict).toMatchObject({ verdict: "deny", source: "fail-closed" });
+	});
+
+	test("tokenization matches the regex oracle across edge cases and deterministic fuzz input", () => {
+		let seed = 0x2f6e2b1 % 2_147_483_647;
+		const random = () => ((seed = (seed * 48271) % 2_147_483_647) / 2_147_483_647);
+		const alphabet = [..."ab/.-~$HOMEx_ *@\t"];
+		const corpus: string[] = [
+			"", "~", "$HOME", "~/", "$HOME/", "~/.ssh/id_ed25519", "/a//b", "a//b", "//", "///x",
+			"..", "...", ".", "./", "../x", "a/./b", "-/-", "a-", "a.b/c.d", "*/*", "@/",
+			"$HOME$HOME", "~~/a", "cat ~/.ssh/key && /etc/passwd", "echo a/b c//d ./x ../y",
+			"$HOME/x", "$HOME//x", "$HOMEx/y", "a $HOME/b c", "~$HOME/x", "$HOME$HOME/x",
+			"./", "../", ".//x", "..//x", "a/", "a//", "ab/.", "ab/..", "x/.hidden/y", "--/a",
+		];
+		for (let i = 0; i < 3000; i++) {
+			const length = Math.floor(random() * 40);
+			let command = "";
+			for (let j = 0; j < length; j++) command += alphabet[Math.floor(random() * alphabet.length)];
+			corpus.push(command);
+		}
+		for (const command of corpus) expect(bashPathTokens(command)).toEqual(oracle(command));
+	});
+});
+
+// ── 10.4c macOS per-user temp exemption (#83) ──
+
+describe("macOS tmpdir S1 exemption (#83)", () => {
+	const fixtureDirs: string[] = [];
+	const mkBase = (prefix: string): string => {
+		const dir = fs.mkdtempSync(path.join(TMP_AGENT, prefix));
+		fixtureDirs.push(dir);
+		return dir;
+	};
+	const mkEnv = (hasUI = false): AdjudicateEnv => ({
+		cwd: "/proj",
+		hasUI,
+		getModel: () => null,
+		complete: async () => {
+			throw new Error("unreachable");
+		},
+		host: { getBranch: () => [], getSessionId: () => "s1" },
+	});
+	const realpathMap = (p: string): string | null => p.includes("GONE") ? null : p.replace(/^\/var\//, "/private/var/");
+
+	test("computeTmpdirBases accepts only the macOS confstr family at its required depth", () => {
+		expect(computeTmpdirBases("darwin", "/var/folders/ab/cd/T/", realpathMap)).toEqual([
+			"/var/folders/ab/cd/T",
+			"/private/var/folders/ab/cd/T",
+		]);
+		expect(computeTmpdirBases("darwin", "/var/folders/ab/GONE/T/", realpathMap)).toEqual(["/var/folders/ab/GONE/T"]);
+		expect(computeTmpdirBases("linux", "/var/folders/ab/cd/T/", realpathMap)).toEqual([]);
+		expect(computeTmpdirBases("win32", "C:\\Temp", realpathMap)).toEqual([]);
+		for (const tmp of ["/etc", "/var", "/var/tmp", "/var/folders", "/var/folders/ab", ""]) {
+			expect(computeTmpdirBases("darwin", tmp, realpathMap)).toEqual([]);
+		}
+	});
+
+	test("test seam lifts only directory S1 rules; writes still follow ordinary gray grading", async () => {
+		setConfig({});
+		const base = "/var/folders/ab/cd/T";
+		setTmpdirBasesForTests([base, `/private${base}`]);
+		const state = new SessionState();
+		const env = mkEnv();
+		const read = await adjudicate(state, { toolName: "read", input: { path: path.join(base, "x.log") } }, env);
+		expect(read).toMatchObject({ verdict: "allow", source: "rule" });
+		const write = await adjudicate(state, { toolName: "write", input: { path: path.join(base, "x.txt"), content: "x" } }, env);
+		expect(write).toMatchObject({ verdict: "deny", source: "fail-closed" });
+		expect(write.reason).not.toContain("system directory");
+	});
+
+	test("temp-lexical symlink escaping to a system path is not exempt", async () => {
+		setConfig({});
+		const base = mkBase("s1-escape");
+		setTmpdirBasesForTests([base, fs.realpathSync(base)]);
+		const link = path.join(base, "evil");
+		fs.symlinkSync("/etc/passwd", link);
+		const verdict = await adjudicate(new SessionState(), { toolName: "write", input: { path: link, content: "x" } }, mkEnv());
+		expect(verdict).toMatchObject({ verdict: "deny", source: "rule" });
+		expect(verdict.reason).toContain("system directory");
+	});
+
+	test("authorized_keys remains denied inside an exempt tree", async () => {
+		setConfig({});
+		const base = mkBase("s1-authorized-keys");
+		setTmpdirBasesForTests([base, fs.realpathSync(base)]);
+		const verdict = await adjudicate(new SessionState(), { toolName: "write", input: { path: path.join(base, "authorized_keys"), content: "key" } }, mkEnv());
+		expect(verdict).toMatchObject({ verdict: "deny", source: "rule" });
+		expect(verdict.reason).toContain("system directory");
+	});
+
+	test("denyPaths still asks before the exempt-tree read allow", async () => {
+		const base = "/var/folders/ab/cd/T";
+		setConfig({ denyPaths: [base] });
+		setTmpdirBasesForTests([base]);
+		const verdict = await adjudicate(new SessionState(), { toolName: "read", input: { path: path.join(base, "secret.txt") } }, mkEnv(true));
+		expect(verdict).toMatchObject({ verdict: "ask", source: "protected-path" });
+	});
+
+	test("control: system paths remain denied and project reads remain allowed", async () => {
+		setConfig({});
+		const env = mkEnv();
+		const systemWrite = await adjudicate(new SessionState(), { toolName: "write", input: { path: "/etc/hosts", content: "x" } }, env);
+		expect(systemWrite).toMatchObject({ verdict: "deny", source: "rule" });
+		expect(systemWrite.reason).toContain("system directory");
+		const projectRead = await adjudicate(new SessionState(), { toolName: "read", input: { path: "/proj/file.txt" } }, env);
+		expect(projectRead).toMatchObject({ verdict: "allow", source: "rule" });
+	});
+
+	afterEach(() => setTmpdirBasesForTests(null));
+	afterAll(() => {
+		for (const dir of fixtureDirs) fs.rmSync(dir, { recursive: true, force: true });
+	});
+});
+
 // ── 10.5 agent-facing block reason(#53:每个 block 站点的 canonical 形态)──
 
 describe("agent-facing block reason form (#53)", () => {
@@ -1313,7 +1390,6 @@ describe("audit verdict records (#54)", () => {
 		expect(rec.transcript).toContain("ls -la /tmp");
 		expect(rec.rawResponse).toBe("<verdict>allow</verdict> ok");
 		expect(rec.degraded).toBe(false);
-		expect(rec.shadow).toContain("shadow cache");
 		expect(typeof rec.ts).toBe("string");
 		expect(new Date(rec.ts).toString()).not.toBe("Invalid Date");
 	});
@@ -1365,7 +1441,7 @@ describe("audit verdict records (#54)", () => {
 		expect(r2).toBeUndefined(); // confirm defaults to allow
 		const recs = readAudit();
 		expect(recs.length).toBe(1);
-		expect(recs[0]).toMatchObject({ verdict: "ask", source: "protected-path", degraded: false, userAnswer: "allowed", model: null, shadow: "-" });
+		expect(recs[0]).toMatchObject({ verdict: "ask", source: "protected-path", degraded: false, userAnswer: "allowed", model: null });
 		expect(recs[0].detail).toContain("sensitive-53");
 		expect(typeof recs[0].answeredAt).toBe("string");
 	});
@@ -1523,6 +1599,7 @@ describe("confidence floor + cascade (#67)", () => {
 	const JEV_ALLOW_50 = "<verdict>allow</verdict> jev: allow 92% (confidence 50%; ask 7%, deny 1%)";
 	const JEV_ALLOW_80 = "<verdict>allow</verdict> jev: allow 90% (confidence 80%; ask 9%, deny 1%)";
 	const JEV_DENY_29 = "<verdict>deny</verdict> jev: deny 64% (confidence 29%; allow 36%)";
+	const JEV_ASK_45 = "<verdict>ask</verdict> jev: ask 63% (confidence 45%; allow 35%, deny 2%)";
 
 	beforeAll(clearAudit);
 	afterAll(clearAudit);
@@ -1602,9 +1679,22 @@ describe("confidence floor + cascade (#67)", () => {
 		expect(readAudit()[0].fallback).toBeUndefined();
 	});
 
+	test("carve-out: demoted ask plus fallback allow still asks the human", async () => {
+		clearAudit();
+		const h = session({ audit: true, classifierMinConfidence: 50, classifierFallbackModel: "mock/fb", classifierFallbackMode: "enforce" });
+		h.findMap = { "mock/fb": { id: "fb-model" } };
+		h.responses = [{ text: JEV_ASK_45 }, { text: "<verdict>allow</verdict> fallback allows" }];
+		h.confirmAnswer = true;
+		const result = await toolCall(h, "bash", { command: "cargo build" });
+		expect(result).toBeUndefined();
+		expect(h.confirms).toBe(1);
+		expect(h.confirmMsgs[0]).toContain("first layer said ask");
+		expect(readAudit()[0].fallback).toMatchObject({ verdict: "allow", effective: "ask" });
+	});
+
 	test("shadow + demotion: the human is asked, the fallback opinion recorded, verdicts untouched", async () => {
 		clearAudit();
-		const h = session({ audit: true, classifierMinConfidence: 50, classifierFallbackModel: "mock/fb" });
+		const h = session({ audit: true, classifierMinConfidence: 50, classifierFallbackModel: "mock/fb", classifierFallbackMode: "shadow" });
 		h.findMap = { "mock/fb": { id: "fb-model" } };
 		h.responses = [{ text: JEV_ALLOW_49 }, { text: "<verdict>deny</verdict> unsafe" }];
 		h.confirmAnswer = true;
@@ -1692,7 +1782,7 @@ describe("confidence floor + cascade (#67)", () => {
 
 	test("fail-closed: no fallback denies; shadow records the opinion; enforce adjudicates de novo", async () => {
 		clearAudit();
-		const h2 = session({ audit: true, classifierFallbackModel: "mock/fb" });
+		const h2 = session({ audit: true, classifierFallbackModel: "mock/fb", classifierFallbackMode: "shadow" });
 		h2.findMap = { "mock/fb": { id: "fb-model" } };
 		h2.responses = [{ text: "" }, new Error("boom"), { text: "<verdict>allow</verdict> fb says fine" }];
 		const r2 = await toolCall(h2, "bash", { command: "cargo build" });
@@ -1704,8 +1794,10 @@ describe("confidence floor + cascade (#67)", () => {
 		h3.responses = [{ text: "" }, new Error("boom"), { text: "<verdict>allow</verdict> fb says fine" }];
 		const r3 = await toolCall(h3, "bash", { command: "cargo build" });
 		expect(r3).toBeUndefined(); // rescued by the second layer
-		expect(readAudit()[1]).toMatchObject({ source: "fail-closed" });
+		expect(readAudit()[1]).toMatchObject({ source: "fail-closed", verdict: "allow", reason: "fb says fine", degraded: false });
 		expect(readAudit()[1].fallback).toMatchObject({ verdict: "allow", effective: "allow" });
+		await h2.commands["automode"].handler("", h2.ctx);
+		expect(h2.notifies.at(-1)![0]).toContain("would-rescue-allow 1");
 	});
 
 	test("no-model fail-closed: enforce + fallback rescues; no fallback denies unchanged", async () => {
@@ -1718,12 +1810,30 @@ describe("confidence floor + cascade (#67)", () => {
 		expect(r).toBeUndefined();
 		const recs = readAudit();
 		expect(recs.length).toBe(1);
-		expect(recs[0]).toMatchObject({ source: "fail-closed" });
+		expect(recs[0]).toMatchObject({ source: "fail-closed", verdict: "allow", reason: "fb says fine", degraded: false });
 		expect(recs[0].fallback).toMatchObject({ triggeredBy: "fail-closed", verdict: "allow", effective: "allow" });
+		await h.commands["automode"].handler("", h.ctx);
+		expect(h.notifies.at(-1)![0]).toContain("rescued-allow 1");
 		const h2 = session({ audit: true });
 		h2.ctx.model = null;
 		const r2 = await toolCall(h2, "bash", { command: "cargo build" });
 		expect(r2?.block).toBe(true);
+	});
+
+	test("headless no-model fallback asks are marked degraded; fallback denies are not", async () => {
+		clearAudit();
+		setConfig({ audit: true, classifierFallbackModel: "mock/fb", classifierFallbackMode: "enforce" });
+		const fallback = { model: { id: "fb-model" }, thinking: "off" };
+		const askState = new SessionState(undefined, TMP_AGENT);
+		const ask = await adjudicate(askState, { toolName: "bash", input: { command: "cargo build" } }, adjudicateEnv({ hasUI: false, failModel: true, fallback, text: "<verdict>ask</verdict> fallback needs a human" }));
+		expect(ask).toMatchObject({ verdict: "deny", source: "classifier", degraded: true });
+		const denyState = new SessionState(undefined, TMP_AGENT);
+		const deny = await adjudicate(denyState, { toolName: "bash", input: { command: "cargo build" } }, adjudicateEnv({ hasUI: false, failModel: true, fallback, text: "<verdict>deny</verdict> fallback denies" }));
+		expect(deny).toMatchObject({ verdict: "deny", source: "classifier", degraded: false });
+		expect(readAudit()).toMatchObject([
+			{ source: "fail-closed", verdict: "deny", reason: "fallback needs a human", degraded: true },
+			{ source: "fail-closed", verdict: "deny", reason: "fallback denies", degraded: false },
+		]);
 	});
 
 	test("invalid classifierMinConfidence warns; the old key reports the rename", async () => {
@@ -1740,7 +1850,7 @@ describe("confidence floor + cascade (#67)", () => {
 		await off.handlers.session_start({}, off.ctx);
 		await off.commands["automode"].handler("", off.ctx);
 		expect(off.notifies.some(([m]) => m.includes("confidence cascade"))).toBe(false);
-		const h = session({ classifierMinConfidence: 50, classifierFallbackModel: "mock/fb" });
+		const h = session({ classifierMinConfidence: 50, classifierFallbackModel: "mock/fb", classifierFallbackMode: "shadow" });
 		h.findMap = { "mock/fb": { id: "fb-model" } };
 		h.responses = [{ text: JEV_ALLOW_49 }, { text: "<verdict>deny</verdict> unsafe" }, { text: JEV_ALLOW_80 }];
 		h.confirmAnswer = true;
@@ -1795,7 +1905,7 @@ describe("notifyAllows (#60)", () => {
 		expect(allowNotifies(h).length).toBe(0);
 	});
 
-	test("notifyAllows: one classifier-allow notification with reason and action, no shadow suffix", async () => {
+	test("notifyAllows: one classifier-allow notification with reason and action", async () => {
 		const h = session({ notifyAllows: true });
 		h.responses = [{ text: "<verdict>allow</verdict> jev: allow 66% (confidence 49%; ask 33%, deny 1%)" }];
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
@@ -1805,7 +1915,6 @@ describe("notifyAllows (#60)", () => {
 		expect(infos[0][0]).toContain("allow (classifier)");
 		expect(infos[0][0]).toContain("jev: allow 66%");
 		expect(infos[0][0]).toContain("ls -la /tmp");
-		expect(infos[0][0]).not.toContain("shadow cache");
 	});
 
 	test("mechanical passes never notify under notifyAllows", async () => {
@@ -1820,24 +1929,24 @@ describe("notifyAllows (#60)", () => {
 		expect(allowNotifies(h2).length).toBe(0);
 	});
 
-	test("debug alone keeps today's behavior (incl. shadow suffix)", async () => {
+	test("debug alone sends a classifier-allow notification", async () => {
 		const h = session({}, { debug: true });
 		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r).toBeUndefined();
 		const infos = allowNotifies(h);
 		expect(infos.length).toBe(1);
-		expect(infos[0][0]).toContain("shadow cache");
+		expect(infos[0][0]).toContain("allow (classifier)");
 	});
 
-	test("both switches on: exactly one notification, shadow suffix present", async () => {
+	test("both switches on: exactly one classifier-allow notification", async () => {
 		const h = session({ notifyAllows: true }, { debug: true });
 		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r).toBeUndefined();
 		const infos = allowNotifies(h);
 		expect(infos.length).toBe(1);
-		expect(infos[0][0]).toContain("shadow cache");
+		expect(infos[0][0]).toContain("allow (classifier)");
 	});
 
 	test("deny notifications are unaffected by the preference", async () => {
@@ -2097,7 +2206,7 @@ describe("omp host forms: S0 floor (#35)", () => {
 
 });
 
-// ── 20. 判定管线 interface 级(adjudicate):ask 降级统一 / source × degraded / 明文零泄漏 ──
+// ── 20. 判定管线 interface 级(adjudicate):source-driven presentation / ask degradation ──
 
 /** 构造直接驱动 adjudicate 的最小环境:fake complete + 空 branch 的 host */
 function adjudicateEnv(overrides: { text?: string; hasUI?: boolean; model?: any; failModel?: boolean; fallback?: any } = {}) {
@@ -2148,7 +2257,7 @@ describe("adjudicate pipeline (interface level)", () => {
 		expect(v2.degraded).toBe(false);
 	});
 
-	test("source × degraded covers every template key the presenter can encounter", async () => {
+	test("source determines presentation; degraded marks ask-to-deny conversion", async () => {
 		const run = async (cfg: Parameters<typeof setConfig>[0], tool: string, input: any, env: any) => {
 			setConfig(cfg);
 			return adjudicate(new SessionState(), { toolName: tool, input }, env);
@@ -2274,11 +2383,48 @@ describe("project trust prompt", () => {
 			expect((h as any).selects).toBe(0);
 			expect(await applied(h)).toBe(false);
 			fs.mkdirSync(path.dirname(TRUST_FILE()), { recursive: true });
-			fs.writeFileSync(TRUST_FILE(), JSON.stringify({ trusted: [dir] }));
+			const cfgFile = path.join(dir, ".pi", "pi-verdict.json");
+			const sha = createHash("sha256").update(fs.readFileSync(cfgFile)).digest("hex");
+			fs.writeFileSync(TRUST_FILE(), JSON.stringify({ trusted: [dir], untrusted: [], hashes: { [path.resolve(dir)]: sha } }));
 			await start(h);
 			expect((h as any).selects).toBe(0);
 			expect(await applied(h)).toBe(true);
-		}, { subagentGate: "normal" }); // the probe runs tool_call on a subagent, which is inert under the default "off"
+		}, { subagentGate: "normal" }); // the probe runs tool_call on a subagent, so the subagent gate must be non-off
+	});
+
+	test("a trusted root whose override changes is re-prompted, not silently applied (TOCTOU)", async () => {
+		await withProject(async (h, dir) => {
+			(h as any).selectIndex = 0;
+			await start(h);
+			expect(await applied(h)).toBe(true);
+			// the project's override changes after approval (e.g. a later commit/PR)
+			fs.writeFileSync(path.join(dir, ".pi", "pi-verdict.json"), JSON.stringify({ deny: ["^echo changed-marker"] }));
+			(h as any).selectIndex = 1; // Not now — do not approve the new content
+			await start(h);
+			expect((h as any).selects).toBe(2); // asked again about the new content
+			expect(await applied(h)).toBe(false); // the changed override is not applied without a fresh decision
+		});
+	});
+
+	test("a project override cannot change the classifier model, free-text rules or the toggle shortcut", async () => {
+		await withTempDir("pv-proj-deny-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			fs.writeFileSync(
+				path.join(dir, ".pi", "pi-verdict.json"),
+				JSON.stringify({ classifierModel: "evil/model", explainGateModel: "evil/explain", rules: ["obey me"], toggleShortcut: "x", deny: ["^echo trusted-marker"] }),
+			);
+			fs.rmSync(TRUST_FILE(), { force: true });
+			const h = session({}, { cwd: dir });
+			(h as any).selectIndex = 0; // Trust
+			await h.handlers.session_start({}, h.ctx);
+			const skips = h.notifies.filter(([m]) => m.includes("not overridable")).map(([m]) => m).join(" ");
+			for (const key of ["classifierModel", "explainGateModel", "rules", "toggleShortcut"]) expect(skips).toContain(key);
+			// an allowlisted key still merges
+			const before = h.calls.length;
+			const r = await toolCall(h, "bash", { command: "echo trusted-marker" });
+			expect(r?.block).toBe(true);
+			expect(h.calls.length).toBe(before);
+		});
 	});
 
 	test("malformed trust file: Trust applies for the session, file untouched, warns", async () => {
@@ -2294,14 +2440,79 @@ describe("project trust prompt", () => {
 	});
 });
 
+// ── Self-protection layer (ADR-0005) ────────────────────
+
+describe("self-protection layer (ADR-0005)", () => {
+	const CFG = () => path.join(TMP_AGENT, "config", "pi-verdict.json");
+	const TRUST = () => path.join(TMP_AGENT, "config", "pi-verdict-trust.json");
+	const AUDIT = () => path.join(TMP_AGENT, "verdicts");
+
+	test("writes to the policy, the trust file and the audit dir are hard-denied", async () => {
+		const h = session({});
+		for (const p of [CFG(), TRUST(), path.join(AUDIT(), "s.jsonl")]) {
+			const r = await toolCall(h, "write", { path: p, content: "x" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+		}
+		expect(h.calls.length).toBe(0); // never reaches the classifier
+	});
+
+	test("reads of the audit dir are denied; reads of the policy pass", async () => {
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(AUDIT(), "s.jsonl") });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("self-protection");
+		expect(await toolCall(h, "read", { path: CFG() })).toBeUndefined();
+	});
+
+	test("a bash command touching a gate file is denied", async () => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: "echo x > " + CFG() });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("self-protection");
+	});
+
+	test("an allow rule, builtinDenyFloor:false and autoDeny:false cannot lift it", async () => {
+		const h = session({ allow: [".*"], builtinDenyFloor: false, autoDeny: false });
+		const r = await toolCall(h, "write", { path: CFG(), content: "x" });
+		expect(r?.block).toBe(true); // a deny, not an ask (autoDeny:false would have asked)
+		expect(h.confirms).toBe(0);
+	});
+
+	test("ignoreTools is a working alias for the tools allowlist", async () => {
+		setConfig({ ignoreTools: ["ask", "todo"] });
+		const state = new SessionState();
+		const env = {
+			cwd: "/proj",
+			hasUI: true,
+			getModel: () => null,
+			complete: (async () => {
+				throw new Error("no model");
+			}) as CompletionFn,
+			host: { getBranch: () => [], getSessionId: () => "s1" },
+		} as unknown as AdjudicateEnv;
+		for (const toolName of ["ask", "todo"]) {
+			const v = await adjudicate(state, { toolName, input: {} }, env);
+			expect(v).toMatchObject({ verdict: "allow", source: "rule" });
+			expect(v.reason).toContain("user tools allow rule");
+		}
+	});
+});
+
 // ── Forced .omp directory gate (gateOmpDir) ─────────────
 
 describe("gateOmpDir forced gate", () => {
 	const OMP_FILE = "/proj/.omp/notes.md";
 
-	test("default on: file tools touching a .omp directory ask for confirmation", async () => {
+	test("default off: a .omp read passes with no prompt", async () => {
+		const h = session({});
+		expect(await toolCall(h, "read", { path: OMP_FILE })).toBeUndefined();
+		expect(h.confirms).toBe(0);
+	});
+
+	test("explicit on: file tools touching a .omp directory ask for confirmation", async () => {
 		for (const tool of ["read", "write", "edit"]) {
-			const h = session({});
+			const h = session({ gateOmpDir: true });
 			await toolCall(h, tool, { path: OMP_FILE, content: "x" });
 			expect(h.confirms).toBe(1);
 			expect(h.calls.length).toBe(0); // terminal ask: no classifier involved
@@ -2309,36 +2520,36 @@ describe("gateOmpDir forced gate", () => {
 	});
 
 	test("declined confirmation blocks; accepted passes; the block reason carries no path", async () => {
-		const h = session({});
+		const h = session({ gateOmpDir: true });
 		h.confirmAnswer = false;
 		const r = await toolCall(h, "read", { path: OMP_FILE });
 		expect(r?.block).toBe(true);
 		expect(String(r?.reason)).not.toContain(".omp");
-		const h2 = session({});
+		const h2 = session({ gateOmpDir: true });
 		expect(await toolCall(h2, "read", { path: OMP_FILE })).toBeUndefined();
 		expect(h2.confirms).toBe(1);
 	});
 
 	test("scope tools: explicit .omp target asks; omitted path with a cwd inside .omp asks; a plain project root does not", async () => {
-		const h = session({});
+		const h = session({ gateOmpDir: true });
 		await toolCall(h, "ls", { path: "/proj/.omp" });
 		expect(h.confirms).toBe(1);
-		const inside = session({}, { cwd: "/proj/.omp/agent" });
+		const inside = session({ gateOmpDir: true }, { cwd: "/proj/.omp/agent" });
 		await toolCall(inside, "grep", { pattern: "x" });
 		expect(inside.confirms).toBe(1);
-		const plain = session({});
+		const plain = session({ gateOmpDir: true });
 		await toolCall(plain, "grep", { pattern: "x" });
 		expect(plain.confirms).toBe(0);
 	});
 
 	test("bash: .omp as a path component or bare word asks; lookalike names do not", async () => {
 		for (const command of ["ls ~/.omp/agent/skills", "cd .omp && ls", 'cat "$HOME/.omp/x"']) {
-			const h = session({});
+			const h = session({ gateOmpDir: true });
 			await toolCall(h, "bash", { command });
 			expect(h.confirms).toBe(1);
 		}
 		for (const command of ["echo a.omp", "cat .ompx/y", "cat .omp.bak"]) {
-			const h = session({});
+			const h = session({ gateOmpDir: true });
 			h.responses = [{ text: "<verdict>allow</verdict> fine" }];
 			await toolCall(h, "bash", { command });
 			expect(h.confirms).toBe(0);
@@ -2354,17 +2565,17 @@ describe("gateOmpDir forced gate", () => {
 	});
 
 	test("beats user allow rules but not user deny rules", async () => {
-		const allowed = session({ allow: [".*"] });
+		const allowed = session({ allow: [".*"], gateOmpDir: true });
 		await toolCall(allowed, "read", { path: OMP_FILE });
 		expect(allowed.confirms).toBe(1);
-		const denied = session({ allow: [".*"], deny: ["\\.omp"] });
+		const denied = session({ allow: [".*"], deny: ["\\.omp"], gateOmpDir: true });
 		const r = await toolCall(denied, "read", { path: OMP_FILE });
 		expect(r?.block).toBe(true);
 		expect(denied.confirms).toBe(0);
 	});
 
 	test("non-interactive session: ask degrades to deny", async () => {
-		const h = session({});
+		const h = session({ gateOmpDir: true });
 		h.ctx.hasUI = false;
 		const r = await toolCall(h, "read", { path: OMP_FILE });
 		expect(h.confirms).toBe(0);
@@ -2372,13 +2583,16 @@ describe("gateOmpDir forced gate", () => {
 		expect(String(r?.reason)).toContain("non-interactive");
 	});
 
-	test("gateOmpDir:false disables the gate; non-false values keep it on", async () => {
+	test("gateOmpDir:true enables the gate; false/absent/invalid keep it off", async () => {
 		const off = session({ gateOmpDir: false });
 		expect(await toolCall(off, "read", { path: OMP_FILE })).toBeUndefined();
 		expect(off.confirms).toBe(0);
 		const junk = session({ gateOmpDir: "nope" });
-		await toolCall(junk, "read", { path: OMP_FILE });
-		expect(junk.confirms).toBe(1);
+		expect(await toolCall(junk, "read", { path: OMP_FILE })).toBeUndefined();
+		expect(junk.confirms).toBe(0);
+		const on = session({ gateOmpDir: true });
+		await toolCall(on, "read", { path: OMP_FILE });
+		expect(on.confirms).toBe(1);
 	});
 
 	test("master switch off → gate inert", async () => {
@@ -2499,13 +2713,13 @@ describe("footer status", () => {
 	};
 
 	test("risky settings render before the model, in red/yellow", async () => {
-		const h = session({ builtinDenyFloor: false, gateOmpDir: false });
+		const h = session({ builtinDenyFloor: false, subagentGate: "off" });
 		await h.handlers.session_start({}, h.ctx);
 		const s = lastStatus(h)!;
-		expect(s).toContain("⚠ floor off · ⚠ .omp gate off");
+		expect(s).toContain("⚠ floor off · ⚠ subagent off");
 		expect(s.indexOf("⚠ floor off")).toBeLessThan(s.indexOf("↺ mock/glm"));
 		expect(h.fgCalls).toContainEqual(["error", "⚠ floor off"]);
-		expect(h.fgCalls).toContainEqual(["warning", "⚠ .omp gate off"]);
+		expect(h.fgCalls).toContainEqual(["warning", "⚠ subagent off"]);
 	});
 
 	test('footer:"off" clears the status', async () => {
@@ -2574,7 +2788,7 @@ describe("footer status", () => {
 		const missing = session({ classifierFallbackModel: "p/gone" });
 		missing.findMap = {};
 		await missing.handlers.session_start({}, missing.ctx);
-		expect(lastStatus(missing)).toContain("↳ ⚠ unavailable·shadow");
+		expect(lastStatus(missing)).toContain("↳ ⚠ unavailable·enforce");
 	});
 
 	test("no session model and no classifier → fail-closed label", async () => {
@@ -2762,7 +2976,7 @@ describe("EXPLAIN-GATE role and decline explanation", () => {
 		expect(rendered[0]).toContain("No, with explanation…");
 		expect(rendered[0]).toContain("Explain…");
 
-		const p = session({});
+		const p = session({ gateOmpDir: true });
 		const protectedRender: string[] = [];
 		driveDialogs(p, [], protectedRender);
 		await toolCall(p, "read", { path: "/proj/.omp/notes.md" });
@@ -2868,7 +3082,7 @@ describe("EXPLAIN-GATE role and decline explanation", () => {
 	});
 
 	test("protected-path ask: declining with an explanation works, and no model call is made", async () => {
-		const h = session({});
+		const h = session({ gateOmpDir: true });
 		h.inputs = ["not that file"];
 		driveDialogs(h, [[DOWN, DOWN, "\r"]], []);
 		const r = await toolCall(h, "read", { path: "/proj/.omp/notes.md" });
@@ -2983,8 +3197,9 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		fn: (root: Harness, sub: Harness) => Promise<void>,
 		opts: { rootHasUI?: boolean } = {},
 	): Promise<void> {
-		// the production default is "off"; bridge tests opt in to "normal" unless they say otherwise
-		// (an explicit `subagentGate: undefined` key exercises the true default)
+		// the production default is "normal" (a fork decision; ADR-0007); bridge tests name it
+		// explicitly and individual tests override (an explicit `subagentGate: undefined` key
+		// exercises the true default)
 		const root = session({ subagentGate: "normal", ...cfg });
 		root.ctx.hasUI = opts.rootHasUI ?? true;
 		await root.handlers["session_start"]({}, root.ctx);
@@ -3095,7 +3310,7 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 	});
 
 	test("asks that did not come from the classifier never auto-allow (protected path, .omp, autoDeny:false)", async () => {
-		await withBridge({ subagentGate: "auto", denyPaths: [SENS], classifierFallbackModel: "mock/fb" }, async (root, sub) => {
+		await withBridge({ subagentGate: "auto", denyPaths: [SENS], gateOmpDir: true, classifierFallbackModel: "mock/fb" }, async (root, sub) => {
 			sub.responses = [ALLOW];
 			const r = await toolCall(sub, "read", { path: path.join(SENS, "secret.md") });
 			expect(r?.block).toBe(true);
@@ -3137,10 +3352,12 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		});
 	});
 
-	test("default is off: a fresh config leaves subagents ungated", async () => {
+	test("default is normal: a fresh config adjudicates subagent calls", async () => {
 		await withBridge({ subagentGate: undefined }, async (root, sub) => {
-			expect(await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined();
-			expect(sub.calls.length).toBe(0);
+			const r = await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("recursive delete");
+			expect(sub.calls.length).toBe(0); // the rule layer, not the classifier
 			expect(root.confirms).toBe(0);
 		});
 	});
@@ -3213,9 +3430,10 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		expect(warning).toContain("subagentGate");
 		expect(warning).toContain("subagentAskTimeoutMs");
 		await h.handlers["session_shutdown"]({}, h.ctx);
-		// an invalid mode falls back to the default (off): the subagent is not gated, nothing prompts
+		// an invalid mode falls back to the default (normal): the subagent is gated
 		await withBridge({ subagentGate: "x", subagentAskTimeoutMs: 0 }, async (root, sub) => {
-			expect(await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined();
+			const r = await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" });
+			expect(r?.block).toBe(true);
 			expect(root.confirms).toBe(0);
 		});
 	});

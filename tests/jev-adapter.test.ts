@@ -316,7 +316,7 @@ describe("extension wiring", () => {
 		expect(calls[0][0]).toBe(PROVIDER_ID);
 		expect((calls[0][1] as any).models[0].id).toBe(MODEL_ID);
 	});
-	test("hosts without registerProvider (omp) stay inert", () => {
+	test("a host with no registerProvider stays inert", () => {
 		const pi: Record<string, unknown> = { on: () => {} };
 		expect(() => jevAdapter(pi as any)).not.toThrow();
 	});

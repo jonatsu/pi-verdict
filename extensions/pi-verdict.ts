@@ -31,12 +31,8 @@
  * Structure: the pipeline is adjudicate() — a zero-UI module returning a Verdict
  * value object (source: rule|protected-path|classifier|fail-closed, plus a
  * `degraded` flag for ask→deny in non-interactive sessions); the tool_call
- * handler maps verdicts to UI (notify/confirm) by source × degraded.
- *
- * Shadow cache (observe-only, #7): gray-zone verdicts are replayed against a
- * double-key LRU(128) to measure would-be hit rate; recorded, never applied
- * (verdicts always come from the model), accumulating pi field data for the
- * "should a serving cache ship" question (#5 decision).
+ * handler maps verdicts to UI (notify/confirm) by source (the degraded context is
+ * implicit in the protected-path source's deny wording).
  *
  * fail-closed: classifier exception/timeout/contract violation → deny; in
  * non-interactive modes (no UI) ask → deny.
@@ -51,8 +47,7 @@
  *                                   suffix (pi-native --model syntax; default off
  *                                   = thinking explicitly disabled)
  *   PI_AUTO_MODE_MODEL             env-var form of the above
- *   --auto-mode-debug              notify on every verdict (incl. allows); shadow
- *                                   cache annotation on
+ *   --auto-mode-debug              notify on every verdict (incl. allows)
  *   PI_AUTO_MODE_DEBUG=1           env-var form of the above (kept for compat)
  *   <agentDir>/config/pi-verdict.json   user rules: { allow: [regex], deny: [regex],
  *                                   denyPaths: [path], builtinDenyFloor,
@@ -64,9 +59,6 @@
  * Known prototype simplifications (see README "Status & limitations"):
  *   - no built-in bash allowlist; danger detection is regex floor (no AST parsing)
  *     — unknown shapes go to the classifier
- *   - serving verdict cache deferred (#5 decision): currently observe-only shadow
- *     telemetry, revisit once measured; no circuit breaker (revisit signals =
- *     deny-storm cost blowup / long non-interactive runs)
  *   - AGENTS.md not passed to the classifier as downweighted intent evidence
  *   - denyPaths bash extraction is token-level: command substitution, base64-
  *     embedded paths and external script contents produce no hit signal — those
@@ -76,6 +68,7 @@
  *               research/pi-model-call-and-ref-implementations.md
  */
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -116,6 +109,8 @@ interface RuleResult {
 	 *  context: block reasons and notifications travel back to the model, so only the
 	 *  local confirm dialog may show it (ADR-0002 story: zero path plaintext leaves the machine). */
 	detail?: string;
+	/** Set only by selfProtectCheck: this deny is not exempted by autoDeny:false. */
+	selfProtect?: true;
 }
 
 /** Cap the danger-regex matching input (#25): the prefix-consuming character
@@ -253,7 +248,7 @@ interface UserRules {
 	tools: string[];
 	/** 内置 deny floor 开关(危险正则 + 路径敏感度 deny),默认 true;关闭后依赖用户规则与分类器 */
 	builtinDenyFloor: boolean;
-	/** Forced gate on `.omp` directories: any file-tool path or bash token that resolves into a `.omp` path segment (lexical or realpath form) is a terminal ask (non-interactive → deny). Default true; checked after the built-in floor and user deny, before denyPaths/user allow. Config key: "gateOmpDir". */
+	/** Forced gate on `.omp` directories: any file-tool path or bash token that resolves into a `.omp` path segment (lexical or realpath form) is a terminal ask (non-interactive → deny). Default false (fork decision: the self-protection layer carries the protection; ADR-0005); checked after the built-in floor and user deny, before denyPaths/user allow. Config key: "gateOmpDir". */
 	gateOmpDir: boolean;
 	/** [pi-verdict local patch: autoDeny] false → auto-review denies become interactive asks (headless still denies). Default true. */
 	autoDeny: boolean;
@@ -278,10 +273,10 @@ interface UserRules {
 	/** #63/#67: second-layer model spec (provider/id[:thinking]); consulted on demotion
 	 *  and fail-closed only. null = no second layer. */
 	classifierFallbackModel: string | null;
-	/** #67: does the second layer adjudicate cascaded calls ("enforce") or only record its
-	 *  opinion while the human decides ("shadow", default)? */
+	/** #67: does the second layer adjudicate cascaded calls ("enforce", default, matching
+	 *  upstream 0.13) or only record its opinion while the human decides ("shadow")? */
 	classifierFallbackMode: "shadow" | "enforce";
-	/** Subagent gate mode (omp only): "off" = gate inert in subagents; "normal" = asks prompt on the root UI, unanswered within subagentAskTimeoutMs → resolved by the second model; "auto" = never prompt, resolved by the second model. Default "off". */
+	/** Subagent gate mode (omp only): "off" = gate inert in subagents; "normal" = asks prompt on the root UI, unanswered within subagentAskTimeoutMs → resolved by the second model; "auto" = never prompt, resolved by the second model. Default "normal" (fork decision: "off" skipped the rule layer, floor and classifier inside every subagent; ADR-0006). */
 	subagentGate: "off" | "normal" | "auto";
 	/** normal-mode root-dialog deadline in ms, measured from enqueue (queue wait counts). Default 60000. */
 	subagentAskTimeoutMs: number;
@@ -289,7 +284,7 @@ interface UserRules {
 	footer: "full" | "compact" | "off";
 }
 
-const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], tools: [], builtinDenyFloor: true, gateOmpDir: true, classifierModel: null, explainGateModel: null, explainGatePrompt: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, footer: "full", classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "shadow", subagentGate: "off", subagentAskTimeoutMs: 60_000, autoDeny: true, classifierRules: [] };
+const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], tools: [], builtinDenyFloor: true, gateOmpDir: false, classifierModel: null, explainGateModel: null, explainGatePrompt: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, footer: "full", classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", subagentGate: "normal", subagentAskTimeoutMs: 60_000, autoDeny: true, classifierRules: [] };
 
 /** This module's own file location (import.meta.url resolved; null = unresolvable). */
 const OWN_FILE_PATH: string | null = (() => {
@@ -399,19 +394,28 @@ function rootIn(root: string, list: string[]): boolean {
 	return list.some((t) => baseForms(t).some((tf) => rootForms.some((rf) => samePath(tf, rf))));
 }
 
-interface TrustStore { trusted: string[]; untrusted: string[]; error: string | null }
+interface TrustStore { trusted: string[]; untrusted: string[]; hashes: Record<string, string>; error: string | null }
+
+/** sha256 of a file's bytes, or null when it cannot be read. */
+function hashFile(p: string): string | null {
+	try {
+		return createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+	} catch {
+		return null;
+	}
+}
 
 function readTrustStore(): TrustStore {
 	const p = trustStorePath();
-	if (!fs.existsSync(p)) return { trusted: [], untrusted: [], error: null };
+	if (!fs.existsSync(p)) return { trusted: [], untrusted: [], hashes: {}, error: null };
 	let raw: unknown;
 	try {
 		raw = JSON.parse(fs.readFileSync(p, "utf8"));
 	} catch (err) {
-		return { trusted: [], untrusted: [], error: `trust file unreadable: ${err instanceof Error ? err.message : String(err)} (${p})` };
+		return { trusted: [], untrusted: [], hashes: {}, error: `trust file unreadable: ${err instanceof Error ? err.message : String(err)} (${p})` };
 	}
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-		return { trusted: [], untrusted: [], error: `trust file unreadable: top level must be a JSON object (${p})` };
+		return { trusted: [], untrusted: [], hashes: {}, error: `trust file unreadable: top level must be a JSON object (${p})` };
 	}
 	let error: string | null = null;
 	const obj = raw as Record<string, unknown>; // narrowed above to a non-null, non-array object
@@ -424,23 +428,50 @@ function readTrustStore(): TrustStore {
 		}
 		return v.flatMap((x) => (typeof x === "string" && x.trim() ? [path.resolve(x.trim())] : []));
 	};
-	const trusted = list("trusted");
-	const untrusted = list("untrusted");
-	return { trusted, untrusted, error };
+	const hashes: Record<string, string> = {};
+	const rawHashes = obj.hashes;
+	if (rawHashes && typeof rawHashes === "object" && !Array.isArray(rawHashes)) {
+		for (const [k, v] of Object.entries(rawHashes as Record<string, unknown>)) {
+			if (typeof v === "string" && v) hashes[path.resolve(k)] = v;
+		}
+	}
+	return { trusted: list("trusted"), untrusted: list("untrusted"), hashes, error };
 }
 
-/** Persist a trust decision for a project root. Returns an error message, or null on success.
+/** Trust state for a project root whose override config sits at `configPath`.
+ *  "trusted" requires both a recorded root and a content-hash match: the approved
+ *  override must be byte-for-byte the one the user saw (TOCTOU guard — a later commit
+ *  or PR to a trusted repo re-prompts instead of silently widening the gate). */
+function projectTrustState(root: string, configPath: string, store: TrustStore): "trusted" | "untrusted" | "undecided" {
+	if (rootIn(root, store.untrusted)) return "untrusted";
+	if (!rootIn(root, store.trusted)) return "undecided";
+	const approved = store.hashes[path.resolve(root)];
+	if (!approved) return "undecided"; // legacy entry without a hash — re-prompt once
+	return hashFile(configPath) === approved ? "trusted" : "undecided";
+}
+
+/** Persist a trust decision for a project root (and, for "trusted", the approved
+ *  override's content hash). Returns an error message, or null on success.
  *  A damaged file is never overwritten (the user may have hand-edited it). */
-function recordTrust(root: string, decision: "trusted" | "untrusted"): string | null {
+function recordTrust(root: string, decision: "trusted" | "untrusted", configPath: string | null = null): string | null {
 	const store = readTrustStore();
 	if (store.error !== null) return store.error;
+	const key = path.resolve(root);
 	const trusted = store.trusted.filter((e) => !rootIn(root, [e]));
 	const untrusted = store.untrusted.filter((e) => !rootIn(root, [e]));
-	(decision === "trusted" ? trusted : untrusted).push(path.resolve(root));
+	const hashes = { ...store.hashes };
+	delete hashes[key];
+	if (decision === "trusted") {
+		trusted.push(key);
+		const hash = configPath ? hashFile(configPath) : null;
+		if (hash) hashes[key] = hash;
+	} else {
+		untrusted.push(key);
+	}
 	const p = trustStorePath();
 	try {
 		fs.mkdirSync(path.dirname(p), { recursive: true });
-		fs.writeFileSync(p, JSON.stringify({ trusted, untrusted }, null, 2) + "\n");
+		fs.writeFileSync(p, JSON.stringify({ trusted, untrusted, hashes }, null, 2) + "\n");
 	} catch (err) {
 		return `could not write ${p}: ${err instanceof Error ? err.message : String(err)}`;
 	}
@@ -470,7 +501,7 @@ function recordTrust(root: string, decision: "trusted" | "untrusted"): string | 
 const DEFAULT_ALLOWED_TOOLS = ["ask", "todo", "wait", "task", "yield", "think", "checkpoint", "rewind", "recall", "reflect"];
 
 const USER_CONFIG_TEMPLATE = `${JSON.stringify({
-	_hint: "pi-verdict user rules — full reference: https://github.com/jesset/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor at your own risk. gateOmpDir (default true): any read/write touching a .omp directory asks for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools: exact names of non-path, non-command tools (e.g. todo, ask, task) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer is uncertain (ask / fail-closed / jev confidence below classifierFallbackConfidence, default 50); mode shadow (default) observes without changing verdicts, enforce escalates strictness only. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. \"npm install is expected in this repo\"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: off default / normal / auto) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp's extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: \"full\" (Nerd Font powerline blocks, default) | \"compact\" (plain text) | \"off\" (no footer status).",
+	_hint: "pi-verdict user rules — full reference: https://github.com/jesset/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor at your own risk. gateOmpDir (default false; the self-protection layer over the gate's own files stays on regardless): true makes any read/write touching a .omp directory ask for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools (the legacy key ignoreTools is accepted as a deprecated alias): exact names of non-path, non-command tools (e.g. todo, ask, task) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer is uncertain (ask / fail-closed / jev confidence below classifierFallbackConfidence, default 50); mode enforce (default) lets the second layer adjudicate, shadow only records its opinion while the human decides. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. \"npm install is expected in this repo\"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: normal default / off / auto; off makes the gate inert in subagents) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp's extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: \"full\" (Nerd Font powerline blocks, default) | \"compact\" (plain text) | \"off\" (no footer status).",
 	allow: ["^ls\\b"],
 	deny: [],
 	tools: DEFAULT_ALLOWED_TOOLS,
@@ -483,7 +514,7 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 		"~/.bashrc",
 	],
 	builtinDenyFloor: true,
-	gateOmpDir: true,
+	gateOmpDir: false,
 	autoDeny: true,
 	classifierModel: null,
 	explainGateModel: null,
@@ -494,13 +525,36 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	footer: "full",
 	classifierMinConfidence: null,
 	classifierFallbackModel: null,
-	classifierFallbackMode: "shadow",
-	subagentGate: "off",
+	classifierFallbackMode: "enforce",
+	subagentGate: "normal",
 	subagentAskTimeoutMs: 60000,
 	rules: [],
 }, null, 2)}\n`;
 
 interface LoadedRules { rules: UserRules; skipped: string[]; shortcutWarning: string | null; project: { path: string; trusted: boolean; applied: boolean } | null }
+
+/** Keys a project override may change (ADR-0006). The gate's decision inputs stay
+ *  user-only: the classifier and EXPLAIN-GATE model specs (an egress channel), the
+ *  free-text `rules` (injected into the classifier prompt with "takes precedence"
+ *  wording), and toggleShortcut. The trust prompt names this set. */
+const PROJECT_OVERRIDABLE_KEYS: Record<string, true> = {
+	allow: true,
+	deny: true,
+	denyPaths: true,
+	tools: true,
+	ignoreTools: true,
+	builtinDenyFloor: true,
+	gateOmpDir: true,
+	autoDeny: true,
+	audit: true,
+	notifyAllows: true,
+	footer: true,
+	classifierMinConfidence: true,
+	classifierFallbackModel: true,
+	classifierFallbackMode: true,
+	subagentGate: true,
+	subagentAskTimeoutMs: true,
+};
 
 /**
  * 加载用户规则。首启生成带注释模板(allow 内示例默认仅 ^ls\b 可用,其余为说明占位);
@@ -517,7 +571,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			} catch { /* 只读环境静默跳过 */ }
 			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null, project: null };
 		}
-		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; tools?: unknown; builtinDenyFloor?: unknown; gateOmpDir?: unknown; classifierModel?: unknown; explainGateModel?: unknown; explainGatePrompt?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; footer?: unknown; subagentGate?: unknown; subagentAskTimeoutMs?: unknown; autoDeny?: unknown; rules?: unknown };
+		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; tools?: unknown; ignoreTools?: unknown; builtinDenyFloor?: unknown; gateOmpDir?: unknown; classifierModel?: unknown; explainGateModel?: unknown; explainGatePrompt?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; footer?: unknown; subagentGate?: unknown; subagentAskTimeoutMs?: unknown; autoDeny?: unknown; rules?: unknown };
 		try {
 			raw = JSON.parse(fs.readFileSync(p, "utf8")) as typeof raw;
 		} catch (err) {
@@ -535,7 +589,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			const root = projectRootOf(pp);
 			const store = readTrustStore();
 			if (store.error) skipped.push(store.error);
-			const trusted = (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot])) || rootIn(root, store.trusted);
+			// Hash-bound trust (ADR-0006): a stale override re-prompts instead of applying.
+			const trusted = projectTrustState(root, pp, store) === "trusted" || (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot]));
 			project = { path: pp, trusted, applied: false };
 			let projRaw: unknown;
 			// untrusted and undecided both mean "not applied" (file never parsed); the session_start prompt owns the user-facing notice
@@ -550,12 +605,15 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				if (typeof projRaw !== "object" || projRaw === null || Array.isArray(projRaw)) {
 					skipped.push(`project config ${pp}: top level must be a JSON object — project overrides not loaded`);
 				} else {
-					const over: Record<string, unknown> = { ...(projRaw as Record<string, unknown>) };
-					if ("toggleShortcut" in over) {
-						skipped.push(`toggleShortcut: not overridable per project — key ignored (${pp})`);
-						delete over.toggleShortcut;
+					// Only the allowlisted keys merge (ADR-0006): the classifier/explain-gate
+					// models are an egress channel and the free-text `rules` are injected into
+					// the classifier prompt with "takes precedence" wording, so a project must
+					// never steer either; toggleShortcut stays user-only too.
+					const over: Record<string, unknown> = {};
+					for (const [k, v] of Object.entries(projRaw as Record<string, unknown>)) {
+						if (Object.hasOwn(PROJECT_OVERRIDABLE_KEYS, k)) over[k] = v;
+						else if (k !== "_hint") skipped.push(`${k}: not overridable per project — key ignored (${pp})`);
 					}
-					delete over._hint;
 					raw = { ...raw, ...over } as typeof raw;
 					project = { path: pp, trusted: true, applied: true };
 				}
@@ -588,13 +646,20 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			return [x.trim()];
 		});
 		if (raw.tools !== undefined && raw.tools !== null && !Array.isArray(raw.tools)) skipped.push(`tools: ${JSON.stringify(raw.tools)} (must be an array of strings)`);
-		const tools = (Array.isArray(raw.tools) ? raw.tools : []).flatMap((x) => {
-			if (typeof x !== "string" || !x.trim()) {
-				if (x !== undefined && x !== null) skipped.push(`tools: ${JSON.stringify(x)}`);
-				return [];
-			}
-			return [x.trim()];
-		});
+		const namedTool = (key: string, list: unknown): string[] =>
+			(Array.isArray(list) ? list : []).flatMap((x) => {
+				if (typeof x !== "string" || !x.trim()) {
+					if (x !== undefined && x !== null) skipped.push(`${key}: ${JSON.stringify(x)}`);
+					return [];
+				}
+				return [x.trim()];
+			});
+		// [pi-verdict local patch: ignoreTools alias] the pre-0.17 key name for `tools`;
+		// accepted so an unmigrated policy keeps its exemption instead of silently
+		// losing it (0.12.1 read ignoreTools, the fork reads tools, neither warns).
+		// The canonical key wins on a duplicate name; `tools` is the documented form.
+		if (raw.ignoreTools !== undefined) skipped.push("ignoreTools: deprecated key name — use tools (accepted as an alias this session)");
+		const tools = [...new Set([...namedTool("tools", raw.tools), ...namedTool("ignoreTools", raw.ignoreTools)])];
 		const shortcut = resolveToggleShortcut(raw.toggleShortcut);
 		// #63/#67: confidence-floor keys — invalid values skip into the one-shot warning channel
 		if (raw.classifierFallbackConfidence !== undefined) skipped.push("classifierFallbackConfidence: renamed to classifierMinConfidence (0.11.0) — key ignored");
@@ -619,7 +684,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				denyPaths,
 				tools,
 				builtinDenyFloor: raw.builtinDenyFloor !== false,
-				gateOmpDir: raw.gateOmpDir !== false,
+				gateOmpDir: raw.gateOmpDir === true,
 				classifierModel: typeof raw.classifierModel === "string" && raw.classifierModel.trim() ? raw.classifierModel.trim() : null,
 				explainGateModel: typeof raw.explainGateModel === "string" && raw.explainGateModel.trim() ? raw.explainGateModel.trim() : null,
 				explainGatePrompt: typeof raw.explainGatePrompt === "string" && raw.explainGatePrompt.trim() ? raw.explainGatePrompt.trim() : null,
@@ -628,9 +693,9 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				notifyAllows: raw.notifyAllows === true,
 				classifierFallbackModel: typeof raw.classifierFallbackModel === "string" && raw.classifierFallbackModel.trim() ? raw.classifierFallbackModel.trim() : null,
 				classifierMinConfidence: minConfOk ? minConfRaw : null,
-				classifierFallbackMode: fbModeRaw === "enforce" ? "enforce" : "shadow",
+				classifierFallbackMode: fbModeRaw === "shadow" ? "shadow" : "enforce",
 				footer: footerOk ? footerRaw : "full",
-				subagentGate: sgOk ? sgRaw : "off",
+				subagentGate: sgOk ? sgRaw : "normal",
 				subagentAskTimeoutMs: satOk ? satRaw : 60_000,
 				autoDeny: raw.autoDeny !== false,
 				classifierRules,
@@ -639,8 +704,10 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			shortcutWarning: shortcut.warning,
 			project,
 		};
-	} catch {
-		return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null, project: null };
+	} catch (err) {
+		// An unexpected failure (not the JSON-parse path above) must not vanish: load
+		// empty rules with the floor on and surface the error through the same channel.
+		return { rules: EMPTY_RULES, skipped: [`config load failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded`], shortcutWarning: null, project: null };
 	}
 }
 
@@ -672,7 +739,49 @@ const S0_SECRET = [
 ];
 // /private prefixes: macOS firmlinks — /etc, /var are really /private/etc,
 // /private/var, and realpath'd toolchain output uses the real spelling (#21)
-const S1_SYSTEM = [/^\/etc(\/|$)/i, /^\/private\/(etc|var)(\/|$)/i, /^\/usr(\/|$)/i, /^\/var(\/|$)/i, /^\/System(\/|$)/i, /(^|\/)authorized_keys$/i];
+// Split into two families (#83): only directory-prefix rules are lifted by the
+// per-user temp exemption; the authorized_keys basename rule always remains.
+const S1_SYSTEM_DIRS = [/^\/etc(\/|$)/i, /^\/private\/(etc|var)(\/|$)/i, /^\/usr(\/|$)/i, /^\/var(\/|$)/i, /^\/System(\/|$)/i];
+const S1_SYSTEM_FILES = [/(^|\/)authorized_keys$/i];
+const S1_SYSTEM = [...S1_SYSTEM_DIRS, ...S1_SYSTEM_FILES];
+
+/** Compute macOS confstr-family temp bases at the confstr depth. A hand-set
+ *  TMPDIR must not widen the system-path exemption beyond /var/folders/<xx>/<yy>.
+ *  Other platforms are inert because their temp directories do not match S1. */
+export function computeTmpdirBases(
+	platform: NodeJS.Platform,
+	tmp: string,
+	realpath: (p: string) => string | null,
+): string[] {
+	if (platform !== "darwin" || !tmp) return [];
+	const lexical = path.resolve(tmp);
+	const real = realpath(lexical);
+	const bases = real === null ? [lexical] : [lexical, real];
+	const confstrFamily = /^(?:\/private)?\/var\/folders\/[^/]+\/[^/]+(?:\/|$)/;
+	return bases.every((b) => confstrFamily.test(b)) ? bases : [];
+}
+
+/** Resolve the process temp directory once; its location is stable for a session. */
+function defaultTmpdirBases(): string[] {
+	return computeTmpdirBases(process.platform, os.tmpdir(), (p) => {
+		try {
+			return fs.realpathSync(p);
+		} catch {
+			return null;
+		}
+	});
+}
+
+let tmpdirExemptBases = defaultTmpdirBases();
+
+/** Test seam; null restores the production bases. */
+export function setTmpdirBasesForTests(bases: string[] | null): void {
+	tmpdirExemptBases = bases ?? defaultTmpdirBases();
+}
+
+/** Exempt only when every canonical target form stays inside a trusted temp base. */
+const tmpdirExempt = (forms: string[]): boolean =>
+	tmpdirExemptBases.length > 0 && forms.every((f) => tmpdirExemptBases.some((b) => f === b || f.startsWith(b + path.sep)));
 const S2_USER_RC = [/\.(bashrc|zshrc|profile|bash_profile|gitconfig)$/i, /crontab/i, /Library\/LaunchAgents(\/|$)/i, /\.config\/systemd(\/|$)/i];
 const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitmodules$/i];
 
@@ -691,11 +800,13 @@ function classifyPath(toolName: string, rawPath: string, cwd: string, isWrite: b
 		: (reason: string): RuleResult => ({ verdict: "gray", reason });
 
 	if (hit(S0_SECRET)) return D(`S0 secrets/credential path: ${rawPath}`);
+	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
+	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
-		if (hit(S1_SYSTEM)) return { verdict: "gray", reason: `read system config path: ${rawPath}` };
+		if (hit(s1Rules)) return { verdict: "gray", reason: `read system config path: ${rawPath}` };
 		return { verdict: "allow" };
 	}
-	if (hit(S1_SYSTEM)) return D(`write to system directory: ${rawPath}`);
+	if (hit(s1Rules)) return D(`write to system directory: ${rawPath}`);
 	if (hit(S3_GIT_META)) return D(`write to .git metadata (executable code entry point): ${rawPath}` );
 	if (hit(S2_USER_RC)) return { verdict: "gray", reason: `write to user config/persistence entry point: ${rawPath}` };
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
@@ -766,9 +877,125 @@ function userRuleTarget(toolName: string, input: Record<string, unknown>, cwd: s
 // only ever sees a fixed existence hint — zero path plaintext.
 // ============================================================================
 
-/** Path-like tokens in a shell command string: ~/…, $HOME/…, absolute /…, ./… / ../…, and word/word relative forms. URL path segments can match the absolute branch — harmless: resolution against denyPaths prefixes is what decides, false positives ask (safe direction) */
-const BASH_PATH_TOKENS =
+/** Path-like tokens in a shell command string: ~/…, $HOME/…, absolute /…, ./… / ../…, and word/word relative forms. URL path segments can match the absolute branch — harmless: resolution against denyPaths prefixes is what decides, false positives ask (safe direction).
+ *
+ * Exported as the SEMANTIC ORACLE for #32's linear tokenizer (bashPathTokens) — the
+ * production path never runs this regex: its four alternatives backtrack
+ * quadratically on long failure searches (a 200k separator-free run takes ~28s,
+ * issue #32), and unlike the danger regexes (#25's 8192 cap) it cannot be capped —
+ * truncation would let a protected-path spelling beyond the cap silently escape
+ * the deterministic ask (ADR-0002's never-silently-passed contract). */
+export const BASH_PATH_TOKENS =
 	/(?:~|\$HOME)(?:\/[\w.@*-]+)*|\/(?:[\w.@*-]+\/)*[\w.@*-]*|\.{1,2}(?:\/[\w.@*-]+)+|[\w.-]+(?:\/[\w.-]+)+/g;
+
+/** ASCII class membership for the tokenizer (JS \w is ASCII-only; non-ASCII code
+ *  points simply fall outside the classes, matching the regex). */
+const TOKEN_W2 = new Uint8Array(128); // [\w.@*-]
+const TOKEN_W4 = new Uint8Array(128); // [\w.-]
+for (let c = 0; c < 128; c++) {
+	const ch = String.fromCharCode(c);
+	if (/[a-zA-Z0-9_]/.test(ch) || ".@*-".includes(ch)) TOKEN_W2[c] = 1;
+	if (/[a-zA-Z0-9_]/.test(ch) || ".-".includes(ch)) TOKEN_W4[c] = 1;
+}
+
+const isW2 = (s: string, i: number): boolean => i < s.length && s.charCodeAt(i) < 128 && TOKEN_W2[s.charCodeAt(i)] === 1;
+const isW4 = (s: string, i: number): boolean => i < s.length && s.charCodeAt(i) < 128 && TOKEN_W4[s.charCodeAt(i)] === 1;
+
+/** #32: linear tokenizer for BASH_PATH_TOKENS — one deterministic pass, provably
+ *  O(n): each alternative parses greedily with at most a bounded (≤ 2) retry, and
+ *  the scan position only advances. The regex oracle's matchAll semantics are
+ *  reproduced exactly (alternation priority included; equivalence pinned by a
+ *  fuzz test against the oracle). Derivation per alternative:
+ *  - alt1 `(~|$HOME)(\/W2+)*`: the star never fails — prefix + maximal (/ + W2-run)
+ *    repetitions; a bare ~ / $HOME is a legal zero-iteration match.
+ *  - alt2 `\/(W2+\/)*W2*`: pairs stop at the first word-run not followed by a slash;
+ *    the trailing star always succeeds, so the greedy parse is THE match (a lone
+ *    "/" is a legal zero-pair, empty-tail match).
+ *  - alt3 `\.{1,2}(\/W2+)+`: dots are tried greedily (2 then 1 — the regex's DFS
+ *    order); the plus needs one '/'-then-W2 continuation, else the alternative fails.
+ *  - alt4 `W4+(\/W4+)+`: the leading run is maximal [p, e); a continuation is viable
+ *    ONLY at a '/' (a literal) immediately followed by a W4 char, and once viable
+ *    the greedy inner always completes — so the DFS-first match takes the LARGEST
+ *    viable '/' at or before e and extends greedily. This is exactly where the
+ *    regex paid O(n) per start position on failure; the scan computes it in O(1)
+ *    amortized. */
+export function bashPathTokens(command: string): string[] {
+	const s = command;
+	const n = s.length;
+	// Right-to-left precompute of maximal-run ends — the single pass that makes every
+	// position O(1): runEndX[i] = first index >= i not in class X (i when s[i] itself
+	// is out of class; n at the end of string).
+	const runEnd2 = new Int32Array(n + 1);
+	const runEnd4 = new Int32Array(n + 1);
+	runEnd2[n] = n;
+	runEnd4[n] = n;
+	for (let i = n - 1; i >= 0; i--) {
+		runEnd2[i] = isW2(s, i) ? runEnd2[i + 1] : i;
+		runEnd4[i] = isW4(s, i) ? runEnd4[i + 1] : i;
+	}
+	const out: string[] = [];
+	let p = 0;
+	while (p < n) {
+		const c = s[p];
+		let m = 0; // match end (exclusive); 0 = no match at p
+		if (c === "~" || s.startsWith("$HOME", p)) {
+			// alt1: deterministic greedy (/ + W2-run) repetitions
+			let q = c === "~" ? p + 1 : p + 5;
+			for (;;) {
+				if (s[q] === "/" && isW2(s, q + 1)) q = runEnd2[q + 1];
+				else break;
+			}
+			m = q;
+		} else if (c === "/") {
+			// alt2: (W2-run + /) pairs while possible, then the trailing W2-run
+			let q = p + 1;
+			for (;;) {
+				if (!isW2(s, q)) break; // empty tail — the match is the consumed prefix
+				const r = runEnd2[q];
+				if (s[r] !== "/") {
+					q = r; // tail run consumes through r
+					break;
+				}
+				q = r + 1; // pair complete — another may follow
+			}
+			m = q;
+		} else if (c === ".") {
+			// alt3: dots greedy 2 then 1; inner = maximal (/ + W2-run) repetitions, >= 1 required
+			const innerEnd = (q: number): number | null => {
+				if (s[q] !== "/" || !isW2(s, q + 1)) return null;
+				let r = q;
+				for (;;) {
+					if (s[r] === "/" && isW2(s, r + 1)) r = runEnd2[r + 1];
+					else break;
+				}
+				return r;
+			};
+			if (s[p + 1] === ".") m = innerEnd(p + 2) ?? 0;
+			if (m === 0) m = innerEnd(p + 1) ?? 0;
+		}
+		if (m === 0 && isW4(s, p)) {
+			// alt4: the maximal leading run is [p, e). '/' is not in W4, so the run
+			// itself contains no slash and the ONLY viable continuation split is at e
+			// — the O(1) step that replaces the regex's O(n)-per-position backtrack.
+			const e = runEnd4[p];
+			if (s[e] === "/" && isW4(s, e + 1)) {
+				let q = e;
+				for (;;) {
+					if (s[q] === "/" && isW4(s, q + 1)) q = runEnd4[q + 1];
+					else break;
+				}
+				m = q;
+			}
+		}
+		if (m > p) {
+			out.push(s.slice(p, m));
+			p = m; // matchAll semantics: continue after the match
+		} else {
+			p++;
+		}
+	}
+	return out;
+}
 
 /** Normalized forms of one path for denyPaths comparison: base tier only (ADR-0002) —
  *  no ancestor rebuild; a nonexistent target under a symlinked dir falls to the
@@ -793,7 +1020,7 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 		// "/"-only, so unify separators first (drive letter is skipped by the absolute-path branch;
 		// a mis-read shell escape only yields extra candidates — false positives ask, the safe direction)
 		const cmd = String(input.command ?? "");
-		return [...(path.sep === "\\" ? cmd.replace(/\\/g, "/") : cmd).matchAll(BASH_PATH_TOKENS)].map((m) => m[0]);
+		return bashPathTokens(path.sep === "\\" ? cmd.replace(/\\/g, "/") : cmd);
 	}
 	if (kind === "file") {
 		const p = typeof input.path === "string" && input.path ? input.path : null;
@@ -848,18 +1075,189 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 	return null;
 }
 
+// ============================================================================
+// Self-protection layer (ADR-0005): gate integrity over configuration exemption
+//
+// The gate cannot be turned off by the thing it gates. A hard deny over the gate's
+// own files, immune to builtinDenyFloor:false and to user allow rules; the #54
+// verdicts audit directory additionally denies reads (records carry untrusted raw
+// model output that must not flow back into agent context). Protected scope:
+//   - <agentDir>/config/pi-verdict.json (the gate's decision input)
+//   - <agentDir>/config/pi-verdict-trust.json (project-trust decisions)
+//   - the installed extension copy (pi under <agentDir>/extensions/, omp under
+//     plugins/node_modules/<pkg>/ in its config root — the install forms listed
+//     with resolveAgentDir; dev checkouts are not in scope)
+//   - <agentDir>/verdicts/ (write + read)
+// Semantics: every in-gate write is by definition agent-initiated → deny (the
+// reason points the user to manual edits); reads pass outside the audit dir; the
+// user's own editor writes never pass through the gate. Deliberately snapshot-free
+// (ADR-0005): no in-memory tamper baseline, so concurrent sessions never fight over
+// one another's legitimate edits. The bash side is a substring match and stays
+// obfuscatable (honest declaration, ADR-0001): it raises the bar, it is not a
+// guarantee against a direct rewrite outside a tool call.
+// ============================================================================
+
+interface ProtectedSet {
+	/** exact protected files (lexical absolute + realpath forms) */
+	exact: string[];
+	/** protected directory prefixes (npm package install form: the whole package dir) */
+	prefixes: string[];
+	/** read-deny prefixes (#54): the verdicts audit dir */
+	readPrefixes: string[];
+	/** bash/powershell command-string signatures (substring match, obfuscatable) */
+	bashPatterns: RegExp[];
+}
+
 /**
- * Tool call → rule-layer verdict. Order (#12; ADR-0002 inserts denyPaths):
+ * Build the protected set. ownFile is this module's path (import.meta.url resolved;
+ * null = unresolvable, config/trust/verdicts still protected). The installed copy is
+ * protected only when ownFile sits under one of the install roots (the forms listed
+ * with resolveAgentDir); dev checkouts (source inside the cwd) are NOT protected —
+ * in-project development writes are legitimate daily work.
+ */
+export function buildProtectedSet(agentDir: string, ownFile: string | null): ProtectedSet {
+	const exact = new Set<string>();
+	const prefixes = new Set<string>();
+	// The gate's decision inputs: the policy and the project-trust store.
+	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict.json"))) exact.add(f);
+	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"))) exact.add(f);
+
+	// Installed copy target: single-file form → the file itself (exact); npm directory
+	// form → the package root (prefix). extRoot and ownFile are matched on both their
+	// lexical and realpath forms so a symlinked directory (e.g. macOS /var →
+	// /private/var) cannot misalign the set.
+	const extTargets = new Set<string>();
+	if (ownFile) {
+		const extRoots = new Set<string>();
+		const agentBases = new Set(baseForms(agentDir));
+		const configRootBases = new Set([...agentBases].map((b) => path.dirname(b)));
+		for (const seg of [["extensions"], ["plugins", "node_modules"]]) {
+			const bases = seg.length === 2 ? new Set([...agentBases, ...configRootBases]) : agentBases;
+			for (const base of bases) {
+				for (const root of baseForms(path.join(base, ...seg))) extRoots.add(root);
+			}
+		}
+		const ownForms = new Set(baseForms(ownFile));
+		for (const extRoot of extRoots) {
+			for (const own of ownForms) {
+				if (!own.startsWith(extRoot + path.sep)) continue;
+				const segs = path.relative(extRoot, own).split(path.sep);
+				const singleFile = segs.length === 1;
+				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir
+				const target = singleFile ? own : path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1));
+				for (const f of baseForms(target)) {
+					(singleFile ? exact : prefixes).add(f);
+					extTargets.add(f);
+				}
+			}
+		}
+	}
+
+	// bash signatures: the config filename literal (any spelling contains it) + the trust
+	// filename + the installed-copy path variants
+	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/];
+	if (extTargets.size > 0) bashPatterns.push(pathAlternation([...extTargets], agentDir));
+
+	// #54 verdicts dir: gate-owned audit storage. Writes ride the normal prefixes; reads
+	// are denied separately — records carry raw model output that must not reach the agent.
+	const verdictsForms = baseForms(path.join(agentDir, "verdicts"));
+	for (const f of verdictsForms) prefixes.add(f);
+	bashPatterns.push(pathAlternation(verdictsForms, agentDir));
+
+	return { exact: [...exact], prefixes: [...prefixes], readPrefixes: verdictsForms, bashPatterns };
+}
+
+/** Regex alternation matching any spelling of the given absolute paths in a shell command:
+ *  the literal path, its ~/ form, its $HOME/ form, and its $PI_CODING_AGENT_DIR/ form. */
+function pathAlternation(forms: string[], agentDir: string): RegExp {
+	const home = os.homedir();
+	const alts = new Set<string>(forms.map(escapeRegExp));
+	for (const f of forms) {
+		if (f.startsWith(home + path.sep)) {
+			const rel = f.slice(home.length + 1);
+			alts.add(escapeRegExp("~/" + rel));
+			alts.add("\\$HOME/" + escapeRegExp(rel));
+		}
+		for (const base of baseForms(agentDir)) {
+			if (f.startsWith(base + path.sep)) alts.add("\\$PI_CODING_AGENT_DIR/" + escapeRegExp(f.slice(base.length + 1)));
+		}
+	}
+	return new RegExp(`(?:${[...alts].join("|")})`);
+}
+
+/** Does the resolved write path hit the protected set? realpath guards against a symlink
+ *  bypass; a nonexistent target rebuilds its real form from the nearest existing ancestor (#20). */
+export function isProtectedWritePath(rawPath: string, cwd: string, prot: ProtectedSet): boolean {
+	if (!rawPath) return false;
+	for (const c of rebuiltForms(path.resolve(cwd, expandHome(rawPath)))) {
+		if (prot.exact.includes(c)) return true;
+		for (const p of prot.prefixes) {
+			if (c === p || c.startsWith(p + path.sep)) return true;
+		}
+	}
+	return false;
+}
+
+/** Read-deny for the verdicts dir (#54): audit records contain raw fail-closed model
+ *  output — untrusted text that must not flow back into agent context. Separated from
+ *  write protection because it is read semantics. */
+export function isProtectedReadPath(rawPath: string | undefined, cwd: string, prot: ProtectedSet): boolean {
+	if (prot.readPrefixes.length === 0) return false;
+	const target = rawPath ?? cwd; // #48: absent path → cwd is the effective target
+	for (const c of rebuiltForms(path.resolve(cwd, expandHome(target)))) {
+		for (const p of prot.readPrefixes) {
+			if (c === p || c.startsWith(p + path.sep)) return true;
+		}
+	}
+	return false;
+}
+
+/** Self-protection verdict (layer 0, before everything): touching the gate's own files
+ *  → a non-exemptable deny; otherwise null, handing off to the later layers. */
+function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
+	switch (toolName) {
+		case "write":
+		case "edit":
+			if (isProtectedWritePath(String(input.path ?? ""), cwd, prot)) {
+				return { verdict: "deny", reason: `self-protection layer (ADR-0005): ${input.path} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`, selfProtect: true };
+			}
+			return null;
+		case "read":
+		case "grep":
+		case "find":
+		case "ls":
+			if (isProtectedReadPath(typeof input.path === "string" ? input.path : undefined, cwd, prot)) {
+				return { verdict: "deny", reason: `self-protection layer (#54): ${typeof input.path === "string" ? input.path : cwd} holds the gate's verdict audit records — agent reads are denied (untrusted raw model output inside); view them outside the agent`, selfProtect: true };
+			}
+			return null;
+		case "bash":
+		case "powershell": {
+			const cmd = String(input.command ?? "");
+			if (prot.bashPatterns.some((re) => re.test(cmd))) {
+				return { verdict: "deny", reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only", selfProtect: true };
+			}
+			return null;
+		}
+		default:
+			return null; // MCP/custom tools never reach the rule layer
+	}
+}
+
+/**
+ * Tool call → rule-layer verdict. Order (#12; ADR-0005 adds layer 0; ADR-0002 inserts denyPaths):
+ *   0. self-protection — deny is terminal (no config exempts it, not even builtinDenyFloor:false)
  *   1. built-in base (bash danger regex floor / path sensitivity grading) — deny is terminal
  *      (the floor can be turned off via builtinDenyFloor)
  *   2. user deny → deny (beats allow)
- *      2a. gateOmpDir (default on): path/command touching a `.omp` directory → terminal ask
+ *      2a. gateOmpDir (default off): path/command touching a `.omp` directory → terminal ask
  *   3. denyPaths hit → terminal ask (ADR-0002: the declaring user adjudicates; before user allow)
  *   4. user allow → allow
  *   5. custom-tool exact match (user.tools) → allow (bypasses classifier for that tool)
  *   6. base (path tools' default allow/gray; everything else gray) → classifier
  */
-function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: string, user: UserRules, denyPathBases: string[]): RuleResult {
+function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: string, user: UserRules, prot: ProtectedSet, denyPathBases: string[]): RuleResult {
+	const sp = selfProtectCheck(toolName, input, cwd, prot);
+	if (sp) return sp;
 	let base: RuleResult;
 	const kind = toolKind(toolName);
 	if (kind === "command") {
@@ -976,7 +1374,6 @@ export type PipelineHost = Pick<ExtensionContext["sessionManager"], "getBranch" 
 /**
  * 从会话分支收集精简转录原料:user 消息行与 assistant 工具调用行。
  * 丢弃 assistant 叙述/thinking 与 toolResult(注入面与 token 大头)。
- * 影子缓存的 contextKey 与 buildTranscript 同源(同一批 user 行),保证键与模型输入一致。
  */
 function collectTranscriptParts(host: PipelineHost): { userLines: string[]; toolLines: string[] } {
 	const userLines: string[] = [];
@@ -1283,124 +1680,6 @@ async function classifyWithModel(
 	return { verdict: "deny", reason: `classifier failure (fail-closed): ${failures.join("; ")}`, source: "fail-closed", auditRaw: { transcript, rawResponse, modelId: model.id, thinking } };
 }
 
-// ============================================================================
-// 影子缓存:双键命中率遥测(observe-only,#7;设计定案见 #5)
-//
-// 键设计(#5 定案):
-//   commandKey = hash(toolName + JSON.stringify(input) + cwd)  —— 不做命令规范化
-//   contextKey = hash(最近 5 条 sanitized user 行,与 transcript 同源同窗口)
-// 行为:
-//   每次灰区裁决前查 would-be 命中;真实模型 allow/deny 回写(LRU 128,上下文变更覆写);
-//   ask 与 fail-closed 不入缓存;命中时对比缓存裁决与本次模型裁决(反事实一致性)。
-//   永不生效:裁决永远来自模型,此处只记录。
-// ============================================================================
-
-const SHADOW_LRU_MAX = 128;
-
-type ShadowVerdict = "allow" | "deny";
-interface ShadowEntry {
-	ctxKey: string;
-	verdict: ShadowVerdict;
-}
-
-/** FNV-1a 32 位摘要:仅会话内键用,非密码学 */
-function fnv1a(s: string): string {
-	let h = 0x811c9dc5;
-	for (let i = 0; i < s.length; i++) {
-		h ^= s.charCodeAt(i);
-		h = Math.imul(h, 0x01000193);
-	}
-	return (h >>> 0).toString(16);
-}
-
-interface ShadowStats {
-	gray: number; // 灰区裁决总数(含 ask/fail-closed)
-	hits: number; // 双键命中(would-be)
-	missNoEntry: number;
-	missCtx: number;
-	cmdRepeats: number; // 命令键重复(忽略 context 的上界口径)
-	divergeDangerous: number; // 命中且缓存 allow → 模型 deny(若缓存生效会放过本次拦截)
-	divergeConservative: number; // 命中且缓存 deny → 模型 allow
-}
-
-type ShadowProbe =
-	| { result: "hit"; entry: ShadowEntry }
-	| { result: "no-entry" }
-	| { result: "ctx-changed"; prevVerdict: ShadowVerdict };
-
-class ShadowCache {
-	private lru = new Map<string, ShadowEntry>();
-	private seen = new Set<string>();
-	readonly stats: ShadowStats = { gray: 0, hits: 0, missNoEntry: 0, missCtx: 0, cmdRepeats: 0, divergeDangerous: 0, divergeConservative: 0 };
-
-	/** 会话重置:清空 LRU 与统计(#5 定案:会话内存态) */
-	reset(): void {
-		this.lru.clear();
-		this.seen.clear();
-		Object.assign(this.stats, { gray: 0, hits: 0, missNoEntry: 0, missCtx: 0, cmdRepeats: 0, divergeDangerous: 0, divergeConservative: 0 });
-	}
-
-	/** 灰区裁决前置查询(仅遥测,不影响裁决) */
-	probe(commandKey: string, ctxKey: string): ShadowProbe {
-		this.stats.gray++;
-		if (this.seen.has(commandKey)) this.stats.cmdRepeats++;
-		else this.seen.add(commandKey);
-		const entry = this.lru.get(commandKey);
-		if (!entry) {
-			this.stats.missNoEntry++;
-			return { result: "no-entry" };
-		}
-		if (entry.ctxKey !== ctxKey) {
-			this.stats.missCtx++;
-			return { result: "ctx-changed", prevVerdict: entry.verdict };
-		}
-		this.stats.hits++;
-		// LRU 位置刷新,保留原裁决(命中即重放)
-		this.lru.delete(commandKey);
-		this.lru.set(commandKey, entry);
-		return { result: "hit", entry };
-	}
-
-	/** 真实模型 allow/deny 裁决后回写;ask 与 fail-closed 不入 */
-	record(commandKey: string, ctxKey: string, verdict: ShadowVerdict): void {
-		this.lru.delete(commandKey);
-		this.lru.set(commandKey, { ctxKey, verdict });
-		if (this.lru.size > SHADOW_LRU_MAX) {
-			const oldest = this.lru.keys().next().value;
-			if (oldest !== undefined) this.lru.delete(oldest);
-		}
-	}
-
-	/** 命中后的反事实一致性计数(仅与可缓存裁决对比;ask/fail-closed 不可比) */
-	countDivergence(cached: ShadowVerdict, actual: ShadowVerdict): void {
-		if (cached === actual) return;
-		if (cached === "allow" && actual === "deny") this.stats.divergeDangerous++;
-		else this.stats.divergeConservative++;
-	}
-
-	/** /automode 展示用摘要 */
-	summary(): string {
-		const s = this.stats;
-		if (s.gray === 0) return "shadow cache: no gray-zone verdicts yet this session";
-		const rate = ((100 * s.hits) / s.gray).toFixed(1);
-		return `shadow cache: gray ${s.gray} · two-key hits ${s.hits} (${rate}%) · miss no-entry ${s.missNoEntry}/ctx-changed ${s.missCtx} · cmd repeats ${s.cmdRepeats} · divergence dangerous ${s.divergeDangerous}/conservative ${s.divergeConservative}`;
-	}
-}
-
-function shadowCommandKey(toolName: string, input: Record<string, unknown>, cwd: string): string {
-	return fnv1a(`${toolName}\u0000${JSON.stringify(input)}\u0000${cwd}`);
-}
-
-function shadowContextKey(host: PipelineHost): string {
-	const { userLines } = collectTranscriptParts(host);
-	return fnv1a(userLines.slice(-MAX_USER_MESSAGES).join("\u0000"));
-}
-
-function shadowTag(probe: ShadowProbe): string {
-	if (probe.result === "hit") return `(shadow cache: would-hit ${probe.entry.verdict})`;
-	if (probe.result === "ctx-changed") return `(shadow cache: miss:context-changed, previous ${probe.prevVerdict})`;
-	return `(shadow cache: miss:no-entry)`;
-}
 
 // ============================================================================
 // Confidence cascade stats (#63/#67: observe-first, session-memory state; the #7 discipline)
@@ -1411,14 +1690,15 @@ interface FallbackStats {
 	agreed: number; // fallback verdict equals the first layer's (fail-closed defaults to deny)
 	overruled: number; // fallback verdict differs (enforce applies it; shadow observes the would-be)
 	errored: number; // fallback unresolvable or its call failed
+	rescuedAllow: number; // #71: fallback allows after a fail-closed origin; a subset of overruled
 }
 
 class FallbackCascade {
-	readonly stats: FallbackStats = { triggered: 0, agreed: 0, overruled: 0, errored: 0 };
+	readonly stats: FallbackStats = { triggered: 0, agreed: 0, overruled: 0, errored: 0, rescuedAllow: 0 };
 
 	/** Session reset (#7 discipline: session-memory state) */
 	reset(): void {
-		Object.assign(this.stats, { triggered: 0, agreed: 0, overruled: 0, errored: 0 });
+		Object.assign(this.stats, { triggered: 0, agreed: 0, overruled: 0, errored: 0, rescuedAllow: 0 });
 	}
 
 	note(first: "allow" | "ask" | "deny" | null, fb: "allow" | "ask" | "deny" | null): void {
@@ -1428,6 +1708,7 @@ class FallbackCascade {
 			return;
 		}
 		// A fail-closed origin produced no first-layer verdict; its default outcome is deny
+		if (first === null && fb === "allow") this.stats.rescuedAllow++;
 		if ((first ?? "deny") !== fb) this.stats.overruled++;
 		else this.stats.agreed++;
 	}
@@ -1436,7 +1717,7 @@ class FallbackCascade {
 	summary(mode: "shadow" | "enforce"): string {
 		const s = this.stats;
 		if (s.triggered === 0) return "confidence cascade: not triggered this session";
-		return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${mode === "enforce" ? "overruled" : "would-overrule"} ${s.overruled} · errored ${s.errored}`;
+		return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${mode === "enforce" ? "overruled" : "would-overrule"} ${s.overruled} · ${mode === "enforce" ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
 	}
 }
 
@@ -1486,7 +1767,6 @@ export interface AuditRecord {
 	/** #62: protected-path asks are recorded too — their user answers grade the
 	 *  denyPaths rules; rule allow/deny verdicts remain unaudited. */
 	source: "model" | "fail-closed" | "protected-path";
-	shadow: string;
 	degraded: boolean;
 	/** #62 ground truth: the user's answer to an interactive ask confirm. Present only
 	 *  on records whose confirm actually ran; headless/degraded asks omit it. */
@@ -1575,8 +1855,8 @@ export interface RulesLoadReport {
  * 测试面,与 adjudicate 同组)。
  */
 export class SessionState {
-	readonly shadow = new ShadowCache();
 	readonly fallback = new FallbackCascade();
+	readonly prot: ProtectedSet;
 	userRules: UserRules;
 	audit: AuditLog | null;
 	private denyPathBases: string[] | null = null;
@@ -1587,6 +1867,7 @@ export class SessionState {
 	constructor(userRules: UserRules = loadUserRules().rules, agentDir: string | null = null) {
 		this.userRules = userRules;
 		this.agentDir = agentDir;
+		this.prot = buildProtectedSet(agentDir ?? agentDirPath(), OWN_FILE_PATH);
 		this.audit = this.makeAudit(userRules);
 	}
 
@@ -1596,7 +1877,7 @@ export class SessionState {
 	}
 
 	/** Reload user (+ trusted project) rules and re-anchor denyPaths to `cwd` (ADR-0002: once per session
-	 *  start; /verdict re-anchors after a config edit). Leaves shadow-cache / fallback stats untouched. */
+	 *  start; /verdict re-anchors after a config edit). Leaves fallback stats untouched. */
 	reloadRules(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
 		const loaded = loadUserRules(cwd, sessionTrustedRoot);
 		this.userRules = loaded.rules;
@@ -1605,11 +1886,9 @@ export class SessionState {
 		return { skipped: loaded.skipped, shortcutWarning: loaded.shortcutWarning, project: loaded.project };
 	}
 
-	/** 会话重置:重载用户规则(配置改动新会话生效)+ 按会话 cwd 重锚 denyPaths
-	 *  (ADR-0002: 每会话锚定一次)+ 清影子缓存;返回加载报告供表现层通知 */
+	/** Session reset: reload rules, re-anchor denyPaths to the session cwd, and reset verdict statistics. */
 	reset(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
 		const report = this.reloadRules(cwd, sessionTrustedRoot);
-		this.shadow.reset();
 		this.fallback.reset();
 		this.verdictCounts = { allow: 0, ask: 0, deny: 0 };
 		return report;
@@ -1632,16 +1911,14 @@ export class SessionState {
  *  结果(含其 fail-closed——呈现模板相同);fail-closed = 无可用分类器模型 */
 export type VerdictSource = "rule" | "protected-path" | "classifier" | "fail-closed";
 
-/** 判定管线的输出值对象:一次 tool_call 的完整裁决。detail 为 UI-only 明文(受保护
- *  路径仅入本地确认框,ADR-0002 零泄漏承诺——reason 与通知永不携带);degraded 标记
- *  ask 在无 UI 会话的降级产物;shadow 为影子缓存标注(仅 debug 呈现拼接用)。 */
+/** Pipeline output for one tool call. Protected-path detail is UI-only; `degraded`
+ *  marks asks converted to denies when no interactive UI is available. */
 export interface Verdict {
 	verdict: "allow" | "ask" | "deny";
 	reason: string;
 	detail?: string;
 	source: VerdictSource;
 	degraded: boolean;
-	shadow?: string;
 	/** #62: pending audit record for an interactive ask — adjudicate defers the append so
 	 *  the handler can attach the user's answer after the confirm resolves. The handler
 	 *  owns the single finalize: append with userAnswer/answeredAt, or without them when
@@ -1691,8 +1968,9 @@ interface CascadeResult {
  *  - demotion with no fallback → ask the human
  *  - shadow → the fallback records its opinion; a demotion still asks the human, a
  *    fail-closed deny stands
- *  - enforce → the fallback adjudicates de novo, with one carve-out: a demoted first-layer
- *    deny may not be flipped to an automatic allow — the human decides
+ *  - enforce → the fallback adjudicates de novo, with one carve-out family (#71): a demoted
+ *    first-layer deny or ask may not be auto-relaxed to an allow — the human decides; a
+ *    fail-closed origin has no first-layer verdict, so any fallback ruling applies
  *  - fallback failure/unresolvable on a cascaded call → ask the human (the tier that was
  *    to adjudicate is down); headless degrades downstream */
 async function runConfidenceCascade(
@@ -1733,10 +2011,10 @@ async function runConfidenceCascade(
 	state.fallback.note(first?.verdict ?? null, outcome.verdict);
 	const fb: FallbackAudit = { ...base, model: resolved.model.id, verdict: outcome.verdict, reason: outcome.reason, durationMs: Date.now() - start, error: null };
 	if (mode === "shadow") return { ...demotedMark, fb, ...shadowApplied };
-	// The one carve-out on second-layer authority: a demoted first-layer deny may not
-	// become an automatic allow — the human decides (headless degrades to deny downstream)
-	if (trigger.kind === "demotion" && first?.verdict === "deny" && outcome.verdict === "allow") {
-		return { demoted: true, fb: { ...fb, effective: "ask" }, effective: { verdict: "ask", reason: `${outcome.reason} (first layer said deny at confidence ${trigger.confidence}%; second opinion allows — your call)`, source: "classifier" } };
+	// #71: a fallback may not auto-relax a demoted deny or ask; fail-closed has no
+	// first-layer verdict, so an allow from the fallback is a de novo ruling.
+	if (trigger.kind === "demotion" && (first?.verdict === "deny" || first?.verdict === "ask") && outcome.verdict === "allow") {
+		return { demoted: true, fb: { ...fb, effective: "ask" }, effective: { verdict: "ask", reason: `${outcome.reason} (first layer said ${first!.verdict} at confidence ${trigger.confidence}%; second opinion allows — your call)`, source: "classifier" } };
 	}
 	return { ...demotedMark, fb: { ...fb, effective: outcome.verdict }, effective: { verdict: outcome.verdict, reason: outcome.reason, source: "classifier" } };
 }
@@ -1789,10 +2067,9 @@ export async function resolveAskWithoutHuman(
 }
 
 /**
- * 判定管线(CONTEXT.md「判定管线」词条的实现):内置 floor → 用户 deny →
- * denyPaths ask → 用户 allow → 灰区分类器;ask 降级(无 UI → deny)与 fail-closed
- * 内建于此,两处重复的降级实现自此唯一。零 UI:表现(notify/confirm)由扩展
- * handler 按 source × degraded 模板呈现。导出仅为测试(内部 seam 的测试面,#35 既有模式)。
+ * Pipeline implementation: built-in floor → user deny → denyPaths ask → user allow
+ * → gray-zone classifier. Ask degradation and fail-closed handling live here; the
+ * handler presents verdicts using source alone. Exported for tests (#35).
  */
 /** [pi-verdict local patch: autoDeny] reason suffix on asks that would have been auto-denies */
 const AUTO_DENY_OFF_SUFFIX = " (autoDeny is off: this would have been denied — your call)";
@@ -1802,10 +2079,10 @@ export async function adjudicate(
 	call: { toolName: string; input: Record<string, unknown> },
 	env: AdjudicateEnv,
 ): Promise<Verdict> {
-	const rule = classifyByRules(call.toolName, call.input, env.cwd, state.userRules, state.anchoredDenyPathBases(env.cwd));
+	const rule = classifyByRules(call.toolName, call.input, env.cwd, state.userRules, state.prot, state.anchoredDenyPathBases(env.cwd));
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") {
-		if (!state.userRules.autoDeny && env.hasUI) return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
+		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI) return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
 		return { verdict: "deny", reason: rule.reason ?? "", source: "rule", degraded: false };
 	}
 
@@ -1816,7 +2093,7 @@ export async function adjudicate(
 	// appends immediately. Recording stays observe-only — it never changes a verdict; write
 	// failures stay fail-soft in the sink and surface once via drainWarning.
 	const actionLine = toolCallLine(call.toolName, call.input);
-	const buildRecord = (v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">, raw: ClassifierOutcome["auditRaw"] | null, shadow: string): AuditRecord => ({
+	const buildRecord = (v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">, raw: ClassifierOutcome["auditRaw"] | null): AuditRecord => ({
 		ts: new Date().toISOString(),
 		sessionId: env.host.getSessionId(),
 		cwd: env.cwd,
@@ -1827,18 +2104,17 @@ export async function adjudicate(
 		thinking: raw?.thinking ?? null,
 		transcript: raw?.transcript ?? null,
 		rawResponse: raw?.rawResponse ?? null,
-		shadow,
 		...v,
 	});
 
 	if (rule.verdict === "ask") {
 		// denyPaths 命中 → ask 终局(ADR-0002):声明者本人裁决例外;无 UI 降级为 deny
 		if (env.hasUI) {
-			const ppRecord: AuditRecord = { ...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: "protected-path", degraded: false }, null, "-"), detail: rule.detail };
+			const ppRecord: AuditRecord = { ...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: "protected-path", degraded: false }, null), detail: rule.detail };
 			return { verdict: "ask", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: false, autoResolve: "deny", ...(state.audit ? { pendingAudit: ppRecord } : {}) };
 		}
 		// headless: the ask degrades to deny — recorded like the gray-zone rule (the effective post-degradation verdict is what lands in the record)
-		state.audit?.append({ ...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: "protected-path", degraded: true }, null, "-"), detail: rule.detail });
+		state.audit?.append({ ...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: "protected-path", degraded: true }, null), detail: rule.detail });
 		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: true };
 	}
 
@@ -1847,12 +2123,12 @@ export async function adjudicate(
 	const resolved = env.getModel();
 	if (!resolved) {
 		const reason = "no classifier model available (fail-closed)";
-		// #67: a fail-closed origin cascades to the fallback if configured — under enforce
-		// the fallback adjudicates de novo (superseding the 0.10.0 ratchet decision);
-		// shadow records its opinion and the deny stands
+		// #71: a fail-closed default deny is not a negative judgment. Record the applied
+		// fallback verdict when one exists; a headless ask is recorded as its degraded deny.
 		const cascade = await runConfidenceCascade(state, env, null, { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine);
 		const eff = cascade.effective;
-		const fcRecord = buildRecord({ verdict: "deny", reason, source: "fail-closed", degraded: false }, null, "-");
+		const effAskHeadless = eff?.verdict === "ask" && !env.hasUI;
+		const fcRecord = buildRecord({ verdict: eff ? (effAskHeadless ? "deny" : eff.verdict) : "deny", reason: eff?.reason ?? reason, source: "fail-closed", degraded: effAskHeadless }, null);
 		if (cascade.fb) fcRecord.fallback = cascade.fb;
 		if (eff?.verdict === "ask" && env.hasUI) {
 			return { verdict: "ask", reason: eff.reason, source: eff.source, degraded: false, autoResolve: "deny", ...(state.audit ? { pendingAudit: fcRecord } : {}) };
@@ -1862,26 +2138,13 @@ export async function adjudicate(
 		}
 		state.audit?.append(fcRecord);
 		if (eff?.verdict === "allow") return { verdict: "allow", reason: eff.reason, source: "classifier", degraded: false };
-		if (eff) return { verdict: "deny", reason: eff.reason, source: eff.source, degraded: !env.hasUI };
+		if (eff) return { verdict: "deny", reason: eff.reason, source: eff.source, degraded: effAskHeadless };
 		return { verdict: "deny", reason, source: "fail-closed", degraded: false };
 	}
-
-	// 影子缓存(observe-only):前置查询 would-be 命中,不改变任何裁决
-	const cmdKey = shadowCommandKey(call.toolName, call.input, env.cwd);
-	const ctxKey = shadowContextKey(env.host);
-	const probe = state.shadow.probe(cmdKey, ctxKey);
 
 	env.onPhase?.("classifier", resolved.model.id);
 	const outcome = await classifyWithModel(env.host, env.signal, env.complete, resolved.model, actionLine, resolved.thinking, state.userRules.denyPaths.length > 0, CLASSIFIER_TIMEOUT_MS, state.userRules.classifierRules);
 
-	// 影子回记:真实模型 allow/deny 入缓存;ask 与 fail-closed 不入(#5 定案);
-	// 命中且本次为可缓存裁决时,对比反事实一致性
-	if (outcome.source === "model" && outcome.verdict !== "ask") {
-		if (probe.result === "hit") state.shadow.countDivergence(probe.entry.verdict, outcome.verdict);
-		state.shadow.record(cmdKey, ctxKey, outcome.verdict);
-	}
-
-	const shadow = shadowTag(probe);
 
 	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
 	// (the first layer produced no verdict)
@@ -1893,30 +2156,32 @@ export async function adjudicate(
 	const effReason = cascade.effective?.reason ?? outcome.reason;
 	const effSource = cascade.effective?.source ?? "classifier";
 
-	// #62/#67: top-level keeps first-layer semantics (corpus comparability); the applied
-	// verdict lives in fallback.effective (enforce rows). Non-interactive asks of any
-	// origin — native, demoted, escalated — record as their effective deny, the
-	// pre-existing ask-degradation convention.
+	// #62/#67: top-level keeps first-layer semantics except that a fail-closed origin
+	// rescued by an enforcing fallback records its applied verdict, not the default deny.
 	const appliedAskHeadless = !env.hasUI && effVerdict === "ask";
-	const grayRecord = buildRecord({ verdict: appliedAskHeadless ? "deny" : outcome.verdict, reason: outcome.reason, source: outcome.source, degraded: appliedAskHeadless }, outcome.auditRaw ?? null, shadow);
+	const fcRescued = cascade.effective !== undefined && outcome.source === "fail-closed";
+	const grayRecord = buildRecord({ verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict, reason: fcRescued ? effReason : outcome.reason, source: outcome.source, degraded: appliedAskHeadless }, outcome.auditRaw ?? null);
 	if (cascade.demoted) grayRecord.demoted = true;
 	if (cascade.fb) grayRecord.fallback = cascade.fb;
 	// #62: an interactive ask defers the append to the handler finalize (ground truth);
 	// every other outcome appends immediately as before
 	if (env.hasUI && (effVerdict === "ask" || (effVerdict === "deny" && !state.userRules.autoDeny))) {
 		// Subagent gate: how this ask resolves without a human. ADR-0004 carve-out: a demoted deny is never auto-allowed.
+		// ADR-0004 carve-out: only an enforce-mode fallback may resolve a subagent ask.
+		// A shadow-mode opinion records without changing verdicts, so with no human it
+		// denies rather than auto-allowing (the pre-fix behavior let shadow allow).
 		const autoResolve: NonNullable<Verdict["autoResolve"]> = effVerdict === "deny" || effSource !== "classifier"
 			? "deny"
 			: cascade.fb
-				? (cascade.fb.verdict === "allow" && !(cascade.demoted && outcome.verdict === "deny") ? "allow" : "deny")
+				? (cascade.fb.mode === "enforce" && cascade.fb.verdict === "allow" && !(cascade.demoted && outcome.verdict === "deny") ? "allow" : "deny")
 				: "consult";
-		return { verdict: "ask", reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason, source: effSource, degraded: false, shadow, autoResolve, ...(state.audit ? { pendingAudit: grayRecord } : {}) };
+		return { verdict: "ask", reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason, source: effSource, degraded: false, autoResolve, ...(state.audit ? { pendingAudit: grayRecord } : {}) };
 	}
 	state.audit?.append(grayRecord);
-	if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: effSource, degraded: false, shadow };
-	if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: false, shadow };
-	// ask:无 UI 降级为 deny(ask 降级,CONTEXT.md 词条)
-	return { verdict: "deny", reason: effReason, source: effSource, degraded: true, shadow };
+	if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: effSource, degraded: false };
+	if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: false };
+	// ask: no UI degrades it to deny.
+	return { verdict: "deny", reason: effReason, source: effSource, degraded: true };
 }
 
 // ============================================================================
@@ -2254,6 +2519,59 @@ function dialogLineAtRow(tui: unknown, root: PiTui.Component, width: number, scr
 	}
 }
 
+// [pi-verdict local patch: omp dialog helpers] pi 0.84.3 exports DynamicBorder,
+// keyHint and rawKeyHint from @earendil-works/pi-coding-agent; omp 18.5.x does not
+// (they live in @oh-my-pi/pi-tui/chrome, which its index does not re-export), so the
+// host-namespace destructure yielded `undefined` and the rich dialog threw on
+// construction — silently degrading every ask to a plain confirm (no code preview,
+// no jev bar, EXPLAIN-GATE unreachable). These local, theme-aware substitutes keep
+// the rich dialog working on both hosts.
+
+class DialogBorder implements PiTui.Component {
+	private readonly color: (s: string) => string;
+	private cachedWidth = -1;
+	private cachedLines: string[] = [];
+	constructor(color: (s: string) => string) {
+		this.color = color;
+	}
+	invalidate(): void {
+		this.cachedWidth = -1;
+		this.cachedLines = [];
+	}
+	render(width: number): string[] {
+		if (this.cachedWidth !== width || this.cachedLines.length === 0) {
+			this.cachedWidth = width;
+			this.cachedLines = [this.color("─".repeat(Math.max(1, width)))];
+		}
+		return this.cachedLines;
+	}
+}
+
+/** Glyphs for the fixed keys the dialog hints at (pi/omp keybinding names). */
+const KEY_GLYPHS: Record<string, string> = { up: "↑", down: "↓", left: "←", right: "→", enter: "⏎", return: "⏎", escape: "esc", esc: "esc", tab: "⇥", space: "␣" };
+const HINT_FALLBACK_KEYS: Record<string, string> = { "tui.select.confirm": "enter", "tui.select.cancel": "escape", "tui.select.up": "up", "tui.select.down": "down" };
+
+const keyGlyph = (name: string): string => KEY_GLYPHS[name] ?? name;
+
+/** keyHint/rawKeyHint substitute: dim key + muted description, resolved through the
+ *  host's keybindings manager when it exposes getKeys, else the documented fallback. */
+function dialogKeyHint(theme: Theme, getKeybindings: (() => { getKeys(action: string): readonly string[] }) | undefined, action: string, description: string): string {
+	let key = "";
+	try {
+		const keys = getKeybindings?.().getKeys(action) ?? [];
+		if (keys.length > 0) key = keyGlyph(keys[0]);
+	} catch {
+		key = "";
+	}
+	if (!key) key = keyGlyph(HINT_FALLBACK_KEYS[action] ?? "");
+	return theme.fg("dim", key) + theme.fg("muted", ` ${description}`);
+}
+
+/** rawKeyHint substitute for fixed (non-configurable) keys. */
+function dialogRawKeyHint(theme: Theme, keys: string, description: string): string {
+	return theme.fg("dim", keys) + theme.fg("muted", ` ${description}`);
+}
+
 /** Selector-style dialog mirroring ExtensionSelectorComponent. Resolves `done(undefined)`
  *  with an empty container if construction throws, so the caller falls back to `confirm`.
  *  Left clicks are handled when the host forwards SGR mouse input to the dialog (a click highlights
@@ -2267,10 +2585,10 @@ export function buildApproveDialog(
 	done: (result: AskChoice | undefined) => void,
 ): PiTui.Container {
 	const { Container, Markdown, Spacer, Text, getKeybindings } = mods.tui;
-	const { DynamicBorder, getLanguageFromPath, getMarkdownTheme, keyHint, rawKeyHint } = mods.agent;
+	const { getLanguageFromPath, getMarkdownTheme } = mods.agent;
 	try {
 		const root = new Container() as PiTui.Container & { handleInput(data: string): void };
-		root.addChild(new DynamicBorder());
+		root.addChild(new DialogBorder((s) => theme.fg("border", s)));
 		root.addChild(new Spacer(1));
 		root.addChild(new Text(theme.fg("accent", theme.bold(displaySafe(spec.title))), 1, 0));
 		root.addChild(new Spacer(1));
@@ -2308,9 +2626,9 @@ export function buildApproveDialog(
 		updateList();
 		root.addChild(list);
 		root.addChild(new Spacer(1));
-		root.addChild(new Text(`${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "cancel")}`, 1, 0));
+		root.addChild(new Text(`${dialogRawKeyHint(theme, "↑↓", "navigate")}  ${dialogKeyHint(theme, getKeybindings, "tui.select.confirm", "select")}  ${dialogKeyHint(theme, getKeybindings, "tui.select.cancel", "cancel")}`, 1, 0));
 		root.addChild(new Spacer(1));
-		root.addChild(new DynamicBorder());
+		root.addChild(new DialogBorder((s) => theme.fg("border", s)));
 		// Record which choice each rendered line belongs to, so a click row can be mapped back to an option.
 		let lastWidth: number | undefined;
 		let optionAtLine: (number | undefined)[] = [];
@@ -2520,7 +2838,6 @@ export interface FooterInfo {
 	fallback: { id: string | null; mode: "shadow" | "enforce" } | null;
 	counts: { allow: number; ask: number; deny: number };
 	floorOff: boolean;
-	ompGateOff: boolean;
 	minConfidence: number | null;
 	autoDenyOff: boolean;
 	subagentGate: "off" | "normal" | "auto";
@@ -2550,10 +2867,11 @@ export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full"
 	const infoItems: string[] = [];
 	if (info.minConfidence !== null) infoItems.push(`≥${info.minConfidence}%`);
 	if (info.autoDenyOff) infoItems.push("autoDeny off");
-	if (info.subagentGate !== "off") infoItems.push(`subagent ${info.subagentGate}`);
+	if (info.subagentGate === "auto") infoItems.push("subagent auto");
 	const risks: { text: string; color: "error" | "warning" }[] = [];
 	if (info.floorOff) risks.push({ text: "floor off", color: "error" });
-	if (info.ompGateOff) risks.push({ text: ".omp gate off", color: "warning" });
+	// "off" is the fail-open deviation now that "normal" is the default (ADR-0006)
+	if (info.subagentGate === "off") risks.push({ text: "subagent off", color: "warning" });
 
 	const bgFn = theme.bg;
 	const bgAnsi = theme.getBgAnsi;
@@ -2598,28 +2916,26 @@ export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full"
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	pi.registerFlag("auto-mode", { description: "Enable Auto Mode (rules + model classifier gating for tool calls)", type: "boolean", default: true });
 	pi.registerFlag("auto-mode-model", { description: "Classifier model as provider/id[:thinking] (pi --model syntax; default: inherit session model)", type: "string" });
-	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows, with shadow-cache annotation", type: "boolean", default: false });
+	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows", type: "boolean", default: false });
 
 	let enabled = pi.getFlag("auto-mode") !== false;
 	const debug = pi.getFlag("auto-mode-debug") === true || process.env.PI_AUTO_MODE_DEBUG === "1";
 	// 会话态:复位清单归 SessionState.reset
 	const state = new SessionState(undefined, agentDirPath());
 
-	/** Verdict → UI(本扩展唯一的裁决呈现点):按 source × degraded 查模板,文案与
-	 *  重构前逐字节一致。受保护路径分支的通知永不携带路径明文与 action 行
-	 *  (ADR-0002 story 11:通知与 block reason 回流 agent context)。 */
+	/** Verdict → UI (the extension's single presentation point): presentation keys on
+	 *  source alone; protected-path wording carries the ask-degradation context. */
 	async function presentVerdict(v: Verdict, call: { toolName: string; input: Record<string, unknown> }, action: string, ui: UiContext, opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext }): Promise<{ block: true; reason: string } | undefined | "aborted"> {
 		const note = (msg: string, level: "info" | "warning" | "error"): void => ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
 		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
 		if (v.verdict === "allow") {
-			// #60 (CONTEXT.md 通知): classifier allows surface via notifyAllows OR
-			// debug — exactly one notification either way; the shadow suffix stays
-			// debug-only; mechanical passes (rule echo, protected-path confirm) stay
-			// debug-only — notifications carry judgment, the audit log carries completeness
+			// #60: classifier allows surface via notifyAllows OR debug, with one
+			// notification either way; mechanical passes stay debug-only, while the audit
+			// log carries completeness.
 			if (debug) {
 				if (v.source === "rule") note(`🛡️ allow (rule): ${action}`, "info");
 				else if (v.source === "protected-path") note("🛡️ allow (protected-path confirm)", "info");
-				else note(`🛡️ allow (classifier): ${v.reason}\n  ${action}${v.shadow ? " " + v.shadow : ""}`, "info");
+				else note(`🛡️ allow (classifier): ${v.reason}\n  ${action}`, "info");
 			} else if (state.userRules.notifyAllows && v.source === "classifier") {
 				note(`🛡️ allow (classifier): ${v.reason}\n  ${action}`, "info");
 			}
@@ -2639,7 +2955,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
 				return { block: true, reason: blockedReason("rule", v.reason) };
 			}
-			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}${debug && v.shadow ? " " + v.shadow : ""}`, "warning");
+			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
 			return { block: true, reason: blockedReason("classifier", v.reason) };
 		}
 		// ask → 人工确认;非交互已在管线内降级,能走到这里的必有 UI
@@ -2709,7 +3025,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			fallback,
 			counts: state.verdictCounts,
 			floorOff: !rules.builtinDenyFloor,
-			ompGateOff: !rules.gateOmpDir,
 			minConfidence: rules.classifierMinConfidence,
 			autoDenyOff: !rules.autoDeny,
 			subagentGate: rules.subagentGate,
@@ -2747,7 +3062,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (report.shortcutWarning) ctx.ui.notify(`pi-verdict: ${report.shortcutWarning}`, "warning");
 	}
 
-	// session_start:重置影子缓存(会话内存态,#5 定案)+ 重载用户规则(配置改动新会话生效)
+	// session_start reloads rules and resets per-session verdict statistics.
 	pi.on("session_start", async (_event, ctx) => {
 		// Project trust prompt: any await stays inside the prompt branch so the no-project path remains synchronous
 		sessionTrustedRoot = null;
@@ -2757,17 +3072,19 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const store = readTrustStore();
 			// ctx.agent is omp-only (pi's ExtensionContext has no `agent`): narrow at runtime
 			const isSub = subagentIdentity(ctx) !== null;
-			if (!rootIn(root, store.trusted) && !rootIn(root, store.untrusted) && ctx.hasUI && !isSub) {
+			// "undecided" also covers a trusted root whose override changed since approval
+			// (hash mismatch) — the user is asked about the new content (ADR-0006).
+			if (projectTrustState(root, pp, store) === "undecided" && ctx.hasUI && !isSub) {
 				const choice = await ctx.ui.select(
-					`🛡️ pi-verdict: ${pp} can override your global gate config (allow rules, builtinDenyFloor, autoDeny, …). Trust this project?`,
+					`🛡️ pi-verdict: ${pp} can override these gate keys — allow, deny, denyPaths, tools, builtinDenyFloor, gateOmpDir, autoDeny, audit, notifyAllows, footer, classifierMinConfidence, classifierFallbackModel/Mode, subagentGate, subagentAskTimeoutMs. The classifier and EXPLAIN-GATE models, the free-text rules, and the toggle shortcut stay user-only. Trust this project?`,
 					[TRUST_CHOICE, NOT_NOW_CHOICE, NEVER_CHOICE],
 				);
 				if (choice === TRUST_CHOICE) {
 					sessionTrustedRoot = root;
-					const err = recordTrust(root, "trusted");
+					const err = recordTrust(root, "trusted", pp);
 					if (err) ctx.ui.notify(`pi-verdict: trust decision not saved (${err}) — applies to this session only`, "warning");
 				} else if (choice === NEVER_CHOICE) {
-					const err = recordTrust(root, "untrusted");
+					const err = recordTrust(root, "untrusted", pp);
 					if (err) ctx.ui.notify(`pi-verdict: trust decision not saved (${err}) — you will be asked again`, "warning");
 				}
 				// undefined (dialog dismissed) or NOT_NOW_CHOICE: ignore for this session, persist nothing
@@ -2817,12 +3134,12 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	const fallbackHint = () => (state.userRules.classifierMinConfidence !== null || state.userRules.classifierFallbackModel ? `\n${state.fallback.summary(state.userRules.classifierFallbackMode)}` : "");
 
 	pi.registerCommand("automode", {
-		description: "Show Auto Mode status and shadow-cache stats, or set it: /automode on|off",
+		description: "Show Auto Mode status, or set it: /automode on|off",
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
-			// 裸调用:只读状态展示,无副作用(含影子缓存统计行)
+			// Bare call: read-only status.
 			if (arg === "") {
-				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}\n${state.shadow.summary()}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
+				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
 			return;
 			}
 			// 幂等设定:与现值相同不翻转,仅确认
@@ -2833,7 +3150,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				const head = next
 					? `🛡️ Auto Mode enabled${changed ? "" : " (unchanged)"}: tool calls adjudicated by rules + classifier`
 					: `Auto Mode disabled${changed ? "" : " (unchanged)"}: tool calls execute directly`;
-				ctx.ui.notify(`${head}\n${state.shadow.summary()}${fallbackHint()}`, "info");
+				ctx.ui.notify(`${head}${fallbackHint()}`, "info");
 				return;
 			}
 			// 未知参数:严格拒绝并列出用法(大小写已归一化)
@@ -2887,7 +3204,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 			if (kind === "local") {
 				const root = projectRootOf(file);
-				const trusted = (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot])) || rootIn(root, readTrustStore().trusted);
+				const trusted = (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot])) || projectTrustState(root, file, readTrustStore()) === "trusted";
 				if (!trusted) ctx.ui.notify(`pi-verdict: project ${root} is not trusted — edits are saved but not applied until you trust it (prompted at session start)`, "info");
 			}
 
@@ -3198,7 +3515,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				}
 			: undefined;
 
-		// 判定管线(零 UI)→ 呈现(source × degraded 模板)
+		// Pipeline (zero UI) → presentation keyed on source alone.
 		const env: AdjudicateEnv = {
 			cwd: ctx.cwd,
 			// a subagent's asks are resolved by the bridge (root UI / second model), never degraded in the pipeline

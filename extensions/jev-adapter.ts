@@ -29,8 +29,10 @@
  * Known limitations (ADR-0003): the classifier system prompt — including the
  * denyPaths existence hint — does not reach jev; jev treats state as data and
  * "does not treat it as hostile by default" (TypeSafe jaggedness docs), so
- * adversarial transcript content can move its judgment; omp hosts have no
- * `registerProvider` and the adapter stays inert there.
+ * adversarial transcript content can move its judgment. omp 18.5 does publish
+ * `registerProvider` (a different signature than real pi's), so the adapter runs
+ * on both hosts; on omp it registers for registry visibility only and the jev
+ * completion actually rides `streamDecisions` directly (see the omp branch).
  */
 import {
 	createAssistantMessageEventStream,
@@ -384,14 +386,13 @@ export function createJevProvider(openRouterKey: OpenRouterKeyResolver | undefin
 	};
 }
 
-/** omp's registerProvider(name, config: ProviderConfigInput, sourceId?) shape —
- *  a different, richer API than real pi's single-argument Provider object.
- *  `streamSimple`/`api` are deliberately omitted: omp throws if `streamSimple`
- *  is set without a matching `api` string, and omp never actually dispatches
- *  through this registration anyway (see the comment below) — `models` +
- *  `apiKey` are all `ctx.modelRegistry.find()`/`hasConfiguredAuth()` need. */
+/** omp's registerProvider(name, config) shape — a different, richer API than real
+ *  pi's single-argument Provider object. `streamSimple`/`api` are deliberately
+ *  omitted: this registration exists only so `ctx.modelRegistry.find()` /
+ *  `hasConfiguredAuth()` resolve `typesafe/jev-latest`; the actual completion
+ *  rides `streamDecisions` directly from pi-verdict.ts (see the omp branch). */
 type OmpProviderConfig = { baseUrl: string; apiKey?: string; models: Model<typeof API_ID>[] };
-type OmpRegisterProvider = (name: string, config: OmpProviderConfig, sourceId?: string) => void;
+type OmpRegisterProvider = (name: string, config: OmpProviderConfig) => void;
 
 export default function jevAdapter(pi: ExtensionAPI): void {
 	if (typeof pi.registerProvider !== "function") return; // no provider API at all: inert
@@ -444,14 +445,14 @@ export default function jevAdapter(pi: ExtensionAPI): void {
 		const register = pi.registerProvider as unknown as OmpRegisterProvider;
 		const baseUrl = decisionsUrl(transport);
 		const envKey = process.env[config.keyEnv]?.trim();
-		if (envKey) register(PROVIDER_ID, { baseUrl, apiKey: envKey, models: [jevModel(transport)] }, "pi-verdict:jev-adapter");
+		if (envKey) register(PROVIDER_ID, { baseUrl, apiKey: envKey, models: [jevModel(transport)] });
 
 		pi.on("session_start", async (_event, ctx) => {
 			let key = envKey;
 			if (!key && config.loginProvider) {
 				key = await ctx.modelRegistry.getApiKeyForProvider(config.loginProvider).catch(() => undefined);
 			}
-			if (key) register(PROVIDER_ID, { baseUrl, apiKey: key, models: [jevModel(transport)] }, "pi-verdict:jev-adapter");
+			if (key) register(PROVIDER_ID, { baseUrl, apiKey: key, models: [jevModel(transport)] });
 		});
 	}
 
