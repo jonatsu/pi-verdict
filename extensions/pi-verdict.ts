@@ -73,11 +73,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type * as PiAgent from "@earendil-works/pi-coding-agent";
-import type * as PiTui from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Context } from "@earendil-works/pi-ai";
-import { activeTransport, type JevReason, parseJevConfidence, parseJevReason, PROVIDER_ID as JEV_PROVIDER_ID, streamDecisions, TRANSPORT_DEFAULTS, USER_RULES_HEADER } from "./jev-adapter";
+import type * as PiAgent from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type * as PiTui from "@earendil-works/pi-tui";
+import {
+	activeTransport,
+	PROVIDER_ID as JEV_PROVIDER_ID,
+	type JevReason,
+	parseJevConfidence,
+	parseJevReason,
+	streamDecisions,
+	TRANSPORT_DEFAULTS,
+	USER_RULES_HEADER,
+} from "./jev-adapter";
 
 // ============================================================================
 // 规则层:bash
@@ -85,11 +94,27 @@ import { activeTransport, type JevReason, parseJevConfidence, parseJevReason, PR
 
 /** 危险模式:对完整命令串匹配(覆盖管道/复合命令),命中即 deny(源自研究报告 §4.3) */
 const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> = [
-	{ id: "rm-recursive", pattern: /\brm\b[^;|&]*(\s-(?:[a-zA-Z]*r[a-zA-Z]*f?|[a-zA-Z]*f[a-zA-Z]*r)\b|--recursive)/i, reason: "recursive delete (rm -r)" },
-	{ id: "rm-root", pattern: /\brm\s+(-[a-zA-Z]*\s+)*(--recursive\s+)?(\/|\/etc|\/usr|\/var|~|\$HOME)(?:\s|$)/i, reason: "delete root/system/home directory" },
+	{
+		id: "rm-recursive",
+		pattern: /\brm\b[^;|&]*(\s-(?:[a-zA-Z]*r[a-zA-Z]*f?|[a-zA-Z]*f[a-zA-Z]*r)\b|--recursive)/i,
+		reason: "recursive delete (rm -r)",
+	},
+	{
+		id: "rm-root",
+		pattern: /\brm\s+(-[a-zA-Z]*\s+)*(--recursive\s+)?(\/|\/etc|\/usr|\/var|~|\$HOME)(?:\s|$)/i,
+		reason: "delete root/system/home directory",
+	},
 	{ id: "sudo", pattern: /\bsudo\b/i, reason: "privilege escalation (sudo)" },
-	{ id: "chmod-777", pattern: /\bchmod\b[^;|&]*(777|a\+rwx|ugo\+rwx|ugo=rwx|[ug]\+s)\b/i, reason: "permission weakening (chmod 777/setuid)" },
-	{ id: "raw-device", pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|\bmkfs\.)/i, reason: "raw device write/format" },
+	{
+		id: "chmod-777",
+		pattern: /\bchmod\b[^;|&]*(777|a\+rwx|ugo\+rwx|ugo=rwx|[ug]\+s)\b/i,
+		reason: "permission weakening (chmod 777/setuid)",
+	},
+	{
+		id: "raw-device",
+		pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|\bmkfs\.)/i,
+		reason: "raw device write/format",
+	},
 	{ id: "git-push-force", pattern: /\bgit\s+push\b[^;|&]*(-f\b|--force\b)/i, reason: "git push --force" },
 	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
 	{ id: "git-clean-force", pattern: /\bgit\s+clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)/i, reason: "git clean -f" },
@@ -211,7 +236,8 @@ const pathStartsWith = (child: string, base: string): boolean => fold(child).sta
 const DEFAULT_TOGGLE_SHORTCUT = "ctrl+shift+a";
 
 /** 键名词表(功能键与特殊键;词表对齐 pi keybindings 文档) */
-const KEY_NAME_ALT = "f(?:[1-9]|1[0-2])|escape|esc|enter|return|tab|space|backspace|delete|insert|clear|home|end|pageup|pagedown|up|down|left|right";
+const KEY_NAME_ALT =
+	"f(?:[1-9]|1[0-2])|escape|esc|enter|return|tab|space|backspace|delete|insert|clear|home|end|pageup|pagedown|up|down|left|right";
 const KEY_PRINTABLE = "[a-z0-9]|[-=`\\[\\];',./!@#$%^&*()_+|~{}:<>?]";
 /**
  * key 组合格式校验:修饰键 ≥1(modifier+任意键),或裸键为功能/特殊键——
@@ -229,12 +255,18 @@ function resolveToggleShortcut(raw: unknown): { key: string | null; warning: str
 	if (raw === undefined) return { key: DEFAULT_TOGGLE_SHORTCUT, warning: null };
 	if (raw === null) return { key: null, warning: null };
 	if (typeof raw !== "string") {
-		return { key: null, warning: `toggleShortcut must be a pi key combo string (e.g. "${DEFAULT_TOGGLE_SHORTCUT}"), or null/empty to disable — got ${JSON.stringify(raw)}` };
+		return {
+			key: null,
+			warning: `toggleShortcut must be a pi key combo string (e.g. "${DEFAULT_TOGGLE_SHORTCUT}"), or null/empty to disable — got ${JSON.stringify(raw)}`,
+		};
 	}
 	const s = raw.trim();
 	if (!s) return { key: null, warning: null };
 	if (!KEY_COMBO_RE.test(s)) {
-		return { key: null, warning: `toggleShortcut "${raw}" is not a valid pi key combo (modifier+key, e.g. "${DEFAULT_TOGGLE_SHORTCUT}") — shortcut not registered; fix config/pi-verdict.json` };
+		return {
+			key: null,
+			warning: `toggleShortcut "${raw}" is not a valid pi key combo (modifier+key, e.g. "${DEFAULT_TOGGLE_SHORTCUT}") — shortcut not registered; fix config/pi-verdict.json`,
+		};
 	}
 	return { key: s, warning: null };
 }
@@ -284,7 +316,28 @@ interface UserRules {
 	footer: "full" | "compact" | "off";
 }
 
-const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], tools: [], builtinDenyFloor: true, gateOmpDir: false, classifierModel: null, explainGateModel: null, explainGatePrompt: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, footer: "full", classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", subagentGate: "normal", subagentAskTimeoutMs: 60_000, autoDeny: true, classifierRules: [] };
+const EMPTY_RULES: UserRules = {
+	allow: [],
+	deny: [],
+	denyPaths: [],
+	tools: [],
+	builtinDenyFloor: true,
+	gateOmpDir: false,
+	classifierModel: null,
+	explainGateModel: null,
+	explainGatePrompt: null,
+	toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
+	audit: false,
+	notifyAllows: false,
+	footer: "full",
+	classifierMinConfidence: null,
+	classifierFallbackModel: null,
+	classifierFallbackMode: "enforce",
+	subagentGate: "normal",
+	subagentAskTimeoutMs: 60_000,
+	autoDeny: true,
+	classifierRules: [],
+};
 
 /** This module's own file location (import.meta.url resolved; null = unresolvable). */
 const OWN_FILE_PATH: string | null = (() => {
@@ -325,7 +378,9 @@ export function resolveAgentDir(ownFile: string | null, home: string, envAgentDi
 		// sides before matching, or the anchor never matches on Windows and the
 		// gate silently falls back to ~/.pi/agent (wrong host's config tree).
 		const normalizedHome = home.replace(/\\/g, "/");
-		const anchor = new RegExp(`^${escapeRegExp(normalizedHome)}(/(\\.[^/]+)/(?:agent/)?(?:plugins/node_modules/(?:@[^/]+/)?[^/]+/)?extensions/)`);
+		const anchor = new RegExp(
+			`^${escapeRegExp(normalizedHome)}(/(\\.[^/]+)/(?:agent/)?(?:plugins/node_modules/(?:@[^/]+/)?[^/]+/)?extensions/)`,
+		);
 		for (const f of baseForms(ownFile)) {
 			const m = f.replace(/\\/g, "/").match(anchor);
 			if (m) return path.join(home, m[2], "agent");
@@ -394,7 +449,12 @@ function rootIn(root: string, list: string[]): boolean {
 	return list.some((t) => baseForms(t).some((tf) => rootForms.some((rf) => samePath(tf, rf))));
 }
 
-interface TrustStore { trusted: string[]; untrusted: string[]; hashes: Record<string, string>; error: string | null }
+interface TrustStore {
+	trusted: string[];
+	untrusted: string[];
+	hashes: Record<string, string>;
+	error: string | null;
+}
 
 /** sha256 of a file's bytes, or null when it cannot be read. */
 function hashFile(p: string): string | null {
@@ -412,7 +472,12 @@ function readTrustStore(): TrustStore {
 	try {
 		raw = JSON.parse(fs.readFileSync(p, "utf8"));
 	} catch (err) {
-		return { trusted: [], untrusted: [], hashes: {}, error: `trust file unreadable: ${err instanceof Error ? err.message : String(err)} (${p})` };
+		return {
+			trusted: [],
+			untrusted: [],
+			hashes: {},
+			error: `trust file unreadable: ${err instanceof Error ? err.message : String(err)} (${p})`,
+		};
 	}
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
 		return { trusted: [], untrusted: [], hashes: {}, error: `trust file unreadable: top level must be a JSON object (${p})` };
@@ -500,38 +565,41 @@ function recordTrust(root: string, decision: "trusted" | "untrusted", configPath
  */
 const DEFAULT_ALLOWED_TOOLS = ["ask", "todo", "wait", "yield", "think", "checkpoint", "rewind", "recall", "reflect"];
 
-const USER_CONFIG_TEMPLATE = `${JSON.stringify({
-	_hint: "pi-verdict user rules — full reference: https://github.com/jesset/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor at your own risk. gateOmpDir (default false; the self-protection layer over the gate's own files stays on regardless): true makes any read/write touching a .omp directory ask for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools (the legacy key ignoreTools is accepted as a deprecated alias): exact names of non-path, non-command tools (e.g. todo, ask, task) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer is uncertain (ask / fail-closed / jev confidence below classifierFallbackConfidence, default 50); mode enforce (default) lets the second layer adjudicate, shadow only records its opinion while the human decides. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. \"npm install is expected in this repo\"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: normal default / off / auto; off makes the gate inert in subagents) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp's extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: \"full\" (Nerd Font powerline blocks, default) | \"compact\" (plain text) | \"off\" (no footer status).",
-	allow: ["^ls\\b"],
-	deny: [],
-	tools: DEFAULT_ALLOWED_TOOLS,
-	denyPaths: [
-		"~/.ssh/",
-		"~/.profile",
-		"~/.gnupg",
-		"~/.mc",
-		"~/.zshrc",
-		"~/.bashrc",
-	],
-	builtinDenyFloor: true,
-	gateOmpDir: false,
-	autoDeny: true,
-	classifierModel: null,
-	explainGateModel: null,
-	explainGatePrompt: null,
-	toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
-	audit: false,
-	notifyAllows: false,
-	footer: "full",
-	classifierMinConfidence: null,
-	classifierFallbackModel: null,
-	classifierFallbackMode: "enforce",
-	subagentGate: "normal",
-	subagentAskTimeoutMs: 60000,
-	rules: [],
-}, null, 2)}\n`;
+const USER_CONFIG_TEMPLATE = `${JSON.stringify(
+	{
+		_hint:
+			'pi-verdict user rules — full reference: https://github.com/jesset/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor at your own risk. gateOmpDir (default false; the self-protection layer over the gate\'s own files stays on regardless): true makes any read/write touching a .omp directory ask for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools (the legacy key ignoreTools is accepted as a deprecated alias): exact names of non-path, non-command tools (e.g. todo, ask, task) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer is uncertain (ask / fail-closed / jev confidence below classifierFallbackConfidence, default 50); mode enforce (default) lets the second layer adjudicate, shadow only records its opinion while the human decides. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. "npm install is expected in this repo"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: normal default / off / auto; off makes the gate inert in subagents) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp\'s extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: "full" (Nerd Font powerline blocks, default) | "compact" (plain text) | "off" (no footer status).',
+		allow: ["^ls\\b"],
+		deny: [],
+		tools: DEFAULT_ALLOWED_TOOLS,
+		denyPaths: ["~/.ssh/", "~/.profile", "~/.gnupg", "~/.mc", "~/.zshrc", "~/.bashrc"],
+		builtinDenyFloor: true,
+		gateOmpDir: false,
+		autoDeny: true,
+		classifierModel: null,
+		explainGateModel: null,
+		explainGatePrompt: null,
+		toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
+		audit: false,
+		notifyAllows: false,
+		footer: "full",
+		classifierMinConfidence: null,
+		classifierFallbackModel: null,
+		classifierFallbackMode: "enforce",
+		subagentGate: "normal",
+		subagentAskTimeoutMs: 60000,
+		rules: [],
+	},
+	null,
+	2,
+)}\n`;
 
-interface LoadedRules { rules: UserRules; skipped: string[]; shortcutWarning: string | null; project: { path: string; trusted: boolean; applied: boolean } | null }
+interface LoadedRules {
+	rules: UserRules;
+	skipped: string[];
+	shortcutWarning: string | null;
+	project: { path: string; trusted: boolean; applied: boolean } | null;
+}
 
 /** Keys a project override may change (ADR-0006, narrowed by R7). The gate's decision
  *  inputs stay user-only: the classifier and EXPLAIN-GATE model specs (an egress
@@ -595,17 +663,47 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			try {
 				fs.mkdirSync(path.dirname(p), { recursive: true });
 				fs.writeFileSync(p, USER_CONFIG_TEMPLATE);
-			} catch { /* 只读环境静默跳过 */ }
+			} catch {
+				/* 只读环境静默跳过 */
+			}
 			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null, project: null };
 		}
-		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; tools?: unknown; ignoreTools?: unknown; builtinDenyFloor?: unknown; gateOmpDir?: unknown; classifierModel?: unknown; explainGateModel?: unknown; explainGatePrompt?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; footer?: unknown; subagentGate?: unknown; subagentAskTimeoutMs?: unknown; autoDeny?: unknown; rules?: unknown };
+		let raw: {
+			allow?: unknown;
+			deny?: unknown;
+			denyPaths?: unknown;
+			tools?: unknown;
+			ignoreTools?: unknown;
+			builtinDenyFloor?: unknown;
+			gateOmpDir?: unknown;
+			classifierModel?: unknown;
+			explainGateModel?: unknown;
+			explainGatePrompt?: unknown;
+			toggleShortcut?: unknown;
+			audit?: unknown;
+			notifyAllows?: unknown;
+			classifierFallbackModel?: unknown;
+			classifierFallbackConfidence?: unknown;
+			classifierMinConfidence?: unknown;
+			classifierFallbackMode?: unknown;
+			footer?: unknown;
+			subagentGate?: unknown;
+			subagentAskTimeoutMs?: unknown;
+			autoDeny?: unknown;
+			rules?: unknown;
+		};
 		try {
 			raw = JSON.parse(fs.readFileSync(p, "utf8")) as typeof raw;
 		} catch (err) {
 			// Invalid config never silently disables the gate (#25): a parse failure
 			// loads empty user rules (the floor stays on) and reports through the
 			// session_start skip channel, same as invalid regexes
-			return { rules: EMPTY_RULES, skipped: [`config parse failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded (${p})`], shortcutWarning: null, project: null };
+			return {
+				rules: EMPTY_RULES,
+				skipped: [`config parse failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded (${p})`],
+				shortcutWarning: null,
+				project: null,
+			};
 		}
 		const skipped: string[] = [];
 		// R9: an unrecognised user-config key is a typo that would silently drop a
@@ -623,7 +721,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			const store = readTrustStore();
 			if (store.error) skipped.push(store.error);
 			// Hash-bound trust (ADR-0006): a stale override re-prompts instead of applying.
-			const trusted = projectTrustState(root, pp, store) === "trusted" || (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot]));
+			const trusted =
+				projectTrustState(root, pp, store) === "trusted" || (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot]));
 			project = { path: pp, trusted, applied: false };
 			let projRaw: unknown;
 			// untrusted and undecided both mean "not applied" (file never parsed); the session_start prompt owns the user-facing notice
@@ -631,7 +730,9 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				try {
 					projRaw = JSON.parse(fs.readFileSync(pp, "utf8"));
 				} catch (err) {
-					skipped.push(`project config parse failed: ${err instanceof Error ? err.message : String(err)} — project overrides not loaded (${pp})`);
+					skipped.push(
+						`project config parse failed: ${err instanceof Error ? err.message : String(err)} — project overrides not loaded (${pp})`,
+					);
 				}
 			}
 			if (projRaw !== undefined) {
@@ -681,14 +782,16 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			}
 		}
 		const compile = (list: unknown): RegExp[] =>
-			(Array.isArray(list) ? list : []).filter((x): x is string => typeof x === "string").flatMap((src) => {
-				try {
-					return [new RegExp(src)];
-				} catch {
-					skipped.push(src);
-					return [];
-				}
-			});
+			(Array.isArray(list) ? list : [])
+				.filter((x): x is string => typeof x === "string")
+				.flatMap((src) => {
+					try {
+						return [new RegExp(src)];
+					} catch {
+						skipped.push(src);
+						return [];
+					}
+				});
 		// denyPaths entries are plain paths: only type-valid non-empty strings survive;
 		// anything else is skipped into the one-shot warning channel (invalid config never disables the gate)
 		const denyPaths = (Array.isArray(raw.denyPaths) ? raw.denyPaths : []).flatMap((x) => {
@@ -698,7 +801,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			}
 			return [x.trim()];
 		});
-		if (raw.rules !== undefined && raw.rules !== null && !Array.isArray(raw.rules)) skipped.push(`rules: ${JSON.stringify(raw.rules)} (must be an array of strings)`);
+		if (raw.rules !== undefined && raw.rules !== null && !Array.isArray(raw.rules))
+			skipped.push(`rules: ${JSON.stringify(raw.rules)} (must be an array of strings)`);
 		const classifierRules = (Array.isArray(raw.rules) ? raw.rules : []).flatMap((x) => {
 			if (typeof x !== "string" || !x.trim()) {
 				if (x !== undefined && x !== null) skipped.push(`rules: ${JSON.stringify(x)}`);
@@ -706,7 +810,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			}
 			return [x.trim()];
 		});
-		if (raw.tools !== undefined && raw.tools !== null && !Array.isArray(raw.tools)) skipped.push(`tools: ${JSON.stringify(raw.tools)} (must be an array of strings)`);
+		if (raw.tools !== undefined && raw.tools !== null && !Array.isArray(raw.tools))
+			skipped.push(`tools: ${JSON.stringify(raw.tools)} (must be an array of strings)`);
 		const namedTool = (key: string, list: unknown): string[] =>
 			(Array.isArray(list) ? list : []).flatMap((x) => {
 				if (typeof x !== "string" || !x.trim()) {
@@ -723,12 +828,15 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		const tools = [...new Set([...namedTool("tools", raw.tools), ...namedTool("ignoreTools", raw.ignoreTools)])];
 		const shortcut = resolveToggleShortcut(raw.toggleShortcut);
 		// #63/#67: confidence-floor keys — invalid values skip into the one-shot warning channel
-		if (raw.classifierFallbackConfidence !== undefined) skipped.push("classifierFallbackConfidence: renamed to classifierMinConfidence (0.11.0) — key ignored");
+		if (raw.classifierFallbackConfidence !== undefined)
+			skipped.push("classifierFallbackConfidence: renamed to classifierMinConfidence (0.11.0) — key ignored");
 		const minConfRaw = raw.classifierMinConfidence;
 		const minConfOk = typeof minConfRaw === "number" && Number.isFinite(minConfRaw) && minConfRaw >= 0 && minConfRaw <= 100;
-		if (minConfRaw !== undefined && minConfRaw !== null && !minConfOk) skipped.push(`classifierMinConfidence: ${JSON.stringify(minConfRaw)}`);
+		if (minConfRaw !== undefined && minConfRaw !== null && !minConfOk)
+			skipped.push(`classifierMinConfidence: ${JSON.stringify(minConfRaw)}`);
 		const fbModeRaw = raw.classifierFallbackMode;
-		if (fbModeRaw !== undefined && fbModeRaw !== "shadow" && fbModeRaw !== "enforce") skipped.push(`classifierFallbackMode: ${JSON.stringify(fbModeRaw)}`);
+		if (fbModeRaw !== undefined && fbModeRaw !== "shadow" && fbModeRaw !== "enforce")
+			skipped.push(`classifierFallbackMode: ${JSON.stringify(fbModeRaw)}`);
 		const footerRaw = raw.footer;
 		const footerOk = footerRaw === "full" || footerRaw === "compact" || footerRaw === "off";
 		if (footerRaw !== undefined && !footerOk) skipped.push(`footer: ${JSON.stringify(footerRaw)}`);
@@ -752,7 +860,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				toggleShortcut: shortcut.key,
 				audit: raw.audit === true,
 				notifyAllows: raw.notifyAllows === true,
-				classifierFallbackModel: typeof raw.classifierFallbackModel === "string" && raw.classifierFallbackModel.trim() ? raw.classifierFallbackModel.trim() : null,
+				classifierFallbackModel:
+					typeof raw.classifierFallbackModel === "string" && raw.classifierFallbackModel.trim() ? raw.classifierFallbackModel.trim() : null,
 				classifierMinConfidence: minConfOk ? minConfRaw : null,
 				classifierFallbackMode: fbModeRaw === "shadow" ? "shadow" : "enforce",
 				footer: footerOk ? footerRaw : "full",
@@ -768,7 +877,12 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 	} catch (err) {
 		// An unexpected failure (not the JSON-parse path above) must not vanish: load
 		// empty rules with the floor on and surface the error through the same channel.
-		return { rules: EMPTY_RULES, skipped: [`config load failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded`], shortcutWarning: null, project: null };
+		return {
+			rules: EMPTY_RULES,
+			skipped: [`config load failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded`],
+			shortcutWarning: null,
+			project: null,
+		};
 	}
 }
 
@@ -792,11 +906,25 @@ function expandHome(p: string): string {
 // nonexistent ones; on linux the uppercase spelling usually does not exist and
 // the occasional false positive fails toward deny (safe direction).
 const S0_SECRET = [
-	/\.ssh(\/|$)/i, /\.aws(\/|$)/i, /\.gnupg(\/|$)/i, /(^|\/)\.env(\.|$)/i, /credentials?(\.|\/|$)/i,
-	/(^|\/)id_rsa/i, /\.pem$/i, /_history$/i, /\.config\/gh(\/|$)/i, /\.(?:pi|omp)\/agent\/auth\.json$/i,
+	/\.ssh(\/|$)/i,
+	/\.aws(\/|$)/i,
+	/\.gnupg(\/|$)/i,
+	/(^|\/)\.env(\.|$)/i,
+	/credentials?(\.|\/|$)/i,
+	/(^|\/)id_rsa/i,
+	/\.pem$/i,
+	/_history$/i,
+	/\.config\/gh(\/|$)/i,
+	/\.(?:pi|omp)\/agent\/auth\.json$/i,
 	// V8(安全审计):常见明文凭证文件补全
-	/(^|\/)\.netrc$/i, /(^|\/)\.npmrc$/i, /(^|\/)\.pypirc$/i, /(^|\/)\.envrc$/i, /(^|\/)\.vault-token$/i,
-	/\.kube(\/|$)/i, /\.docker\/config\.json$/i, /\.gem\/credentials$/i,
+	/(^|\/)\.netrc$/i,
+	/(^|\/)\.npmrc$/i,
+	/(^|\/)\.pypirc$/i,
+	/(^|\/)\.envrc$/i,
+	/(^|\/)\.vault-token$/i,
+	/\.kube(\/|$)/i,
+	/\.docker\/config\.json$/i,
+	/\.gem\/credentials$/i,
 ];
 // /private prefixes: macOS firmlinks — /etc, /var are really /private/etc,
 // /private/var, and realpath'd toolchain output uses the real spelling (#21)
@@ -809,11 +937,7 @@ const S1_SYSTEM = [...S1_SYSTEM_DIRS, ...S1_SYSTEM_FILES];
 /** Compute macOS confstr-family temp bases at the confstr depth. A hand-set
  *  TMPDIR must not widen the system-path exemption beyond /var/folders/<xx>/<yy>.
  *  Other platforms are inert because their temp directories do not match S1. */
-export function computeTmpdirBases(
-	platform: NodeJS.Platform,
-	tmp: string,
-	realpath: (p: string) => string | null,
-): string[] {
+export function computeTmpdirBases(platform: NodeJS.Platform, tmp: string, realpath: (p: string) => string | null): string[] {
 	if (platform !== "darwin" || !tmp) return [];
 	const lexical = path.resolve(tmp);
 	const real = realpath(lexical);
@@ -843,7 +967,12 @@ export function setTmpdirBasesForTests(bases: string[] | null): void {
 /** Exempt only when every canonical target form stays inside a trusted temp base. */
 const tmpdirExempt = (forms: string[]): boolean =>
 	tmpdirExemptBases.length > 0 && forms.every((f) => tmpdirExemptBases.some((b) => f === b || f.startsWith(b + path.sep)));
-const S2_USER_RC = [/\.(bashrc|zshrc|profile|bash_profile|gitconfig)$/i, /crontab/i, /Library\/LaunchAgents(\/|$)/i, /\.config\/systemd(\/|$)/i];
+const S2_USER_RC = [
+	/\.(bashrc|zshrc|profile|bash_profile|gitconfig)$/i,
+	/crontab/i,
+	/Library\/LaunchAgents(\/|$)/i,
+	/\.config\/systemd(\/|$)/i,
+];
 const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitmodules$/i];
 
 /** read 类工具:S0 读取即高危(deny),其余读取放行。isWrite: write/edit 走完整分级 */
@@ -868,7 +997,7 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 		return { verdict: "allow" };
 	}
 	if (hit(s1Rules)) return D(`write to system directory: ${rawPath}`);
-	if (hit(S3_GIT_META)) return D(`write to .git metadata (executable code entry point): ${rawPath}` );
+	if (hit(S3_GIT_META)) return D(`write to .git metadata (executable code entry point): ${rawPath}`);
 	if (hit(S2_USER_RC)) return { verdict: "gray", reason: `write to user config/persistence entry point: ${rawPath}` };
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
 	// (in either its lexical or real form) — a lexical prefix hit whose real
@@ -946,8 +1075,7 @@ function userRuleTarget(toolName: string, input: Record<string, unknown>, cwd: s
  * issue #32), and unlike the danger regexes (#25's 8192 cap) it cannot be capped —
  * truncation would let a protected-path spelling beyond the cap silently escape
  * the deterministic ask (ADR-0002's never-silently-passed contract). */
-export const BASH_PATH_TOKENS =
-	/(?:~|\$HOME)(?:\/[\w.@*-]+)*|\/(?:[\w.@*-]+\/)*[\w.@*-]*|\.{1,2}(?:\/[\w.@*-]+)+|[\w.-]+(?:\/[\w.-]+)+/g;
+export const BASH_PATH_TOKENS = /(?:~|\$HOME)(?:\/[\w.@*-]+)*|\/(?:[\w.@*-]+\/)*[\w.@*-]*|\.{1,2}(?:\/[\w.@*-]+)+|[\w.-]+(?:\/[\w.-]+)+/g;
 
 /** ASCII class membership for the tokenizer (JS \w is ASCII-only; non-ASCII code
  *  points simply fall outside the classes, matching the regex). */
@@ -1359,7 +1487,11 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 		const cmd = String(input.command ?? "");
 		const cdHit = bashDirectoryTargets(cmd, agentDirPath()).some((t) => isProtectedReadPath(t, cwd, prot));
 		if (prot.bashPatterns.some((re) => re.test(cmd)) || cdHit) {
-			return { verdict: "deny", reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only", selfProtect: true };
+			return {
+				verdict: "deny",
+				reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only",
+				selfProtect: true,
+			};
 		}
 		return null;
 	}
@@ -1367,7 +1499,11 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 	if (direction === "read") {
 		for (const s of strings) {
 			if (isProtectedReadPath(s, cwd, prot)) {
-				return { verdict: "deny", reason: `self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`, selfProtect: true };
+				return {
+					verdict: "deny",
+					reason: `self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`,
+					selfProtect: true,
+				};
 			}
 		}
 		return null;
@@ -1375,7 +1511,11 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 	// write + unknown: any input string landing in the protected set is a write, fail-safe
 	for (const s of strings) {
 		if (isProtectedWritePath(s, cwd, prot)) {
-			return { verdict: "deny", reason: `self-protection layer (ADR-0005): ${s} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`, selfProtect: true };
+			return {
+				verdict: "deny",
+				reason: `self-protection layer (ADR-0005): ${s} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`,
+				selfProtect: true,
+			};
 		}
 	}
 	return null;
@@ -1393,7 +1533,14 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
  *   5. custom-tool exact match (user.tools) → allow (bypasses classifier for that tool)
  *   6. base (path tools' default allow/gray; everything else gray) → classifier
  */
-function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: string, user: UserRules, prot: ProtectedSet, denyPathBases: string[]): RuleResult {
+function classifyByRules(
+	toolName: string,
+	input: Record<string, unknown>,
+	cwd: string,
+	user: UserRules,
+	prot: ProtectedSet,
+	denyPathBases: string[],
+): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
 	if (sp) return sp;
 	let base: RuleResult;
@@ -1407,7 +1554,8 @@ function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: 
 		// read keeps classifyPath even with an empty path: resolved to cwd, it still
 		// carries the system-directory gray grading (bit-for-bit with the old switch)
 		base = classifyPath(String(input.path ?? ""), cwd, false, user.builtinDenyFloor);
-	} else if (kind === "file") { // grep/find/ls: optional path; absent → cwd is the
+	} else if (kind === "file") {
+		// grep/find/ls: optional path; absent → cwd is the
 		// effective target, so user rules and denyPaths compare against it (#48)
 		const p = typeof input.path === "string" ? input.path : undefined;
 		base = p ? classifyPath(p, cwd, false, user.builtinDenyFloor) : { verdict: "allow" };
@@ -1434,7 +1582,8 @@ function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: 
 		// The matched path goes to `detail` (confirm dialog only): reasons travel back
 		// into the agent context, so plaintext there would leak the declaration.
 		const hit = hitDenyPaths(toolName, input, cwd, denyPathBases);
-		if (hit) return { verdict: "ask", reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]", detail: hit };
+		if (hit)
+			return { verdict: "ask", reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]", detail: hit };
 		for (const re of user.allow) {
 			if (re.test(target)) return { verdict: "allow", reason: "user allow rule" };
 		}
@@ -1520,7 +1669,13 @@ function collectTranscriptParts(host: PipelineHost): { userLines: string[]; tool
 		if (entry.type !== "message") continue;
 		const msg = entry.message;
 		if (msg.role === "user") {
-			const text = typeof msg.content === "string" ? msg.content : msg.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+			const text =
+				typeof msg.content === "string"
+					? msg.content
+					: msg.content
+							.filter((b) => b.type === "text")
+							.map((b) => b.text)
+							.join("\n");
 			if (text.trim()) userLines.push(`User: ${transcriptSafe(text)}`);
 		} else if (msg.role === "assistant") {
 			for (const block of msg.content) {
@@ -1558,9 +1713,7 @@ const CLASSIFIER_TIMEOUT_MS = 25_000; // 本网关 CC 分类器分布 p90=19.8s(
 const FALLBACK_TIMEOUT_MS = 15_000; // #63: second-layer per-attempt budget — matches the first layer's per-attempt discipline (the two-tier retry can spend it twice)
 const CLASSIFIER_MAX_TOKENS = 512;
 const CLASSIFIER_RETRY_MAX_TOKENS = 1024; // 防御重试档:覆盖无视 reasoning:off 或轻思考仍超预算的模型
-const APIS_WITHOUT_TEMPERATURE = new Set<string>([
-	"openai-codex-responses",
-]);
+const APIS_WITHOUT_TEMPERATURE = new Set<string>(["openai-codex-responses"]);
 
 // Models whose provider rejected a temperature-bearing request ("`temperature`
 // is deprecated for this model" — current-gen Anthropic models, #47). Filled
@@ -1571,9 +1724,7 @@ const APIS_WITHOUT_TEMPERATURE = new Set<string>([
 const TEMPERATURE_REJECTED_MODELS = new Set<string>();
 
 /** The provider rejected the request over the `temperature` parameter itself (#47). */
-function temperatureRejection(
-	r: { ok: true; stopReason: string; errorMessage?: string } | { ok: false; error: string },
-): boolean {
+function temperatureRejection(r: { ok: true; stopReason: string; errorMessage?: string } | { ok: false; error: string }): boolean {
 	if (r.ok) return (r.stopReason === "error" || r.stopReason === "aborted") && /temperature/i.test(r.errorMessage ?? "");
 	return /temperature/i.test(r.error);
 }
@@ -1634,7 +1785,11 @@ export function bindCompletion(
 		if (typeof registry.getApiKeyAndHeaders === "function") {
 			const auth = await registry.getApiKeyAndHeaders(m).catch(() => undefined);
 			if (auth?.ok && auth.apiKey) {
-				return complete(m, c, { ...o, apiKey: auth.apiKey, headers: { ...(o?.headers as Record<string, string> | undefined), ...auth.headers } });
+				return complete(m, c, {
+					...o,
+					apiKey: auth.apiKey,
+					headers: { ...(o?.headers as Record<string, string> | undefined), ...auth.headers },
+				});
 			}
 		}
 		return complete(m, c, o);
@@ -1795,7 +1950,10 @@ async function classifyWithModel(
 	const transcript = buildTranscript(host, actionLine);
 	const userMessage = `<transcript>\n${transcript}\n</transcript>\nJudge the LAST action in the transcript above. Your entire response MUST begin with <verdict>.`;
 	const systemPrompt = CLASSIFIER_SYSTEM + (denyPathsActive ? DENY_PATHS_HINT : "") + userRulesHint(rules);
-	const attempts: Array<[number, number]> = [[1, CLASSIFIER_MAX_TOKENS], [2, CLASSIFIER_RETRY_MAX_TOKENS]];
+	const attempts: Array<[number, number]> = [
+		[1, CLASSIFIER_MAX_TOKENS],
+		[2, CLASSIFIER_RETRY_MAX_TOKENS],
+	];
 	const failures: string[] = [];
 	let rawResponse = ""; // #54: raw output of the last attempt ("" for exception attempts — diagnostics already live in failures)
 	for (const [n, maxTokens] of attempts) {
@@ -1815,9 +1973,13 @@ async function classifyWithModel(
 			failures.push(`attempt ${n} (${maxTokens}t) exception: ${r.error}`);
 		}
 	}
-	return { verdict: "deny", reason: `classifier failure (fail-closed): ${failures.join("; ")}`, source: "fail-closed", auditRaw: { transcript, rawResponse, modelId: model.id, thinking } };
+	return {
+		verdict: "deny",
+		reason: `classifier failure (fail-closed): ${failures.join("; ")}`,
+		source: "fail-closed",
+		auditRaw: { transcript, rawResponse, modelId: model.id, thinking },
+	};
 }
-
 
 // ============================================================================
 // Confidence cascade stats (#63/#67: observe-first, session-memory state; the #7 discipline)
@@ -2132,29 +2294,66 @@ async function runConfidenceCascade(
 	}
 	const mode = rules.classifierFallbackMode;
 	const start = Date.now();
-	const base = { mode, triggeredBy: trigger.kind === "demotion" ? ("confidence" as const) : ("fail-closed" as const), confidence: trigger.kind === "demotion" ? trigger.confidence : null };
+	const base = {
+		mode,
+		triggeredBy: trigger.kind === "demotion" ? ("confidence" as const) : ("fail-closed" as const),
+		confidence: trigger.kind === "demotion" ? trigger.confidence : null,
+	};
 	const demotedMark = trigger.kind === "demotion" ? ({ demoted: true } as const) : {};
 	const shadowApplied = trigger.kind === "demotion" ? { effective: demotionAsk() } : {};
 	const failed = (model: string, error: string): CascadeResult => {
 		state.fallback.note(first?.verdict ?? null, null);
 		const fb: FallbackAudit = { ...base, model, verdict: null, reason: null, durationMs: Date.now() - start, error };
 		if (mode === "shadow") return { ...demotedMark, fb, ...shadowApplied };
-		return { ...demotedMark, fb: { ...fb, effective: "ask" }, effective: { verdict: "ask", reason: "fallback classifier unavailable (first layer abstained) — your call", source: "fail-closed" } };
+		return {
+			...demotedMark,
+			fb: { ...fb, effective: "ask" },
+			effective: { verdict: "ask", reason: "fallback classifier unavailable (first layer abstained) — your call", source: "fail-closed" },
+		};
 	};
 	const resolved = getFb();
 	if (!resolved) return failed(rules.classifierFallbackModel, "fallback model unresolvable (not found or no configured auth)");
 	env.onPhase?.("fallback", resolved.model.id);
-	const outcome = await classifyWithModel(env.host, env.signal, env.complete, resolved.model, actionLine, resolved.thinking, denyPathsActive, FALLBACK_TIMEOUT_MS, state.userRules.classifierRules);
+	const outcome = await classifyWithModel(
+		env.host,
+		env.signal,
+		env.complete,
+		resolved.model,
+		actionLine,
+		resolved.thinking,
+		denyPathsActive,
+		FALLBACK_TIMEOUT_MS,
+		state.userRules.classifierRules,
+	);
 	if (outcome.source !== "model") return failed(resolved.model.id, outcome.reason);
 	state.fallback.note(first?.verdict ?? null, outcome.verdict);
-	const fb: FallbackAudit = { ...base, model: resolved.model.id, verdict: outcome.verdict, reason: outcome.reason, durationMs: Date.now() - start, error: null };
+	const fb: FallbackAudit = {
+		...base,
+		model: resolved.model.id,
+		verdict: outcome.verdict,
+		reason: outcome.reason,
+		durationMs: Date.now() - start,
+		error: null,
+	};
 	if (mode === "shadow") return { ...demotedMark, fb, ...shadowApplied };
 	// #71: a fallback may not auto-relax a demoted deny or ask; fail-closed has no
 	// first-layer verdict, so an allow from the fallback is a de novo ruling.
 	if (trigger.kind === "demotion" && (first?.verdict === "deny" || first?.verdict === "ask") && outcome.verdict === "allow") {
-		return { demoted: true, fb: { ...fb, effective: "ask" }, effective: { verdict: "ask", reason: `${outcome.reason} (first layer said ${first!.verdict} at confidence ${trigger.confidence}%; second opinion allows — your call)`, source: "classifier" } };
+		return {
+			demoted: true,
+			fb: { ...fb, effective: "ask" },
+			effective: {
+				verdict: "ask",
+				reason: `${outcome.reason} (first layer said ${first!.verdict} at confidence ${trigger.confidence}%; second opinion allows — your call)`,
+				source: "classifier",
+			},
+		};
 	}
-	return { ...demotedMark, fb: { ...fb, effective: outcome.verdict }, effective: { verdict: outcome.verdict, reason: outcome.reason, source: "classifier" } };
+	return {
+		...demotedMark,
+		fb: { ...fb, effective: outcome.verdict },
+		effective: { verdict: outcome.verdict, reason: outcome.reason, source: "classifier" },
+	};
 }
 
 /** Subagent gate: resolve an ask with no human answer. The UI-free counterpart of the
@@ -2181,15 +2380,36 @@ export async function resolveAskWithoutHuman(
 		return {
 			verdict: "deny",
 			reason: `no human answer; second model unavailable (not found or no configured auth) — ${v.reason}`,
-			fb: { ...base, model: rules.classifierFallbackModel, verdict: null, reason: null, durationMs: Date.now() - start, error, effective: "deny" },
+			fb: {
+				...base,
+				model: rules.classifierFallbackModel,
+				verdict: null,
+				reason: null,
+				durationMs: Date.now() - start,
+				error,
+				effective: "deny",
+			},
 		};
 	}
-	const outcome = await classifyWithModel(env.host, env.signal, env.complete, resolved.model, actionLine, resolved.thinking, rules.denyPaths.length > 0, FALLBACK_TIMEOUT_MS, rules.classifierRules);
+	const outcome = await classifyWithModel(
+		env.host,
+		env.signal,
+		env.complete,
+		resolved.model,
+		actionLine,
+		resolved.thinking,
+		rules.denyPaths.length > 0,
+		FALLBACK_TIMEOUT_MS,
+		rules.classifierRules,
+	);
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";
 	const result: { verdict: "allow" | "deny"; reason: string } = allowed
 		? { verdict: "allow", reason: `second model allows: ${outcome.reason}` }
-		: { verdict: "deny", reason: `second model did not approve (${outcome.source === "model" ? outcome.verdict : "error"}): ${outcome.reason}` };
+		: {
+				verdict: "deny",
+				reason: `second model did not approve (${outcome.source === "model" ? outcome.verdict : "error"}): ${outcome.reason}`,
+			};
 	return {
 		...result,
 		fb: {
@@ -2220,7 +2440,8 @@ export async function adjudicate(
 	const rule = classifyByRules(call.toolName, call.input, env.cwd, state.userRules, state.prot, state.anchoredDenyPathBases(env.cwd));
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") {
-		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI) return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
+		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI)
+			return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
 		return { verdict: "deny", reason: rule.reason ?? "", source: "rule", degraded: false };
 	}
 
@@ -2231,7 +2452,10 @@ export async function adjudicate(
 	// appends immediately. Recording stays observe-only — it never changes a verdict; write
 	// failures stay fail-soft in the sink and surface once via drainWarning.
 	const actionLine = toolCallLine(call.toolName, call.input);
-	const buildRecord = (v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">, raw: ClassifierOutcome["auditRaw"] | null): AuditRecord => ({
+	const buildRecord = (
+		v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">,
+		raw: ClassifierOutcome["auditRaw"] | null,
+	): AuditRecord => ({
 		ts: new Date().toISOString(),
 		sessionId: env.host.getSessionId(),
 		cwd: env.cwd,
@@ -2248,11 +2472,25 @@ export async function adjudicate(
 	if (rule.verdict === "ask") {
 		// denyPaths 命中 → ask 终局(ADR-0002):声明者本人裁决例外;无 UI 降级为 deny
 		if (env.hasUI) {
-			const ppRecord: AuditRecord = { ...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: "protected-path", degraded: false }, null), detail: rule.detail };
-			return { verdict: "ask", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: false, autoResolve: "deny", ...(state.audit ? { pendingAudit: ppRecord } : {}) };
+			const ppRecord: AuditRecord = {
+				...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: "protected-path", degraded: false }, null),
+				detail: rule.detail,
+			};
+			return {
+				verdict: "ask",
+				reason: rule.reason ?? "",
+				detail: rule.detail,
+				source: "protected-path",
+				degraded: false,
+				autoResolve: "deny",
+				...(state.audit ? { pendingAudit: ppRecord } : {}),
+			};
 		}
 		// headless: the ask degrades to deny — recorded like the gray-zone rule (the effective post-degradation verdict is what lands in the record)
-		state.audit?.append({ ...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: "protected-path", degraded: true }, null), detail: rule.detail });
+		state.audit?.append({
+			...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: "protected-path", degraded: true }, null),
+			detail: rule.detail,
+		});
 		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: true };
 	}
 
@@ -2266,13 +2504,35 @@ export async function adjudicate(
 		const cascade = await runConfidenceCascade(state, env, null, { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine);
 		const eff = cascade.effective;
 		const effAskHeadless = eff?.verdict === "ask" && !env.hasUI;
-		const fcRecord = buildRecord({ verdict: eff ? (effAskHeadless ? "deny" : eff.verdict) : "deny", reason: eff?.reason ?? reason, source: "fail-closed", degraded: effAskHeadless }, null);
+		const fcRecord = buildRecord(
+			{
+				verdict: eff ? (effAskHeadless ? "deny" : eff.verdict) : "deny",
+				reason: eff?.reason ?? reason,
+				source: "fail-closed",
+				degraded: effAskHeadless,
+			},
+			null,
+		);
 		if (cascade.fb) fcRecord.fallback = cascade.fb;
 		if (eff?.verdict === "ask" && env.hasUI) {
-			return { verdict: "ask", reason: eff.reason, source: eff.source, degraded: false, autoResolve: "deny", ...(state.audit ? { pendingAudit: fcRecord } : {}) };
+			return {
+				verdict: "ask",
+				reason: eff.reason,
+				source: eff.source,
+				degraded: false,
+				autoResolve: "deny",
+				...(state.audit ? { pendingAudit: fcRecord } : {}),
+			};
 		}
 		if (eff?.verdict !== "allow" && !state.userRules.autoDeny && env.hasUI) {
-			return { verdict: "ask", reason: (eff?.reason ?? reason) + AUTO_DENY_OFF_SUFFIX, source: eff?.source ?? "fail-closed", degraded: false, autoResolve: "deny", ...(state.audit ? { pendingAudit: fcRecord } : {}) };
+			return {
+				verdict: "ask",
+				reason: (eff?.reason ?? reason) + AUTO_DENY_OFF_SUFFIX,
+				source: eff?.source ?? "fail-closed",
+				degraded: false,
+				autoResolve: "deny",
+				...(state.audit ? { pendingAudit: fcRecord } : {}),
+			};
 		}
 		state.audit?.append(fcRecord);
 		if (eff?.verdict === "allow") return { verdict: "allow", reason: eff.reason, source: "classifier", degraded: false };
@@ -2281,15 +2541,32 @@ export async function adjudicate(
 	}
 
 	env.onPhase?.("classifier", resolved.model.id);
-	const outcome = await classifyWithModel(env.host, env.signal, env.complete, resolved.model, actionLine, resolved.thinking, state.userRules.denyPaths.length > 0, CLASSIFIER_TIMEOUT_MS, state.userRules.classifierRules);
-
+	const outcome = await classifyWithModel(
+		env.host,
+		env.signal,
+		env.complete,
+		resolved.model,
+		actionLine,
+		resolved.thinking,
+		state.userRules.denyPaths.length > 0,
+		CLASSIFIER_TIMEOUT_MS,
+		state.userRules.classifierRules,
+	);
 
 	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
 	// (the first layer produced no verdict)
 	const demotion = confidenceDemotion(outcome, state.userRules);
-	const cascade = demotion || outcome.source === "fail-closed"
-		? await runConfidenceCascade(state, env, demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null, demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine)
-		: {};
+	const cascade =
+		demotion || outcome.source === "fail-closed"
+			? await runConfidenceCascade(
+					state,
+					env,
+					demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null,
+					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
+					state.userRules.denyPaths.length > 0,
+					actionLine,
+				)
+			: {};
 	const effVerdict = cascade.effective?.verdict ?? outcome.verdict;
 	const effReason = cascade.effective?.reason ?? outcome.reason;
 	const effSource = cascade.effective?.source ?? "classifier";
@@ -2298,7 +2575,15 @@ export async function adjudicate(
 	// rescued by an enforcing fallback records its applied verdict, not the default deny.
 	const appliedAskHeadless = !env.hasUI && effVerdict === "ask";
 	const fcRescued = cascade.effective !== undefined && outcome.source === "fail-closed";
-	const grayRecord = buildRecord({ verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict, reason: fcRescued ? effReason : outcome.reason, source: outcome.source, degraded: appliedAskHeadless }, outcome.auditRaw ?? null);
+	const grayRecord = buildRecord(
+		{
+			verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict,
+			reason: fcRescued ? effReason : outcome.reason,
+			source: outcome.source,
+			degraded: appliedAskHeadless,
+		},
+		outcome.auditRaw ?? null,
+	);
 	if (cascade.demoted) grayRecord.demoted = true;
 	if (cascade.fb) grayRecord.fallback = cascade.fb;
 	// #62: an interactive ask defers the append to the handler finalize (ground truth);
@@ -2308,12 +2593,22 @@ export async function adjudicate(
 		// ADR-0004 carve-out: only an enforce-mode fallback may resolve a subagent ask.
 		// A shadow-mode opinion records without changing verdicts, so with no human it
 		// denies rather than auto-allowing (the pre-fix behavior let shadow allow).
-		const autoResolve: NonNullable<Verdict["autoResolve"]> = effVerdict === "deny" || effSource !== "classifier"
-			? "deny"
-			: cascade.fb
-				? (cascade.fb.mode === "enforce" && cascade.fb.verdict === "allow" && !(cascade.demoted && outcome.verdict === "deny") ? "allow" : "deny")
-				: "consult";
-		return { verdict: "ask", reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason, source: effSource, degraded: false, autoResolve, ...(state.audit ? { pendingAudit: grayRecord } : {}) };
+		const autoResolve: NonNullable<Verdict["autoResolve"]> =
+			effVerdict === "deny" || effSource !== "classifier"
+				? "deny"
+				: cascade.fb
+					? cascade.fb.mode === "enforce" && cascade.fb.verdict === "allow" && !(cascade.demoted && outcome.verdict === "deny")
+						? "allow"
+						: "deny"
+					: "consult";
+		return {
+			verdict: "ask",
+			reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason,
+			source: effSource,
+			degraded: false,
+			autoResolve,
+			...(state.audit ? { pendingAudit: grayRecord } : {}),
+		};
 	}
 	state.audit?.append(grayRecord);
 	if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: effSource, degraded: false };
@@ -2451,9 +2746,21 @@ export type ExplainGateResult = { ok: true; text: string } | { ok: false; error:
 /** One EXPLAIN-GATE model call. Never throws; failures come back as `{ ok: false }`. */
 export async function explainGate(a: ExplainGateArgs): Promise<ExplainGateResult> {
 	const question = a.question?.trim();
-	const task = question ? `Answer this specific question from the human about the held action: ${sanitize(question)}` : (a.defaultPrompt ?? EXPLAIN_GATE_DEFAULT_PROMPT);
+	const task = question
+		? `Answer this specific question from the human about the held action: ${sanitize(question)}`
+		: (a.defaultPrompt ?? EXPLAIN_GATE_DEFAULT_PROMPT);
 	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine)}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
-	const r = await callClassifierOnce(a.host, a.signal, a.complete, a.model, userMessage, EXPLAIN_GATE_MAX_TOKENS, a.thinking, EXPLAIN_GATE_SYSTEM, EXPLAIN_GATE_TIMEOUT_MS);
+	const r = await callClassifierOnce(
+		a.host,
+		a.signal,
+		a.complete,
+		a.model,
+		userMessage,
+		EXPLAIN_GATE_MAX_TOKENS,
+		a.thinking,
+		EXPLAIN_GATE_SYSTEM,
+		EXPLAIN_GATE_TIMEOUT_MS,
+	);
 	if (!r.ok) return { ok: false, error: r.error };
 	if (r.stopReason === "error" || r.stopReason === "aborted") return { ok: false, error: r.errorMessage ?? `stopReason=${r.stopReason}` };
 	const text = r.text.trim();
@@ -2463,7 +2770,11 @@ export async function explainGate(a: ExplainGateArgs): Promise<ExplainGateResult
 
 /** Agent-facing decline detail: the user's own explanation (single line, sanitized, length-capped) when given. */
 export function declineDetail(base: string, reason: string | undefined): string {
-	const text = reason ? sanitize(reason).replace(/\s*[\r\n\u2028\u2029\u0085]+\s*/g, " ").trim() : "";
+	const text = reason
+		? sanitize(reason)
+				.replace(/\s*[\r\n\u2028\u2029\u0085]+\s*/g, " ")
+				.trim()
+		: "";
 	return text ? `${base}, saying: "${text}"` : base;
 }
 
@@ -2476,7 +2787,10 @@ export function declineDetail(base: string, reason: string | undefined): string 
 export function displaySafe(text: string): string {
 	return text
 		.replace(/\r\n/g, "\n")
-		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+		.replace(
+			/[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/g,
+			(c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+		);
 }
 
 const MAX_DIALOG_CODE_CHARS = 4000;
@@ -2631,7 +2945,8 @@ function isAskChoice(x: unknown): x is AskChoice {
 function dialogLineAtRow(tui: unknown, root: PiTui.Component, width: number, screenRow: number): number | null {
 	try {
 		if (!tui || typeof tui !== "object" || !("children" in tui) || !Array.isArray(tui.children)) return null;
-		const rows = "terminal" in tui && tui.terminal && typeof tui.terminal === "object" && "rows" in tui.terminal ? tui.terminal.rows : undefined;
+		const rows =
+			"terminal" in tui && tui.terminal && typeof tui.terminal === "object" && "rows" in tui.terminal ? tui.terminal.rows : undefined;
 		if (typeof rows !== "number") return null;
 		const offsetOf = (components: readonly PiTui.Component[]): number | null => {
 			let acc = 0;
@@ -2688,14 +3003,35 @@ class DialogBorder implements PiTui.Component {
 }
 
 /** Glyphs for the fixed keys the dialog hints at (pi/omp keybinding names). */
-const KEY_GLYPHS: Record<string, string> = { up: "↑", down: "↓", left: "←", right: "→", enter: "⏎", return: "⏎", escape: "esc", esc: "esc", tab: "⇥", space: "␣" };
-const HINT_FALLBACK_KEYS: Record<string, string> = { "tui.select.confirm": "enter", "tui.select.cancel": "escape", "tui.select.up": "up", "tui.select.down": "down" };
+const KEY_GLYPHS: Record<string, string> = {
+	up: "↑",
+	down: "↓",
+	left: "←",
+	right: "→",
+	enter: "⏎",
+	return: "⏎",
+	escape: "esc",
+	esc: "esc",
+	tab: "⇥",
+	space: "␣",
+};
+const HINT_FALLBACK_KEYS: Record<string, string> = {
+	"tui.select.confirm": "enter",
+	"tui.select.cancel": "escape",
+	"tui.select.up": "up",
+	"tui.select.down": "down",
+};
 
 const keyGlyph = (name: string): string => KEY_GLYPHS[name] ?? name;
 
 /** keyHint/rawKeyHint substitute: dim key + muted description, resolved through the
  *  host's keybindings manager when it exposes getKeys, else the documented fallback. */
-function dialogKeyHint(theme: Theme, getKeybindings: (() => { getKeys(action: string): readonly string[] }) | undefined, action: string, description: string): string {
+function dialogKeyHint(
+	theme: Theme,
+	getKeybindings: (() => { getKeys(action: string): readonly string[] }) | undefined,
+	action: string,
+	description: string,
+): string {
 	let key = "";
 	try {
 		const keys = getKeybindings?.().getKeys(action) ?? [];
@@ -2762,13 +3098,25 @@ export function buildApproveDialog(
 		const updateList = (): void => {
 			list.clear();
 			choices.forEach((c, i) => {
-				list.addChild(new Text(i === index ? theme.fg("accent", "→ ") + theme.fg("accent", ASK_LABELS[c]) : `  ${theme.fg("text", ASK_LABELS[c])}`, 1, 0));
+				list.addChild(
+					new Text(
+						i === index ? theme.fg("accent", "→ ") + theme.fg("accent", ASK_LABELS[c]) : `  ${theme.fg("text", ASK_LABELS[c])}`,
+						1,
+						0,
+					),
+				);
 			});
 		};
 		updateList();
 		root.addChild(list);
 		root.addChild(new Spacer(1));
-		root.addChild(new Text(`${dialogRawKeyHint(theme, "↑↓", "navigate")}  ${dialogKeyHint(theme, getKeybindings, "tui.select.confirm", "select")}  ${dialogKeyHint(theme, getKeybindings, "tui.select.cancel", "cancel")}`, 1, 0));
+		root.addChild(
+			new Text(
+				`${dialogRawKeyHint(theme, "↑↓", "navigate")}  ${dialogKeyHint(theme, getKeybindings, "tui.select.confirm", "select")}  ${dialogKeyHint(theme, getKeybindings, "tui.select.cancel", "cancel")}`,
+				1,
+				0,
+			),
+		);
 		root.addChild(new Spacer(1));
 		root.addChild(new DialogBorder((s) => theme.fg("border", s)));
 		// Record which choice each rendered line belongs to, so a click row can be mapped back to an option.
@@ -2872,7 +3220,11 @@ async function pickAsk(ui: UiContext, spec: ApproveDialogSpec, signal?: AbortSig
  *  returns to the dialog. Hosts without the rich dialog get the plain yes/no `confirm`.
  *  Dialogs are serialized process-wide (omp queues `confirm`/`select` but not `custom`), and
  *  `signal` cancels a pending or shown dialog → "aborted". */
-async function confirmAsk(ui: UiContext, spec: ApproveDialogSpec, opts: { signal?: AbortSignal; explain?: (question: string | null) => Promise<ExplainGateResult> } = {}): Promise<AskDecision | "aborted"> {
+async function confirmAsk(
+	ui: UiContext,
+	spec: ApproveDialogSpec,
+	opts: { signal?: AbortSignal; explain?: (question: string | null) => Promise<ExplainGateResult> } = {},
+): Promise<AskDecision | "aborted"> {
 	const { signal, explain } = opts;
 	const dialogOpts = signal ? { signal } : undefined;
 	return serializeDialog(async (): Promise<AskDecision | "aborted"> => {
@@ -2894,7 +3246,11 @@ async function confirmAsk(ui: UiContext, spec: ApproveDialogSpec, opts: { signal
 				if (text === undefined) continue;
 				return { allow: false, reason: text.trim() || undefined };
 			}
-			const question = await ui.input(`${EXPLAIN_GATE_ROLE}: ask a question`, "specific question (empty = default explanation)", dialogOpts);
+			const question = await ui.input(
+				`${EXPLAIN_GATE_ROLE}: ask a question`,
+				"specific question (empty = default explanation)",
+				dialogOpts,
+			);
 			if (signal?.aborted) return "aborted";
 			if (question === undefined || explain === undefined) continue;
 			ui.setStatus("explain-gate", ui.theme.fg("warning", `${EXPLAIN_GATE_ROLE}: working…`));
@@ -2941,10 +3297,12 @@ let rootUi: UiContext | null = null;
 let dialogTail: Promise<void> = Promise.resolve();
 function serializeDialog<T>(fn: () => Promise<T>): Promise<T> {
 	const run = dialogTail.then(fn, fn);
-	dialogTail = run.then(() => undefined, () => undefined);
+	dialogTail = run.then(
+		() => undefined,
+		() => undefined,
+	);
 	return run;
 }
-
 
 // ============================================================================
 // 扩展主体
@@ -3000,9 +3358,10 @@ const NF_INFO = "\uF05A"; // info block
 
 export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full" | "compact"): string {
 	const { classifier, fallback } = info;
-	const modelLabel = classifier.state === "none" || classifier.id === null
-		? "no model · fail-closed"
-		: `${classifier.state === "unavailable" ? "⚠ ↺ " : classifier.state === "inherited" ? "↺ " : ""}${classifier.id}${classifier.thinking !== "off" ? `:${classifier.thinking}` : ""}`;
+	const modelLabel =
+		classifier.state === "none" || classifier.id === null
+			? "no model · fail-closed"
+			: `${classifier.state === "unavailable" ? "⚠ ↺ " : classifier.state === "inherited" ? "↺ " : ""}${classifier.id}${classifier.thinking !== "off" ? `:${classifier.thinking}` : ""}`;
 	const modelColor = classifier.state === "none" ? "error" : classifier.state === "unavailable" ? "warning" : "accent";
 	const fallbackText = fallback ? `↳ ${fallback.id === null ? "⚠ unavailable" : fallback.id}·${fallback.mode}` : null;
 	const fallbackColor = fallback && fallback.id === null ? "warning" : "muted";
@@ -3030,10 +3389,18 @@ export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full"
 			segs.push({ bg: "toolPendingBg", body: theme.fg("warning", theme.bold(` ${NF_WARN} AUTO OFF · ungated `)) });
 		} else {
 			segs.push({ bg: "toolSuccessBg", body: theme.fg("success", theme.bold(` ${NF_SHIELD} AUTO `)) });
-			if (risks.length > 0) segs.push({ bg: "toolErrorBg", body: ` ${NF_WARN} ${risks.map((r) => theme.fg(r.color, r.text)).join("  ")} ` });
-			segs.push({ bg: "selectedBg", body: ` ${NF_CHIP} ${theme.fg(modelColor, modelLabel)}${fallbackText ? ` ${theme.fg(fallbackColor, fallbackText)}` : ""} ` });
-			segs.push({ bg: "customMessageBg", body: ` ${theme.fg("success", `${NF_CHECK} ${info.counts.allow}`)}  ${theme.fg("warning", `${NF_ASK} ${info.counts.ask}`)}  ${theme.fg("error", `${NF_BAN} ${info.counts.deny}`)} ` });
-			if (infoItems.length > 0) segs.push({ bg: "userMessageBg", body: ` ${NF_INFO} ${infoItems.map((i) => theme.fg("muted", i)).join("  ")} ` });
+			if (risks.length > 0)
+				segs.push({ bg: "toolErrorBg", body: ` ${NF_WARN} ${risks.map((r) => theme.fg(r.color, r.text)).join("  ")} ` });
+			segs.push({
+				bg: "selectedBg",
+				body: ` ${NF_CHIP} ${theme.fg(modelColor, modelLabel)}${fallbackText ? ` ${theme.fg(fallbackColor, fallbackText)}` : ""} `,
+			});
+			segs.push({
+				bg: "customMessageBg",
+				body: ` ${theme.fg("success", `${NF_CHECK} ${info.counts.allow}`)}  ${theme.fg("warning", `${NF_ASK} ${info.counts.ask}`)}  ${theme.fg("error", `${NF_BAN} ${info.counts.deny}`)} `,
+			});
+			if (infoItems.length > 0)
+				segs.push({ bg: "userMessageBg", body: ` ${NF_INFO} ${infoItems.map((i) => theme.fg("muted", i)).join("  ")} ` });
 		}
 		let out = "";
 		segs.forEach((seg, i) => {
@@ -3056,8 +3423,15 @@ export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full"
 }
 
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
-	pi.registerFlag("auto-mode", { description: "Enable Auto Mode (rules + model classifier gating for tool calls)", type: "boolean", default: true });
-	pi.registerFlag("auto-mode-model", { description: "Classifier model as provider/id[:thinking] (pi --model syntax; default: inherit session model)", type: "string" });
+	pi.registerFlag("auto-mode", {
+		description: "Enable Auto Mode (rules + model classifier gating for tool calls)",
+		type: "boolean",
+		default: true,
+	});
+	pi.registerFlag("auto-mode-model", {
+		description: "Classifier model as provider/id[:thinking] (pi --model syntax; default: inherit session model)",
+		type: "string",
+	});
 	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows", type: "boolean", default: false });
 
 	let enabled = pi.getFlag("auto-mode") !== false;
@@ -3067,8 +3441,15 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 	/** Verdict → UI (the extension's single presentation point): presentation keys on
 	 *  source alone; protected-path wording carries the ask-degradation context. */
-	async function presentVerdict(v: Verdict, call: { toolName: string; input: Record<string, unknown> }, action: string, ui: UiContext, opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext }): Promise<{ block: true; reason: string } | undefined | "aborted"> {
-		const note = (msg: string, level: "info" | "warning" | "error"): void => ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
+	async function presentVerdict(
+		v: Verdict,
+		call: { toolName: string; input: Record<string, unknown> },
+		action: string,
+		ui: UiContext,
+		opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext },
+	): Promise<{ block: true; reason: string } | undefined | "aborted"> {
+		const note = (msg: string, level: "info" | "warning" | "error"): void =>
+			ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
 		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
 		if (v.verdict === "allow") {
 			// #60: classifier allows surface via notifyAllows OR debug, with one
@@ -3103,18 +3484,22 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// ask → 人工确认;非交互已在管线内降级,能走到这里的必有 UI
 		if (v.source === "protected-path") {
 			// no EXPLAIN-GATE here: the protected path plaintext must not reach a model provider (ADR-0002)
-			const d = await confirmAsk(ui, {
-				title: titled("🛡️ Auto Mode: protected path"),
-				toolName: call.toolName,
-				input: call.input,
-				action,
-				reasonLine: v.reason,
-				detail: v.detail ?? "(see pi-verdict.json)",
-				question: "Allow this access?",
-				jev: null,
-				minConfidence: null,
-				fallbackMessage: `${action}\n\n${v.reason}\n\nProtected path: ${v.detail ?? "(see pi-verdict.json)"}\n\nAllow this access?`,
-			}, { signal: opts.signal });
+			const d = await confirmAsk(
+				ui,
+				{
+					title: titled("🛡️ Auto Mode: protected path"),
+					toolName: call.toolName,
+					input: call.input,
+					action,
+					reasonLine: v.reason,
+					detail: v.detail ?? "(see pi-verdict.json)",
+					question: "Allow this access?",
+					jev: null,
+					minConfidence: null,
+					fallbackMessage: `${action}\n\n${v.reason}\n\nProtected path: ${v.detail ?? "(see pi-verdict.json)"}\n\nAllow this access?`,
+				},
+				{ signal: opts.signal },
+			);
 			if (d === "aborted") return "aborted";
 			if (d.allow) {
 				// debug notify 不带 action 行:同上,通知不得携带受保护路径明文
@@ -3125,17 +3510,21 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		}
 		const label = v.source === "rule" ? "Rule" : v.source === "fail-closed" ? "Fail-closed" : "Classifier opinion";
 		const reasonLine = `${label}: ${v.reason}`;
-		const d = await confirmAsk(ui, {
-			title: titled("🛡️ Auto Mode confirmation"),
-			toolName: call.toolName,
-			input: call.input,
-			action,
-			reasonLine,
-			question: "Allow execution?",
-			jev: v.source === "classifier" ? parseJevReason(v.reason) : null,
-			minConfidence: state.userRules.classifierMinConfidence,
-			fallbackMessage: `${action}\n\n${label}: ${v.reason}\n\nAllow execution?`,
-		}, { signal: opts.signal, explain: (question) => explainAsk(opts.ctx, call, action, reasonLine, question) });
+		const d = await confirmAsk(
+			ui,
+			{
+				title: titled("🛡️ Auto Mode confirmation"),
+				toolName: call.toolName,
+				input: call.input,
+				action,
+				reasonLine,
+				question: "Allow execution?",
+				jev: v.source === "classifier" ? parseJevReason(v.reason) : null,
+				minConfidence: state.userRules.classifierMinConfidence,
+				fallbackMessage: `${action}\n\n${label}: ${v.reason}\n\nAllow execution?`,
+			},
+			{ signal: opts.signal, explain: (question) => explainAsk(opts.ctx, call, action, reasonLine, question) },
+		);
 		if (d === "aborted") return "aborted";
 		return d.allow ? undefined : { block: true, reason: blockedReason("user-declined", declineDetail("user declined", d.reason)) };
 	}
@@ -3199,7 +3588,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	/** Surface skipped-value and shortcut warnings from a rules (re)load */
 	function reportLoadWarnings(report: RulesLoadReport, ctx: ExtensionContext): void {
 		if (report.skipped.length > 0) {
-			ctx.ui.notify(`pi-verdict: skipped ${report.skipped.length} invalid config value(s) in config (${userConfigPath()}${report.project?.applied ? ` + ${report.project.path}` : ""}): ${report.skipped.join(", ")}`, "warning");
+			ctx.ui.notify(
+				`pi-verdict: skipped ${report.skipped.length} invalid config value(s) in config (${userConfigPath()}${report.project?.applied ? ` + ${report.project.path}` : ""}): ${report.skipped.join(", ")}`,
+				"warning",
+			);
 		}
 		if (report.shortcutWarning) ctx.ui.notify(`pi-verdict: ${report.shortcutWarning}`, "warning");
 	}
@@ -3242,7 +3634,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		state.audit?.prune(); // #54: converge to the AUDIT_KEEP_SESSIONS most recent files at session start
 		reportLoadWarnings(report, ctx);
 		if (report.project?.applied) ctx.ui.notify(`pi-verdict: project overrides applied from ${report.project.path}`, "info");
-		if (report.project && !report.project.trusted) ctx.ui.notify(`pi-verdict: project config ${report.project.path} ignored — project not trusted (decisions: ${trustStorePath()})`, "info");
+		if (report.project && !report.project.trusted)
+			ctx.ui.notify(
+				`pi-verdict: project config ${report.project.path} ignored — project not trusted (decisions: ${trustStorePath()})`,
+				"info",
+			);
 		refreshStatus(ctx);
 	});
 
@@ -3273,7 +3669,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	/** Status line audit hint (#54): shown only while the sink is active */
 	const auditHint = () => (state.audit ? `\naudit: on → ${state.audit.dir}` : "");
 	/** Status line cascade hint (#63/#67): shown while the floor or the fallback is configured */
-	const fallbackHint = () => (state.userRules.classifierMinConfidence !== null || state.userRules.classifierFallbackModel ? `\n${state.fallback.summary(state.userRules.classifierFallbackMode)}` : "");
+	const fallbackHint = () =>
+		state.userRules.classifierMinConfidence !== null || state.userRules.classifierFallbackModel
+			? `\n${state.fallback.summary(state.userRules.classifierFallbackMode)}`
+			: "";
 
 	pi.registerCommand("automode", {
 		description: "Show Auto Mode status, or set it: /automode on|off",
@@ -3281,8 +3680,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const arg = args.trim().toLowerCase();
 			// Bare call: read-only status.
 			if (arg === "") {
-				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
-			return;
+				ctx.ui.notify(
+					`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`,
+					"info",
+				);
+				return;
 			}
 			// 幂等设定:与现值相同不翻转,仅确认
 			if (arg === "on" || arg === "off") {
@@ -3327,7 +3729,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 					{ kind: "user", file: userConfigPath(), label: `User — ${userConfigPath()}` },
 				];
 				if (localFile !== null) targets.push({ kind: "local", file: localFile, label: `Local (project) — ${localFile}` });
-				const choice = await ctx.ui.select("pi-verdict: which config?", targets.map((t) => t.label));
+				const choice = await ctx.ui.select(
+					"pi-verdict: which config?",
+					targets.map((t) => t.label),
+				);
 				const picked = choice === undefined ? undefined : targets[targets.map((t) => t.label).indexOf(choice)];
 				if (!picked) return;
 				kind = picked.kind;
@@ -3346,8 +3751,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 			if (kind === "local") {
 				const root = projectRootOf(file);
-				const trusted = (sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot])) || projectTrustState(root, file, readTrustStore()) === "trusted";
-				if (!trusted) ctx.ui.notify(`pi-verdict: project ${root} is not trusted — edits are saved but not applied until you trust it (prompted at session start)`, "info");
+				const trusted =
+					(sessionTrustedRoot !== null && rootIn(root, [sessionTrustedRoot])) ||
+					projectTrustState(root, file, readTrustStore()) === "trusted";
+				if (!trusted)
+					ctx.ui.notify(
+						`pi-verdict: project ${root} is not trusted — edits are saved but not applied until you trust it (prompted at session start)`,
+						"info",
+					);
 			}
 
 			/** Write `key` (or drop it when undefined) and hot-reload the rules; false = nothing changed */
@@ -3433,9 +3844,13 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 						if (key in raw) base = list;
 						else if (kind === "local") {
 							const g = readConfigObject(userConfigPath(), "user");
-							const gv = "raw" in g && Array.isArray(g.raw[key]) ? (g.raw[key] as unknown[]).filter((x): x is string => typeof x === "string") : [];
+							const gv =
+								"raw" in g && Array.isArray(g.raw[key]) ? (g.raw[key] as unknown[]).filter((x): x is string => typeof x === "string") : [];
 							const copyLabel = `Copy of global list (${gv.length})`;
-							const start = await ctx.ui.select(`Project "${key}" replaces the global list for this project. Start from:`, [copyLabel, "Empty list"]);
+							const start = await ctx.ui.select(`Project "${key}" replaces the global list for this project. Start from:`, [
+								copyLabel,
+								"Empty list",
+							]);
 							if (start === undefined) continue;
 							base = start === copyLabel ? gv : [];
 						} else base = [];
@@ -3452,9 +3867,16 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 						if (act === "Edit") {
 							const value = acceptEntry(key, await ctx.ui.editor(`Edit ${key} #${i + 1}`, entryLabel(x)), list, i);
 							if (value === undefined || value === x) continue;
-							save(list.map((e, j) => (j === i ? value : e)), key);
+							save(
+								list.map((e, j) => (j === i ? value : e)),
+								key,
+							);
 						} else if (act === "Remove") {
-							if (await ctx.ui.confirm(`Remove from ${key}?`, entryLabel(x))) save(list.filter((_, j) => j !== i), key);
+							if (await ctx.ui.confirm(`Remove from ${key}?`, entryLabel(x)))
+								save(
+									list.filter((_, j) => j !== i),
+									key,
+								);
 						}
 					}
 				}
@@ -3472,11 +3894,27 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				});
 				const gateIdx = options.length;
 				const gv = raw.gateOmpDir;
-				const gateState = gv === undefined ? (kind === "local" ? "not set: global applies" : "on, default") : typeof gv === "boolean" ? (gv ? "on" : "off") : "invalid: not a boolean";
+				const gateState =
+					gv === undefined
+						? kind === "local"
+							? "not set: global applies"
+							: "on, default"
+						: typeof gv === "boolean"
+							? gv
+								? "on"
+								: "off"
+							: "invalid: not a boolean";
 				options.push(`gateOmpDir (${gateState}) — ${GATE_OMP_DIR_DESC}`);
 				const footerIdx = options.length;
 				const fv = raw.footer;
-				const footerState = fv === undefined ? (kind === "local" ? "not set: global applies" : "full, default") : fv === "full" || fv === "compact" || fv === "off" ? fv : "invalid";
+				const footerState =
+					fv === undefined
+						? kind === "local"
+							? "not set: global applies"
+							: "full, default"
+						: fv === "full" || fv === "compact" || fv === "off"
+							? fv
+							: "invalid";
 				options.push(`footer (${footerState}) — ${FOOTER_DESC}`);
 				options.push(DONE);
 				const choice = await ctx.ui.select(`pi-verdict: edit ${file}`, options);
@@ -3522,7 +3960,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (colon > slash + 1 && THINKING_LEVELS.has(raw.slice(colon + 1))) {
 			return { specPart: raw.slice(0, colon), level: raw.slice(colon + 1) };
 		}
-		if (colon > slash + 1) warnOnce(`pi-verdict: invalid thinking-level suffix "${raw.slice(colon + 1)}" (valid: ${[...THINKING_LEVELS].join("/")}), ignored`);
+		if (colon > slash + 1)
+			warnOnce(`pi-verdict: invalid thinking-level suffix "${raw.slice(colon + 1)}" (valid: ${[...THINKING_LEVELS].join("/")}), ignored`);
 		return { specPart: raw, level: null };
 	}
 
@@ -3539,8 +3978,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  fail-closed。经 AdjudicateEnv.getModel 惰性调用(仅灰区),回退警告不会出现在
 	 *  规则已裁决的调用上。 */
 	function resolveClassifier(ctx: ExtensionContext): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
-		const raw =
-			(pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
+		const raw = (pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
 		let thinking: ThinkingLevel = "off";
 		if (raw) {
 			const { specPart, level } = parseModelSpec(raw, (msg) => {
@@ -3553,7 +3991,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			if (model) return { model, thinking };
 			if (!warnedClassifierModel) {
 				warnedClassifierModel = true; // 每会话仅警告一次,避免逐调用刷屏
-				ctx.ui.notify(`pi-verdict: classifier model "${raw}" unavailable (not found or no configured auth), falling back to session model (self-reflection)`, "warning");
+				ctx.ui.notify(
+					`pi-verdict: classifier model "${raw}" unavailable (not found or no configured auth), falling back to session model (self-reflection)`,
+					"warning",
+				);
 			}
 		}
 		// 自省:继承当前会话模型;显式指定的思考级别在回退时仍生效(原语义)
@@ -3567,7 +4008,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  judgment twice instead of adding a second opinion. Unresolvable → one-time warning
 	 *  + null (shadow: inert; enforce: triggered calls fail-closed, see runFallbackCascade).
 	 *  Resolved lazily via AdjudicateEnv.getFallbackModel, only after the gate fires. */
-	function resolveFallbackClassifier(ctx: ExtensionContext): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
+	function resolveFallbackClassifier(
+		ctx: ExtensionContext,
+	): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
 		const raw = state.userRules.classifierFallbackModel;
 		if (!raw) return null;
 		const { specPart, level } = parseModelSpec(raw, (msg) => {
@@ -3580,7 +4023,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (model) return { model, thinking };
 		if (!warnedFallbackModel) {
 			warnedFallbackModel = true; // one warning per session
-			ctx.ui.notify(`pi-verdict: fallback model "${raw}" unavailable (not found or no configured auth) — classifierFallbackModel inactive this session`, "warning");
+			ctx.ui.notify(
+				`pi-verdict: fallback model "${raw}" unavailable (not found or no configured auth) — classifierFallbackModel inactive this session`,
+				"warning",
+			);
 		}
 		return null;
 	}
@@ -3604,14 +4050,23 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			if (model) return { model, thinking };
 			if (!warnedExplainModel) {
 				warnedExplainModel = true;
-				ctx.ui.notify(`pi-verdict: ${EXPLAIN_GATE_ROLE} model "${raw}" unavailable (not found or no configured auth), falling back to session model`, "warning");
+				ctx.ui.notify(
+					`pi-verdict: ${EXPLAIN_GATE_ROLE} model "${raw}" unavailable (not found or no configured auth), falling back to session model`,
+					"warning",
+				);
 			}
 		}
 		return ctx.model ? { model: ctx.model, thinking } : null;
 	}
 
 	/** The dialog's "Explain…" handler: one EXPLAIN-GATE call about the held action. */
-	async function explainAsk(ctx: ExtensionContext, call: { toolName: string; input: Record<string, unknown> }, action: string, reasonLine: string, question: string | null): Promise<ExplainGateResult> {
+	async function explainAsk(
+		ctx: ExtensionContext,
+		call: { toolName: string; input: Record<string, unknown> },
+		action: string,
+		reasonLine: string,
+		question: string | null,
+	): Promise<ExplainGateResult> {
 		const role = resolveExplainGate(ctx);
 		if (!role) return { ok: false, error: "no model available" };
 		return explainGate({
@@ -3653,7 +4108,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		const onPhase = statusUi
 			? (phase: "classifier" | "fallback", modelId: string): void => {
 					statusShown = true;
-					statusUi.setWidget(STATUS_WIDGET_KEY, [statusUi.theme.fg("warning", phase === "classifier" ? `🛡️ verdict: classifying ${event.toolName} via ${modelId}…` : `🛡️ verdict: fallback classifier ${modelId} on ${event.toolName}…`)]);
+					statusUi.setWidget(STATUS_WIDGET_KEY, [
+						statusUi.theme.fg(
+							"warning",
+							phase === "classifier"
+								? `🛡️ verdict: classifying ${event.toolName} via ${modelId}…`
+								: `🛡️ verdict: fallback classifier ${modelId} on ${event.toolName}…`,
+						),
+					]);
 				}
 			: undefined;
 
@@ -3728,7 +4190,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				return undefined;
 			}
 			// no path plaintext in notifications (ADR-0002): protected-path asks omit the action line
-			out(`🛡️ [${label}] Auto Mode blocked (subagent ask, no human): ${res.reason}${verdict.source === "protected-path" ? "" : `\n  ${action}`}`, "warning");
+			out(
+				`🛡️ [${label}] Auto Mode blocked (subagent ask, no human): ${res.reason}${verdict.source === "protected-path" ? "" : `\n  ${action}`}`,
+				"warning",
+			);
 			return { block: true, reason: blockedReason("subagent-auto", res.reason) };
 		};
 

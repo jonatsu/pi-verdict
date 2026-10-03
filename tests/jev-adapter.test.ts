@@ -4,13 +4,13 @@
  * paths / auth resolution order / extension wiring. Fully offline: injected
  * fetch stubs, no network.
  */
-import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import jevAdapter, {
-	activeTransport,
 	API_ID,
+	activeTransport,
 	buildDecisionsBody,
 	CONCERNS,
 	createJevProvider,
@@ -18,10 +18,10 @@ import jevAdapter, {
 	extractState,
 	MODEL_ID,
 	PROVIDER_ID,
-	TRANSPORT_DEFAULTS,
-	VERDICT_QUESTIONS,
 	parseJevConfidence,
 	parseJevReason,
+	TRANSPORT_DEFAULTS,
+	VERDICT_QUESTIONS,
 	verdictText,
 	wireModel,
 } from "../extensions/jev-adapter.ts";
@@ -95,11 +95,28 @@ describe("buildDecisionsBody", () => {
 
 describe("extractState", () => {
 	test("takes the last user message (string content)", () => {
-		const state = extractState({ messages: [{ role: "user", content: "first" }, { role: "assistant", content: "reply" }, { role: "user", content: "second" }] });
+		const state = extractState({
+			messages: [
+				{ role: "user", content: "first" },
+				{ role: "assistant", content: "reply" },
+				{ role: "user", content: "second" },
+			],
+		});
 		expect(state).toBe("second");
 	});
 	test("joins text blocks of block-array content", () => {
-		const state = extractState({ messages: [{ role: "user", content: [{ type: "text", text: "a" }, { type: "image", url: "x" }, { type: "text", text: "b" }] }] });
+		const state = extractState({
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "a" },
+						{ type: "image", url: "x" },
+						{ type: "text", text: "b" },
+					],
+				},
+			],
+		});
 		expect(state).toBe("a\nb");
 	});
 	test("throws when there is no user message", () => {
@@ -162,7 +179,11 @@ describe("verdict prefix contract (real adjudicate pipeline)", () => {
 	});
 
 	test("adapter output passes parseVerdict for all three choices", async () => {
-		for (const [choice, expected] of [["allow", "allow"], ["ask", "ask"], ["deny", "deny"]] as const) {
+		for (const [choice, expected] of [
+			["allow", "allow"],
+			["ask", "ask"],
+			["deny", "deny"],
+		] as const) {
 			const text = verdictText(decisionResponse(choice, { [choice]: 0.9 }, 0.8));
 			const v = await adjudicate(state, { toolName: "bash", input: { command: "echo hello" } }, envFor(text));
 			expect(v.verdict).toBe(expected);
@@ -205,20 +226,26 @@ describe("streamDecisions via createJevProvider", () => {
 	test("HTTP error lands as stopReason error with the status and body snippet", async () => {
 		const fetcher = (async () => new Response('{"error":{"message":"is a decisions model"}}', { status: 400 })) as typeof fetch;
 		const provider = createJevProvider(undefined, fetcher);
-		const message = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, { apiKey: "k" }).result();
+		const message = await provider
+			.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, { apiKey: "k" })
+			.result();
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toContain("400");
 		expect(message.errorMessage).toContain("decisions model");
 	});
 	test("malformed JSON lands as stopReason error", async () => {
 		const provider = createJevProvider(undefined, (async () => new Response("not json", { status: 200 })) as typeof fetch);
-		const message = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, { apiKey: "k" }).result();
+		const message = await provider
+			.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, { apiKey: "k" })
+			.result();
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toContain("malformed JSON");
 	});
 	test("missing API key lands as stopReason error", async () => {
 		const provider = createJevProvider(undefined);
-		const message = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, {}).result();
+		const message = await provider
+			.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, {})
+			.result();
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toContain("no API key resolved");
 	});
@@ -231,7 +258,9 @@ describe("streamDecisions via createJevProvider", () => {
 		const provider = createJevProvider(undefined, fetcher);
 		process.env.PI_VERDICT_JEV_TRANSPORT = "typesafe";
 		try {
-			const message = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, { apiKey: "k" }).result();
+			const message = await provider
+				.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, { apiKey: "k" })
+				.result();
 			expect(message.stopReason).toBe("stop");
 			expect(calls[0].url).toBe("https://openrouter.ai/api/alpha/decisions");
 		} finally {
@@ -241,7 +270,11 @@ describe("streamDecisions via createJevProvider", () => {
 });
 
 describe("auth resolve order", () => {
-	const input = { ctx: { env: async () => undefined, fileExists: async () => false }, credential: undefined, signal: new AbortController().signal };
+	const input = {
+		ctx: { env: async () => undefined, fileExists: async () => false },
+		credential: undefined,
+		signal: new AbortController().signal,
+	};
 	test("openrouter resolver wins over env", async () => {
 		process.env.OPENROUTER_API_KEY = "sk-env";
 		const r = await createJevProvider(async () => "sk-or-login").auth.apiKey.resolve(input as any);
@@ -249,7 +282,13 @@ describe("auth resolve order", () => {
 	});
 	test("env applies when the resolver throws or is unset", async () => {
 		process.env.OPENROUTER_API_KEY = "sk-env";
-		expect((await createJevProvider(async () => { throw new Error("store down"); }).auth.apiKey.resolve(input as any))?.auth.apiKey).toBe("sk-env");
+		expect(
+			(
+				await createJevProvider(async () => {
+					throw new Error("store down");
+				}).auth.apiKey.resolve(input as any)
+			)?.auth.apiKey,
+		).toBe("sk-env");
 		expect((await createJevProvider(undefined).auth.apiKey.resolve(input as any))?.auth.apiKey).toBe("sk-env");
 	});
 	test("unconfigured when neither source yields a key", async () => {
@@ -349,8 +388,17 @@ describe("transport selection and endpoint override", () => {
 		expect(decisionsUrl("typesafe")).toBe("https://proxy.example/decisions");
 	});
 	test("TRANSPORT_DEFAULTS pins both wire contracts", () => {
-		expect(TRANSPORT_DEFAULTS.openrouter).toMatchObject({ url: "https://openrouter.ai/api/alpha/decisions", wireModel: "~typesafe/jev-latest", keyEnv: "OPENROUTER_API_KEY", loginProvider: "openrouter" });
-		expect(TRANSPORT_DEFAULTS.typesafe).toMatchObject({ url: "https://api.typesafe.ai/v1/systemone", wireModel: "jev-latest", keyEnv: "TYPESAFE_API_KEY" });
+		expect(TRANSPORT_DEFAULTS.openrouter).toMatchObject({
+			url: "https://openrouter.ai/api/alpha/decisions",
+			wireModel: "~typesafe/jev-latest",
+			keyEnv: "OPENROUTER_API_KEY",
+			loginProvider: "openrouter",
+		});
+		expect(TRANSPORT_DEFAULTS.typesafe).toMatchObject({
+			url: "https://api.typesafe.ai/v1/systemone",
+			wireModel: "jev-latest",
+			keyEnv: "TYPESAFE_API_KEY",
+		});
 		expect(TRANSPORT_DEFAULTS.typesafe.loginProvider).toBeUndefined();
 	});
 });
@@ -381,7 +429,9 @@ describe("typesafe transport (direct v1 API)", () => {
 		expect(provider.name).toBe("TypeSafe (jev direct)");
 		expect(provider.getModels()[0].baseUrl).toBe("https://api.typesafe.ai/v1/systemone");
 		const message = await provider
-			.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "Action: cat ~/.ssh/id_ed25519" }] } as any, { apiKey: "ts-req" })
+			.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "Action: cat ~/.ssh/id_ed25519" }] } as any, {
+				apiKey: "ts-req",
+			})
 			.result();
 		expect(message.stopReason).toBe("stop");
 		expect(message.content[0]).toEqual({ type: "text", text: "<verdict>deny</verdict> jev: deny 76% (confidence 65%; allow 16%, ask 8%)" });
@@ -391,10 +441,17 @@ describe("typesafe transport (direct v1 API)", () => {
 		expect(body.model).toBe("jev-latest");
 	});
 	test("auth resolves TYPESAFE_API_KEY only, ignoring openrouter sources", async () => {
-		const input = { ctx: { env: async () => undefined, fileExists: async () => false }, credential: undefined, signal: new AbortController().signal };
+		const input = {
+			ctx: { env: async () => undefined, fileExists: async () => false },
+			credential: undefined,
+			signal: new AbortController().signal,
+		};
 		process.env.OPENROUTER_API_KEY = "sk-or-env";
 		try {
-			expect(await createJevProvider(async () => "sk-or-login").auth.apiKey.resolve(input as any)).toEqual({ auth: { apiKey: "ts-test" }, source: "typesafe" });
+			expect(await createJevProvider(async () => "sk-or-login").auth.apiKey.resolve(input as any)).toEqual({
+				auth: { apiKey: "ts-test" },
+				source: "typesafe",
+			});
 			delete process.env.TYPESAFE_API_KEY;
 			expect(await createJevProvider(async () => "sk-or-login").auth.apiKey.resolve(input as any)).toBeUndefined();
 		} finally {
@@ -405,7 +462,9 @@ describe("typesafe transport (direct v1 API)", () => {
 	test("missing key names TYPESAFE_API_KEY in the error", async () => {
 		delete process.env.TYPESAFE_API_KEY;
 		const provider = createJevProvider(undefined);
-		const message = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, {}).result();
+		const message = await provider
+			.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "x" }] } as any, {})
+			.result();
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toContain("TYPESAFE_API_KEY");
 	});
@@ -435,7 +494,11 @@ describe("concern question + reason (approve dialog)", () => {
 	});
 
 	test("parseJevReason splits the jev segment, concern, and trailing cascade suffix; free text → null", () => {
-		expect(parseJevReason("jev: ask 63% (confidence 45%; allow 35%, deny 2%) — concern: network operation (confidence 45% is below your classifierMinConfidence of 50%)")).toEqual({
+		expect(
+			parseJevReason(
+				"jev: ask 63% (confidence 45%; allow 35%, deny 2%) — concern: network operation (confidence 45% is below your classifierMinConfidence of 50%)",
+			),
+		).toEqual({
 			choice: "ask",
 			probabilities: { allow: 35, ask: 63, deny: 2 },
 			confidence: 45,
