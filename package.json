@@ -1,8 +1,8 @@
 {
-	"name": "@frapetti-dev/pi-verdict",
-	"version": "0.16.0",
-	"description": "A minimal permission gate for Pi in the style of Claude Code's auto mode",
-	"author": "frapetti-dev (https://github.com/frapetti-dev)",
+	"name": "@jonatsu/pi-verdict",
+	"version": "0.16.0-fork.1",
+	"description": "A minimal permission gate for Pi in the style of Claude Code's auto mode (fork of @frapetti-dev/pi-verdict)",
+	"author": "jonatsu (fork of frapetti-dev, https://github.com/frapetti-dev)",
 	"type": "module",
 	"main": "extensions/pi-verdict.ts",
 	"files": [
@@ -32,10 +32,10 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/frapetti-dev/pi-verdict.git"
+		"url": "git+https://github.com/jonatsu/pi-verdict.git"
 	},
-	"homepage": "https://github.com/frapetti-dev/pi-verdict#readme",
-	"bugs": "https://github.com/frapetti-dev/pi-verdict/issues",
+	"homepage": "https://github.com/jonatsu/pi-verdict#readme",
+	"bugs": "https://github.com/jonatsu/pi-verdict/issues",
 	"license": "MIT",
 	"publishConfig": {
 		"registry": "https://npm.pkg.github.com"
