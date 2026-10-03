@@ -10,8 +10,8 @@ self-protection + defaults), `7f28966` (docs), `47fce9e` (package rename), `3f22
 - `omp plugin list` → `● @jonatsu/pi-verdict@0.16.0-fork.1` (and, before the legacy copy is
   removed at cutover, a resurrected `pi-verdict@0.12.1` — see the caveat below).
 - `~/.omp/plugins/bun.lock` → `"@jonatsu/pi-verdict": "github:jonatsu/pi-verdict#47fce9e5f85698e92ddde447efddba81a38d1e55"` (installed by SHA pin, not a local path).
-- Installed artifact line counts: `jev-adapter.ts` 467, `pi-verdict.ts` 3609 — the fork's
-  files, not 0.12.1's `332`/`2093`.
+- Installed artifact line counts at the pin: `jev-adapter.ts` 467, `pi-verdict.ts` 3613 —
+  the fork's files, not 0.12.1's `332`/`2093` (the `47fce9e` build checked 467/3609).
 - Anchor: `resolveAgentDir("/home/jonatsu/.omp/plugins/node_modules/@jonatsu/pi-verdict/extensions/pi-verdict.ts", homedir, undefined)` → `/home/jonatsu/.omp/agent`. `~/.pi/agent` exists on this
   machine but predates the install (mtime 00:23:56 vs install 00:45) and is not the gate's
   anchor; the gate reads `<agentDir>/config/pi-verdict.json` under `~/.omp/agent`.
