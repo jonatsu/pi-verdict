@@ -1376,7 +1376,59 @@ const HOME_RULE_ROOTS: string[] = (() => {
 	}
 	return roots.map(escapeRegExp);
 })();
-const HOME_CONFIG_ROOT = `^(?:${HOME_RULE_ROOTS.join("|")})/\\.config/`;
+/** Rule forms of an XDG config root — lexical and, when it resolves, realpath — regex-escaped. */
+const xdgRootForms = (raw: string): string[] => {
+	const lexical = toRuleForm(raw);
+	const roots = [lexical];
+	try {
+		const real = toRuleForm(fs.realpathSync(lexical));
+		if (real !== lexical) roots.push(real);
+	} catch {
+		/* root unresolvable → lexical root only */
+	}
+	return roots.map(escapeRegExp);
+};
+
+/** The XDG config root (item 9, plan-review F15): `XDG_CONFIG_HOME` REPLACES `~/.config` — it
+ *  does not nest under it — so `$XDG_CONFIG_HOME/gnupg` (etc.) is the same credential home at a
+ *  different root. An empty or relative value is ignored, as the XDG spec requires; unset → no
+ *  alternatives and the anchored S0 entries keep their home-only patterns. App-level honouring of
+ *  `XDG_CONFIG_HOME` by these tools (gnupg/age/sops/glab/gh) is unverified — anchoring is the
+ *  conservative direction. `GNUPGHOME` stays out: an explicit override is the recorded `deliberate`
+ *  case. */
+const XDG_CONFIG_ROOTS: string[] = (() => {
+	const raw = process.env.XDG_CONFIG_HOME;
+	if (!raw || !path.isAbsolute(raw)) return [];
+	return xdgRootForms(raw);
+})();
+
+/** The two home-anchored S0 entries (the fork's dotless credential homes, glab) as unions over the
+ *  XDG root. Anchored to the home rather than any `.config` substring: a repository that ships
+ *  `.config/age/data` reaches the classifier instead of hard-denying. The home branch keeps the
+ *  exact previous patterns; `gh` appears in the XDG branch only — the sibling segment-anywhere
+ *  `.config/gh` entry already covers the non-XDG spelling. The sibling dot entries (`.ssh`, `.aws`,
+ *  `.gnupg`) stay segment-anywhere by the established S0 discipline. An empty root list contributes
+ *  no alternation branch (conditional concat — an empty `|` arm would let the names match at string
+ *  start). Rebuilt by `setXdgConfigRootsForTests`: the module-load evaluation would otherwise pin
+ *  `XDG_CONFIG_HOME` and leave item 9 untestable under `bun test`. */
+const buildAnchoredS0 = (xdgRoots: string[]): [RegExp, RegExp] => {
+	const home = HOME_RULE_ROOTS.map((r) => `${r}/\\.config/`).join("|");
+	const xdg = xdgRoots.map((r) => `${r}/`).join("|");
+	return [
+		new RegExp(`^(?:${home}(?:gnupg|age|sops)${xdgRoots.length > 0 ? `|${xdg}(?:gnupg|age|sops|gh)` : ""})(/|$)`, "i"),
+		new RegExp(`^(?:${home}glab-cli${xdgRoots.length > 0 ? `|${xdg}glab-cli` : ""})(/|$)`, "i"),
+	];
+};
+let anchoredS0 = buildAnchoredS0(XDG_CONFIG_ROOTS);
+
+/** Test seam; null restores the production roots (mirrors `setTmpdirBasesForTests`). Takes raw
+ *  dirs and derives their rule forms, so a test needs no regex escaping; empty and relative
+ *  values are ignored exactly as the production `XDG_CONFIG_HOME` guard does. */
+export function setXdgConfigRootsForTests(roots: string[] | null): void {
+	anchoredS0 = buildAnchoredS0(
+		roots === null ? XDG_CONFIG_ROOTS : roots.filter((r) => r && path.isAbsolute(r)).flatMap((r) => xdgRootForms(r)),
+	);
+}
 
 // All S-rules match case-insensitively (#21): on case-insensitive filesystems
 // (default macOS APFS, Windows) case variants name the same file — realpath
@@ -1387,24 +1439,14 @@ const S0_SECRET = [
 	/\.ssh(\/|$)/i,
 	/\.aws(\/|$)/i,
 	/\.gnupg(\/|$)/i,
-	// Fork: dotless credential homes under XDG `~/.config`. GnuPG's home is
-	// `~/.config/gnupg` on XDG systems (`~/.gnupg` may not exist), age keeps an
-	// unlocked private key at `~/.config/age/key.txt`, and SOPS reads its age key
-	// under `~/.config/sops`. The dot forms above cover `~/.gnupg` alone, so the
-	// live keyrings sat outside S0 and were only an ask where a policy declared them.
-	// Anchored to `<home>/.config` (HOME_CONFIG_ROOT) rather than any `.config` substring:
-	// a repository that ships `.config/age/data` reaches the classifier instead of hard-denying.
-	new RegExp(`${HOME_CONFIG_ROOT}(?:gnupg|age|sops)(/|$)`, "i"),
+	// Fork: the dotless credential homes (`~/.config/(gnupg|age|sops|glab-cli)`) and their XDG
+	// alternatives live in `anchoredS0` — see `buildAnchoredS0` below `HOME_RULE_ROOTS`.
 	/(^|\/)\.env(\.|$)/i,
 	/credentials?(\.|\/|$)/i,
 	/(^|\/)id_rsa/i,
 	/\.pem$/i,
 	/_history$/i,
 	/\.config\/gh(\/|$)/i,
-	// Fork: the glab sibling of the gh config above — `~/.config/glab-cli/config.yml`
-	// holds the GitLab token, and a non-S1 read was a deterministic allow.
-	// Home-anchored like the XDG credential homes above.
-	new RegExp(`${HOME_CONFIG_ROOT}glab-cli(/|$)`, "i"),
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
@@ -1482,7 +1524,9 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 		? (reason: string): RuleResult => ({ verdict: "deny", reason })
 		: (reason: string): RuleResult => ({ verdict: "gray", reason });
 
-	if (hit(S0_SECRET)) return D(`S0 secrets/credential path: ${rawPath}`);
+	// S0: the static entries plus the two home/XDG-anchored credential-home entries
+	// (`anchoredS0`, item 9) — the seam rebuilds those at test time.
+	if (hit(S0_SECRET) || hit(anchoredS0)) return D(`S0 secrets/credential path: ${rawPath}`);
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {

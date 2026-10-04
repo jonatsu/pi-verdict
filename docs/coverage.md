@@ -50,11 +50,11 @@ Total cases: 79.
 | force-push | lease with ref | bash | classifier |  |  |  |  |  |
 | force-push | if-includes alone | bash | classifier |  |  | no-op without lease; git documents it |  | item=6 |
 | force-push | commit message quotes pattern | bash | classifier |  |  |  |  |  |
-| path-tier | XDG age key | read | rule |  | S0 |  | open | item=9 |
-| path-tier | XDG gnupg | read | rule |  | S0 |  | open | item=9 |
-| path-tier | XDG sops | read | rule |  | S0 |  | open | item=9 |
-| path-tier | XDG glab | read | rule |  | S0 |  | open | item=9 |
-| path-tier | XDG gh | read | rule |  | S0 |  | open | item=9 |
+| path-tier | XDG age key | read | rule |  | S0 |  |  | item=9 |
+| path-tier | XDG gnupg | read | rule |  | S0 |  |  | item=9 |
+| path-tier | XDG sops | read | rule |  | S0 |  |  | item=9 |
+| path-tier | XDG glab | read | rule |  | S0 |  |  | item=9 |
+| path-tier | XDG gh | read | rule |  | S0 |  |  | item=9 |
 | path-tier | home age key still anchored with XDG set | read | rule |  | S0 |  |  |  |
 | path-tier | home gnupg keyring | read | rule |  | S0 |  |  |  |
 | path-tier | home sops | read | rule |  | S0 |  |  |  |

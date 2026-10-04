@@ -165,7 +165,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			tool: "read",
 			input: { path: `${fx.xdg}/age/key.txt` },
 			item: 9,
-			expected: { layer: "rule", reasonIncludes: "S0", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
 			label: "XDG gnupg",
@@ -173,7 +173,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			tool: "read",
 			input: { path: `${fx.xdg}/gnupg/pubring.kbx` },
 			item: 9,
-			expected: { layer: "rule", reasonIncludes: "S0", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
 			label: "XDG sops",
@@ -181,7 +181,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			tool: "read",
 			input: { path: `${fx.xdg}/sops/age/keys.txt` },
 			item: 9,
-			expected: { layer: "rule", reasonIncludes: "S0", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
 			label: "XDG glab",
@@ -189,7 +189,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			tool: "read",
 			input: { path: `${fx.xdg}/glab-cli/config.yml` },
 			item: 9,
-			expected: { layer: "rule", reasonIncludes: "S0", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
 			label: "XDG gh",
@@ -198,7 +198,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { path: `${fx.xdg}/gh/config.yml` },
 			item: 9,
 			ref: "F15",
-			expected: { layer: "rule", reasonIncludes: "S0", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
 			label: "home age key still anchored with XDG set",

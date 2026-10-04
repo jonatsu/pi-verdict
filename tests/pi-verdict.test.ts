@@ -28,6 +28,7 @@ import autoMode, {
 	resolveAgentDir,
 	SessionState,
 	setTmpdirBasesForTests,
+	setXdgConfigRootsForTests,
 	shellWords,
 } from "../extensions/pi-verdict.ts";
 
@@ -660,6 +661,62 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 			expect(r?.block).toBe(true);
 			expect(String(r?.reason)).toContain("S0");
 		});
+	});
+});
+
+// ── 1.5 XDG config root (item 9, plan-review F15) ───────────────────────────
+
+describe("XDG config root (item 9)", () => {
+	// The production roots come from `XDG_CONFIG_HOME` at module load — invisible to bun test.
+	// The seam rebuilds the two anchored S0 entries, so these tests drive the same builder the
+	// probe's process-env path takes. The root is a plain directory: S0 matches the spelling,
+	// no fixture files are needed.
+	const xdg = fs.mkdtempSync(path.join(os.tmpdir(), ".pv-xdg-"));
+	afterAll(() => fs.rmSync(xdg, { recursive: true, force: true }));
+	afterEach(() => setXdgConfigRootsForTests(null));
+
+	test("XDG root set: the credential homes deny under $XDG_CONFIG_HOME like the dot forms", async () => {
+		setXdgConfigRootsForTests([xdg]);
+		for (const p of ["age/key.txt", "gnupg/pubring.kbx", "sops/age/keys.txt", "glab-cli/config.yml", "gh/config.yml"]) {
+			const h = session({});
+			const r = await toolCall(h, "read", { path: path.join(xdg, p) });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("S0");
+			expect(h.calls.length).toBe(0);
+		}
+	});
+
+	test("XDG root set: the home-anchored branch still hits (XDG replaces, not extends)", async () => {
+		setXdgConfigRootsForTests([xdg]);
+		const h = session({});
+		const r = await toolCall(h, "read", { path: "~/.config/age/key.txt" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("S0");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("XDG root set: a repository .config/age path still reaches the classifier, not S0", async () => {
+		setXdgConfigRootsForTests([xdg]);
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(TMP_AGENT, "repo", ".config", "age", "data") });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("no roots (XDG unset): the $XDG_CONFIG_HOME spellings do not hit S0", async () => {
+		setXdgConfigRootsForTests([]);
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(xdg, "age", "key.txt") });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("a relative XDG value contributes no alternative (XDG spec: absolute only)", async () => {
+		setXdgConfigRootsForTests(["relative/xdg"]);
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(xdg, "age", "key.txt") });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(0);
 	});
 });
 
