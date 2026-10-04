@@ -1,6 +1,6 @@
 {
 	"name": "@jonatsu/pi-verdict",
-	"version": "0.16.0-fork.6",
+	"version": "0.17.0",
 	"description": "A minimal permission gate for Pi in the style of Claude Code's auto mode (fork of @frapetti-dev/pi-verdict)",
 	"author": "jonatsu (fork of frapetti-dev, https://github.com/frapetti-dev)",
 	"type": "module",
