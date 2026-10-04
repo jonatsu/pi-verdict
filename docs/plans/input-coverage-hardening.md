@@ -1,7 +1,7 @@
 # Input coverage hardening — proposals
 
 **Status: proposed, not scheduled.** Items 1-3 are recommended as the next round, after the probe-apparatus round
-(`docs/plans/probe-apparatus.md`) lands. None of these items is accepted yet. Each one needs a decision before it
+(`docs/plans/archive/probe-apparatus.md`, completed) lands. None of these items is accepted yet. Each one needs a decision before it
 becomes a plan.
 
 Written 2026-10-04 from an architecture review of HEAD `6136aa0` (`v0.16.0-fork.6`). The review read this

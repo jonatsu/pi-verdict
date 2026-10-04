@@ -1,5 +1,11 @@
 # Probe apparatus + path-layer open items — execution plan
 
+> **Status: COMPLETED — 2026-10-05.** Executed in full (Phases 0–6); `bun run probe` is green at
+> **79 pass, 0 fail, 0 open**, all suites clean, and the round outcome is appended at the end of
+> this document. Archived from `docs/plans/probe-apparatus.md` to `docs/plans/archive/probe-apparatus.md`.
+> Released as `v0.17.0` (2026-10-05): the accumulated fork rounds ship together, superseding the
+> planned `0.16.0-fork.7` step-release; the `gate-architecture-fixes` round remains as follow-up work.
+
 Slug: `probe-apparatus-plan`
 
 **Revision 3 (2026-10-04):** folds two findings of the 2026-10-04 architecture audit
