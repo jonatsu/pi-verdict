@@ -363,6 +363,39 @@ describe("git push force-flag precision (fork)", () => {
 		expect(String(r?.reason)).toContain("git-push-force");
 		expect(h.calls.length).toBe(0);
 	});
+	// The left anchor is a word boundary, not a whitespace/separator class: a `git`
+	// token reached through shell syntax still sits in the floor.
+	const SHELL_FORMS: Array<[string, string]> = [
+		["absolute path", "/usr/bin/git " + "push --force origin main"],
+		["command substitution", "$(git " + "push --force origin main)"],
+		["subshell", "(git " + "push --force origin main)"],
+		["sh -c string", "sh -c 'git " + "push --force origin main'"],
+	];
+	for (const [label, cmd] of SHELL_FORMS) {
+		test(`${label} → floor deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "bash", { command: cmd });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("git-push-force");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	// Bundled short flag and a `-c`/`-C` global option between `git` and `push`.
+	const FLAG_FORMS: Array<[string, string]> = [
+		["-fu bundle", "git " + "push -fu origin main"],
+		["-uf bundle", "git " + "push -uf origin main"],
+		["-c prefix", "git -c key=value " + "push --force origin main"],
+		["-C prefix", "git -C /tmp/repo " + "push -f origin main"],
+	];
+	for (const [label, cmd] of FLAG_FORMS) {
+		test(`${label} → floor deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "bash", { command: cmd });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("git-push-force");
+			expect(h.calls.length).toBe(0);
+		});
+	}
 });
 
 // ── 1b. Fork: S0 credential inventory (XDG dotless homes included) ──────────

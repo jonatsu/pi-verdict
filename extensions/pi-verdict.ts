@@ -117,10 +117,14 @@ const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> 
 	},
 	// Fork fix: `--force\b` also matched `--force-with-lease`, denying the safe spelling.
 	// `--force(?![-\w])` accepts the bare flag only, so the longer `--force-*` forms pass to
-	// the classifier; `-f` needs no change (in `--force` its following char is a word char).
+	// the classifier. The left anchor is the word boundary `\bgit`, not a whitespace/separator
+	// class: the whole command string is matched, so `$(git …)`, `(git …)`, `sh -c 'git …'`
+	// and `/usr/bin/git …` must all stay inside the floor (a separator-only anchor missed them).
+	// `-f` accepts a short-flag bundle (`-fu`, `-uf`), and a `-c`/`-C` global option may sit
+	// between `git` and `push`.
 	{
 		id: "git-push-force",
-		pattern: /(^|[\s;&|])git\s+push\b[^;|&]*(-f\b|--force(?![-\w]))/i,
+		pattern: /\bgit\b(?:\s+-[cC]\s+\S+)*\s+push\b[^;|&]*(\s-[a-zA-Z]*f[a-zA-Z]*\b|--force(?![-\w]))/i,
 		reason: "git push --force",
 	},
 	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/
 
 ## [Unreleased]
 
-Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.4`.
+Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.5`.
 
 ### Added
 
@@ -43,7 +43,7 @@ Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff ra
 
 ### Fixed
 
-- `git-push-force` denied `git push --force-with-lease` (fork): `--force\b` has its word boundary before the hyphen, so it also matched the longer flag — the safe spelling of the operation the rule exists to refuse was hard-denied. The pattern now anchors on `(^|[\s;&|])git\s+push` and matches `--force(?![-\w])`, which accepts the bare flag only (`-f` is unchanged; in `--force` its next character is a word character). `git push --force-with-lease origin main` and `git push --force-with-lease=main origin main` reach the classifier; `git push --force origin main` and `git push -f origin main` stay floor denies, pinned by the `git push force-flag precision` tests.
+- `git-push-force` precision, three fixes (fork). `--force\b` has its word boundary before the hyphen, so it also matched `--force-with-lease` — the safe spelling of the operation the rule exists to refuse was hard-denied; the pattern matches `--force(?![-\w])` now, accepting the bare flag only. The first fix for that had replaced the left `\bgit` with a whitespace/separator anchor, which missed every `git` token reached through shell syntax — `/usr/bin/git push --force`, `$(git …)`, `(git …)`, `sh -c 'git …'` — so the word boundary is restored. The short-flag branch now accepts a bundle (`-fu`, `-uf`, not only `-f`), and a `-c`/`-C` global option may sit between `git` and `push`. `git push --force-with-lease origin main` and `git push --force-with-lease=main origin main` reach the classifier; the four shell spellings, the two bundles and the two `-c`/`-C` prefixes stay floor denies, pinned by the `git push force-flag precision` tests.
 
 ## [0.16.0] - 2026-10-02
 

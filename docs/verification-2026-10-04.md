@@ -162,3 +162,33 @@ Both changes are pinned by permanent tests: `git push force-flag precision (fork
 stashing the fix and re-running: the two `--force-with-lease` cases fail (2 of 4), the XDG cases
 fail against the pre-fork S0 (4 of the 16 then in the table), and the glab case fails against the
 code of `v0.16.0-fork.3` (1 of 17).
+
+## Floor anchor pass (fork `v0.16.0-fork.5`)
+
+The built-ins pass was reviewed after it landed; the review found the left anchor of
+`git-push-force` narrower than the `\bgit` it replaced, plus two older misses. Direct
+`adjudicate` probes with empty user rules, `hasUI: false` and `getModel: () => null` (anything
+reaching the classifier reports `deny/fail-closed`, which distinguishes it from a rule match):
+
+| case | result |
+|---|---|
+| `bash "/usr/bin/git push --force origin main"` | `deny/rule` — `rule git-push-force` |
+| `bash "$(git push --force origin main)"` | `deny/rule` — `rule git-push-force` |
+| `bash "(git push --force origin main)"` | `deny/rule` — `rule git-push-force` |
+| `bash "sh -c 'git push --force origin main'"` | `deny/rule` — `rule git-push-force` |
+| `bash "git push --force-with-lease origin main"` | reaches the classifier (no rule match) |
+| `bash "git push --force-with-lease=main origin main"` | reaches the classifier (no rule match) |
+| `bash "git push -fu origin main"` | `deny/rule` — `rule git-push-force` |
+| `bash "git push -uf origin main"` | `deny/rule` — `rule git-push-force` |
+| `bash "git -c key=value push --force origin main"` | `deny/rule` — `rule git-push-force` |
+| `bash "git -C /tmp/repo push -f origin main"` | `deny/rule` — `rule git-push-force` |
+
+The pattern is `/\bgit\b(?:\s+-[cC]\s+\S+)*\s+push\b[^;|&]*(\s-[a-zA-Z]*f[a-zA-Z]*\b|--force(?![-\w]))/i`.
+Flag recognition added: a bundled short flag (`-fu`/`-uf`; previously only a standalone `-f`),
+and a `-c`/`-C` global option between `git` and `push`. Nothing was removed: `--force` and `-f`
+still deny; `--force-with-lease` and `--force-with-lease=main` still miss the rule.
+
+Pinned by the `git push force-flag precision (fork)` tests. Failing-before evidence, measured by
+stashing the source fix and re-running the suite: 8 of the 10 cases in that block fail against the
+previous pin (the four shell spellings and the four flag forms); the pre-existing `--force` and
+`-f` cases pass.
