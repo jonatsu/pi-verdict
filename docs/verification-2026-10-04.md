@@ -132,3 +132,31 @@ The same cases are pinned as tests in `self-protection layer (ADR-0005)`.
   applied across `extensions/` and `tests/`, and CI runs `biome ci .` (lint + format + import
   order). The formatting commit is `a6912b0`; its only transformation was the formatter plus
   the organizeImports assist (lint was clean beforehand, so no lint fix was applied).
+
+## Built-in layers pass (fork `v0.16.0-fork.3`)
+
+Direct `adjudicate` probes with empty user rules, `hasUI: false` and `getModel: () => null`
+(so anything reaching the classifier reports `deny/fail-closed`, which distinguishes it from a
+rule-layer match):
+
+| case | result |
+|---|---|
+| `read ~/.config/gnupg/pubring.kbx` | `deny/rule` — `S0 secrets/credential path` |
+| `read ~/.config/age/key.txt` | `deny/rule` — S0 |
+| `read ~/.config/sops/age/keys.txt` | `deny/rule` — S0 |
+| `write ~/.config/gnupg/private-keys-v1.d/x.key` | `deny/rule` — S0 |
+| `read ~/.config/gnupg/pubring.kbx` before the change | reaches the classifier (floor miss) |
+| `bash "git push --force-with-lease origin main"` | reaches the classifier (floor miss) |
+| `bash "git push --force-with-lease=main origin main"` | reaches the classifier (floor miss) |
+| `bash "git push --force origin main"` | `deny/rule` — `rule git-push-force` |
+| `bash "git push -f origin main"` | `deny/rule` — `rule git-push-force` |
+| `read /etc/hosts` | reaches the classifier (S1 read gray) |
+| `write /etc/hosts` | `deny/rule` — S1 system directory |
+| `write ~/.bashrc` | reaches the classifier (S2 write gray) |
+| `write /tmp/repo/.git/hooks/pre-commit` | `deny/rule` — S3 `.git` metadata |
+| `read ~/.config/glab-cli/config.yml` | `allow/rule` — **no S0 rule covers it** |
+| `bash "cat ~/.ssh/id_rsa"` | reaches the classifier (the documented bash-side hole) |
+
+Both changes are pinned by permanent tests: `git push force-flag precision (fork)` and
+`S0 credential inventory (fork: XDG dotless homes)`. Against the unfixed source the new tests
+fail (2 of 4 force-flag cases, 4 of 16 S0 cases), which is the failing-before evidence.

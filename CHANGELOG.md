@@ -7,13 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/
 
 ## [Unreleased]
 
-Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.2`.
+Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.16.0-fork.3`.
 
 ### Added
 
 - **Self-protection layer restored** (ADR-0005): pipeline layer 0, a hard, config-exempt deny over the gate's own files — `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, the installed extension copy (when `import.meta.url` sits under a recognized install root; dev checkouts are not protected) and `<agentDir>/verdicts/`; the audit directory additionally denies reads (raw model output must not reach agent context). `builtinDenyFloor: false`, user `allow` rules and `autoDeny: false` cannot lift it. Deliberately **snapshot-free** — no in-memory tamper baseline, so concurrent sessions never revert one another's legitimate edits. Bash-side matching is substring and obfuscatable (ADR-0001 caveat).
 - `ignoreTools` accepted as a deprecated alias for `tools`, merged and deduplicated with a one-shot warning, so an unmigrated policy keeps its exemption (`#pi-verdict local patch`).
 - Reads of the project trust store are denied (R6), alongside the audit dir.
+- Built-in S0 gains the dotless XDG credential homes (fork): `~/.config/gnupg`, `~/.config/age` and `~/.config/sops` now hard-deny on read and write like `~/.ssh/**`. A GnuPG home at `~/.config/gnupg` (the XDG default; `~/.gnupg` need not exist), an unlocked age private key at `~/.config/age/key.txt` and the SOPS age key under `~/.config/sops` previously sat outside the floor, while only the dot forms (`~/.gnupg`) were covered; with these three the built-in floor alone covers what the deployment had declared as `denyPaths` asks, so the overlapping policy rules can be dropped instead of stacked. Pinned by the `S0 credential inventory` tests.
 - Host contract documented (R2, [`docs/host-contract.md`](docs/host-contract.md)): the extensions' bare host imports (`@earendil-works/pi-ai`, its `/compat` subpath, `pi-coding-agent`, `pi-tui`) are declared as optional peers and devDependencies, and omp's `legacy-pi-compat` resolution path is recorded.
 
 ### Changed
@@ -38,6 +39,10 @@ Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff ra
 ### Removed
 
 - **BREAKING**: the shadow cache (dual-key LRU probe, `/automode` stats line, debug annotation, audit `shadow` field) — upstream retired it in `0.12.0` after measurements put its would-be hit rate near 3%; it never changed a verdict.
+
+### Fixed
+
+- `git-push-force` denied `git push --force-with-lease` (fork): `--force\b` has its word boundary before the hyphen, so it also matched the longer flag — the safe spelling of the operation the rule exists to refuse was hard-denied. The pattern now anchors on `(^|[\s;&|])git\s+push` and matches `--force(?![-\w])`, which accepts the bare flag only (`-f` is unchanged; in `--force` its next character is a word character). `git push --force-with-lease origin main` and `git push --force-with-lease=main origin main` reach the classifier; `git push --force origin main` and `git push -f origin main` stay floor denies, pinned by the `git push force-flag precision` tests.
 
 ## [0.16.0] - 2026-10-02
 

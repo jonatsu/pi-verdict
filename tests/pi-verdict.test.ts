@@ -332,6 +332,76 @@ describe("built-in deny floor", () => {
 	});
 });
 
+// ── 1a. Fork: git push force-flag precision (safe spelling must not be denied) ──
+
+describe("git push force-flag precision (fork)", () => {
+	test("--force-with-lease → floor does not match (gray → classifier)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> lease" }];
+		const r = await toolCall(h, "bash", { command: "git " + "push --force-with-lease origin main" });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+	test("--force-with-lease=main → floor does not match", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> lease" }];
+		const r = await toolCall(h, "bash", { command: "git " + "push --force-with-lease=main origin main" });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+	test("--force → floor deny, zero model calls", async () => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: "git " + "push --force origin main" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("git-push-force");
+		expect(h.calls.length).toBe(0);
+	});
+	test("-f → floor deny, zero model calls", async () => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: "git " + "push -f origin main" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("git-push-force");
+		expect(h.calls.length).toBe(0);
+	});
+});
+
+// ── 1b. Fork: S0 credential inventory (XDG dotless homes included) ──────────
+
+describe("S0 credential inventory (fork: XDG dotless homes)", () => {
+	const CASES: Array<[string, string]> = [
+		["~/.ssh/id_rsa", "ssh key"],
+		["~/.aws/credentials", "aws credentials"],
+		["~/.gnupg/pubring.kbx", "dot gnupg"],
+		["~/.config/gnupg/pubring.kbx", "XDG gnupg home"],
+		["~/.config/age/key.txt", "XDG age private key"],
+		["~/.config/sops/age/keys.txt", "XDG SOPS age key"],
+		["~/.kube/config", "kube config"],
+		["~/.cargo/credentials.toml", "cargo token"],
+		["~/.pypirc", "pypi token"],
+		["~/.vault-token", "vault token"],
+		["~/.docker/config.json", "docker config"],
+		["~/.config/gh/hosts.yml", "gh CLI config"],
+		["~/.netrc", "netrc"],
+		["~/.gem/credentials", "gem credentials"],
+		["~/.omp/agent/auth.json", "agent auth"],
+	];
+	for (const [p, label] of CASES) {
+		test(`read ${label} → S0 deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "read", { path: p });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("S0");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	test("write under the XDG gnupg home → S0 deny", async () => {
+		const h = session({});
+		const r = await toolCall(h, "write", { path: "~/.config/gnupg/private-keys-v1.d/x.key", content: "x" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("S0");
+	});
+});
+
 // ── 2. User rules (denylist takes precedence over allowlist) ────────────────
 
 describe("user rules (deny > allow > gray)", () => {

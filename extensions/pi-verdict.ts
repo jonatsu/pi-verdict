@@ -115,7 +115,14 @@ const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> 
 		pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|\bmkfs\.)/i,
 		reason: "raw device write/format",
 	},
-	{ id: "git-push-force", pattern: /\bgit\s+push\b[^;|&]*(-f\b|--force\b)/i, reason: "git push --force" },
+	// Fork fix: `--force\b` also matched `--force-with-lease`, denying the safe spelling.
+	// `--force(?![-\w])` accepts the bare flag only, so the longer `--force-*` forms pass to
+	// the classifier; `-f` needs no change (in `--force` its following char is a word char).
+	{
+		id: "git-push-force",
+		pattern: /(^|[\s;&|])git\s+push\b[^;|&]*(-f\b|--force(?![-\w]))/i,
+		reason: "git push --force",
+	},
 	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
 	{ id: "git-clean-force", pattern: /\bgit\s+clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)/i, reason: "git clean -f" },
 	{ id: "git-checkout-dot", pattern: /\bgit\s+checkout\s+(--\s+)?\.(?:\s|$)/i, reason: "git checkout . (discard working tree)" },
@@ -910,6 +917,12 @@ const S0_SECRET = [
 	/\.ssh(\/|$)/i,
 	/\.aws(\/|$)/i,
 	/\.gnupg(\/|$)/i,
+	// Fork: dotless credential homes under XDG `~/.config`. GnuPG's home is
+	// `~/.config/gnupg` on XDG systems (`~/.gnupg` may not exist), age keeps an
+	// unlocked private key at `~/.config/age/key.txt`, and SOPS reads its age key
+	// under `~/.config/sops`. The dot forms above cover `~/.gnupg` alone, so the
+	// live keyrings sat outside S0 and were only an ask where a policy declared them.
+	/\.config\/(?:gnupg|age|sops)(\/|$)/i,
 	/(^|\/)\.env(\.|$)/i,
 	/credentials?(\.|\/|$)/i,
 	/(^|\/)id_rsa/i,
