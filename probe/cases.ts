@@ -450,7 +450,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { command: "ls\nbash /tmp/evil.sh" },
 			config: { allow: ["^ls\\b"] },
 			ref: "arch-F2",
-			expected: { layer: "classifier", known: "open" },
+			expected: { layer: "classifier" },
 		},
 		{
 			label: "single & hides a command",
@@ -459,7 +459,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { command: "ls & npm install evil-pkg" },
 			config: { allow: ["^ls\\b"] },
 			ref: "arch-F2",
-			expected: { layer: "classifier", known: "open" },
+			expected: { layer: "classifier" },
 		},
 		{
 			label: "substitution hides a command",
@@ -468,7 +468,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { command: "ls $(bash /tmp/evil.sh)" },
 			config: { allow: ["^ls\\b"] },
 			ref: "arch-F2",
-			expected: { layer: "classifier", known: "open" },
+			expected: { layer: "classifier" },
 		},
 		{
 			label: "git output flag writes",
@@ -477,7 +477,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { command: `git log --format=x --output=${fx.root}/x` },
 			config: { allow: ["^git (log)(\\s|$)"] },
 			ref: "arch-F2",
-			expected: { layer: "classifier", known: "open" },
+			expected: { layer: "classifier" },
 		},
 	);
 

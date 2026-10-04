@@ -121,7 +121,7 @@ pi-verdict runs on both [pi](https://github.com/badlogic/pi-mono) and [oh-my-pi]
 }
 ```
 
-- `allow`/`deny` are JS regex arrays; **`deny` wins over `allow`**, both beat the classifier
+- `allow`/`deny` are JS regex arrays; **`deny` wins over `allow`**, both beat the classifier. An `allow` regex admits **one simple command** — a compound command, a redirection, a re-parser, or a write-shaped `git` invocation reaches the classifier instead ([ADR-0008](docs/adr/0008-simple-command-allow.md))
 - `ignoreTools` is accepted as a deprecated alias for `tools`; entries are merged and deduplicated, with a one-shot warning. Use `tools` in new configs
 - `denyPaths` are plain paths you declare **protected** — touches trigger a terminal ask you adjudicate (non-interactive → deny); the classifier never learns the paths themselves, only that they exist. `grep`/`find`/`ls` compare their whole **search scope**: an omitted `path` (pi's default: the current directory) or a parent directory of a declared path triggers the ask as well. A fresh install pre-fills a **starter list** (`~/.ssh/`, `~/.gnupg`, `~/.mc`, shell rc/profile files), active from the first session after the initial run (any config change applies to new sessions) — a pre-filled *user declaration*, not a built-in floor: edit or empty it freely, add your own (`~/Documents/private`, …) alongside; existing configs are never rewritten
 - `builtinDenyFloor: false` turns off the built-in danger/path floor, but not the self-protection layer

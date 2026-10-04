@@ -42,7 +42,7 @@ The normalization discipline for path-based rule decisions: produce **all canoni
 
 ### user rules
 
-Allow/deny regexes configured by the user in `<agentDir>/config/pi-verdict.json`: deny takes precedence over allow, and a blacklist match blocks; targets are full bash command strings / absolute paths for file-type tools. `builtinDenyFloor: false` disables the built-in deny floor entirely (at the user's own risk). The user, not the author, endorses security claims ("always allow").
+Allow/deny regexes configured by the user in `<agentDir>/config/pi-verdict.json`: deny takes precedence over allow, and a blacklist match blocks; targets are full bash command strings / absolute paths for file-type tools. An allow matches only when its target is **one simple command** (ADR-0008): a compound command, a redirection, a re-parser, or a write-shaped `git` invocation falls through to the classifier instead. `builtinDenyFloor: false` disables the built-in deny floor entirely (at the user's own risk). The user, not the author, endorses security claims ("always allow").
 
 ### agentDir self-anchoring
 

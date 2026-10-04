@@ -441,6 +441,57 @@ function gitPushInWords(words: string[], depth: number): boolean {
 	return false;
 }
 
+/** git flags that turn a read-shaped invocation into a write (audit V7): `--output`/`-o` write a
+ *  file, `--exec`/`--ext-diff`/`--textconv` run a program, `--git-dir`/`--work-tree` retarget the
+ *  repository. Matched as bare or attached (`--output=…`, `-o…`). */
+const GIT_WRITE_FLAGS = ["--output", "-o", "--exec", "--ext-diff", "--textconv", "--git-dir", "--work-tree"];
+
+/**
+ * Whether a user `allow` regex may admit this command (audit F2, ADR-0008). The allow layer tests
+ * raw command text, so a regex anchored on the first word (`^ls\b`) would otherwise admit a whole
+ * compound command — `ls\nbash /tmp/evil.sh`, `ls & npm install …`, `ls $(…)` — with no model
+ * judgment, and a read-shaped `git log --output=<path>` would admit a write. An allow is granted
+ * only for ONE simple command: false (allow skipped → the call reaches the classifier) on an
+ * operator or newline, an unsound parse, a redirection other than to `/dev/null`, a re-parser in
+ * command position (`xargs`, `find … -exec`), or a `git` invocation carrying a write flag.
+ *
+ * The narrowing direction is the safe one: a rejected allow never denies, it only defers to the
+ * classifier. Redirect TARGETS are not graded here (they ride the classifier); deterministic target
+ * grading is deferred with the host-adapter round (recorded in ADR-0008).
+ */
+export function allowAdmits(command: string): boolean {
+	if (!command.trim()) return false;
+	// (c) redirection other than to /dev/null — checked on the raw text: the scanner drops `<`/`>`.
+	const stripped = command.replace(/\d?&?>>?\s*\/dev\/null/g, "").replace(/<\s*\/dev\/null/g, "");
+	if (/[<>]/.test(stripped)) return false;
+	const words = shellWords(command);
+	// (b) an unsound parse: the scanner could not resolve a construct faithfully.
+	if (words.includes(UNSOUND)) return false;
+	// (a) any operator or newline: more than one simple command.
+	for (const w of words) {
+		if (SHELL_OPERATORS[w] === true || w === "\n") return false;
+	}
+	// (d) a re-parser in command position: it runs words the scanner never paired.
+	for (let i = 0; i < words.length; i++) {
+		const base = wordBasename(words[i]);
+		if (base === "xargs") return false;
+		if (base === "find") {
+			for (let j = i + 1; j < words.length; j++) {
+				if (words[j] === "-exec" || words[j] === "-execdir") return false;
+			}
+		}
+	}
+	// (e) a git invocation carrying a write flag (V7).
+	if (words.length > 0 && wordBasename(words[0]) === "git") {
+		for (const w of words) {
+			for (const flag of GIT_WRITE_FLAGS) {
+				if (w === flag || w.startsWith(`${flag}=`) || (flag === "-o" && w.startsWith("-o") && w.length > 2)) return false;
+			}
+		}
+	}
+	return true;
+}
+
 type RuleVerdict = "allow" | "deny" | "gray" | "ask";
 interface RuleResult {
 	verdict: RuleVerdict;
@@ -1964,8 +2015,13 @@ function classifyByRules(
 		const hit = hitDenyPaths(toolName, input, cwd, denyPathBases);
 		if (hit)
 			return { verdict: "ask", reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]", detail: hit };
-		for (const re of user.allow) {
-			if (re.test(target)) return { verdict: "allow", reason: "user allow rule" };
+		// ADR-0008: a user allow admits ONE simple command. A compound command, an unsound parse, a
+		// redirection or a write-shaped git invocation is never rule-allowed — it reaches the classifier.
+		const allowOk = kind !== "command" || allowAdmits(String(input.command ?? ""));
+		if (allowOk) {
+			for (const re of user.allow) {
+				if (re.test(target)) return { verdict: "allow", reason: "user allow rule" };
+			}
 		}
 	}
 	return base;

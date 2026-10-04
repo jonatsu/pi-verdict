@@ -83,8 +83,8 @@ Total cases: 79.
 | user-rules | user deny on the lexical path | read | rule |  | user deny rule |  |  |  |
 | user-rules | user deny on the kernel path | read | rule |  | user deny rule |  | open | item=10 |
 | user-allow | simple allow still allows | bash | allow |  | user allow rule |  |  |  |
-| user-allow | newline hides a command | bash | classifier |  |  |  | open | ref=arch-F2 |
-| user-allow | single & hides a command | bash | classifier |  |  |  | open | ref=arch-F2 |
-| user-allow | substitution hides a command | bash | classifier |  |  |  | open | ref=arch-F2 |
-| user-allow | git output flag writes | bash | classifier |  |  |  | open | ref=arch-F2 |
+| user-allow | newline hides a command | bash | classifier |  |  |  |  | ref=arch-F2 |
+| user-allow | single & hides a command | bash | classifier |  |  |  |  | ref=arch-F2 |
+| user-allow | substitution hides a command | bash | classifier |  |  |  |  | ref=arch-F2 |
+| user-allow | git output flag writes | bash | classifier |  |  |  |  | ref=arch-F2 |
 
