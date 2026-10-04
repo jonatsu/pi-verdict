@@ -449,6 +449,92 @@ describe("gitPushForce shell-word view (fork)", () => {
 	});
 });
 
+// ── 1a″. Fork: monotone floor — tripwire + sound-gated word view (audit F4) ──
+// A raw-text tripwire decides every git-push-force hit; the tokenised word view may only clear
+// it when its parse is sound. These pin the spellings the word view alone could not resolve.
+describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
+	const P = "push --force origin main";
+	const denyRule = async (cmd: string): Promise<void> => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: cmd });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("git-push-force");
+		expect(h.calls.length).toBe(0);
+	};
+	// item 1: `$(` inside double quotes
+	test("command substitution in double quotes → floor deny", async () => {
+		await denyRule('echo "$(git ' + P + ')"');
+	});
+	// item 2: eval re-parses its arguments
+	test("eval re-parser → floor deny", async () => {
+		await denyRule("eval 'git " + P + "'");
+		await denyRule("eval 'git push' --force origin main");
+	});
+	// item 3: env split-string forms
+	test("env split-string forms → floor deny", async () => {
+		await denyRule("env -S 'git " + P + "'");
+		await denyRule("env -S 'git push' --force origin main");
+		await denyRule("env --split-string='git " + P + "'");
+		await denyRule("env -S'git " + P + "'");
+		await denyRule("env -iS 'git " + P + "'");
+	});
+	// item 4: positional references forwarded into a `-c` template
+	test("sh -c positional references → floor deny", async () => {
+		await denyRule("sh -c '$1' _ 'git " + P + "'");
+		await denyRule("sh -c '$0' 'git " + P + "'");
+		await denyRule(`sh -c '\${1}' _ 'git ` + P + "'");
+		await denyRule(`sh -c '"$@"' _ 'git ` + P + "'");
+	});
+	// item 5: recursion-depth exhaustion
+	test("depth exhaustion → floor deny", async () => {
+		await denyRule('sh -c "sh -c \\"sh -c \\\\\\"sh -c ' + "'git " + P + "'" + '\\\\\\"\\""');
+	});
+	// item 11: a backslash-newline continuation splits the flag in the raw text
+	test("line continuation inside the flag → floor deny", async () => {
+		await denyRule("git push --for\\\nce origin main");
+	});
+	// F8: tokeniser regressions the word view alone missed
+	test("backtick substitution → floor deny", async () => {
+		await denyRule("`git " + P + "`");
+	});
+	test("bash -o pipefail -c → floor deny", async () => {
+		await denyRule("bash -o pipefail -c 'git " + P + "'");
+	});
+	test("-f with redirection → floor deny", async () => {
+		await denyRule("git push -f>/dev/null origin main");
+	});
+	// F24: a `+` refspec forces the update
+	test("plus refspec → floor deny", async () => {
+		await denyRule("git push origin +main");
+		await denyRule("git push origin +HEAD:main");
+		await denyRule("git push -- origin +main");
+	});
+	// item 6: --force-if-includes is a no-op without a lease → not a force flag on its own
+	test("--force-if-includes alone → not a rule match (gray → classifier)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> if-includes" }];
+		const r = await toolCall(h, "bash", { command: "git " + "push --force-if-includes origin main" });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+	test("--force still denies alongside --force-if-includes", async () => {
+		await denyRule("git push --force --force-if-includes origin main");
+	});
+	// Anti-regression pins: these passed before and must keep passing.
+	test("five-deep unquoted substitution still denies", async () => {
+		await denyRule("$($($($($(git " + P + ")))))");
+	});
+	test("an escaped backslash before a newline still denies on the later line", async () => {
+		await denyRule("echo a\\\\\ngit " + P);
+	});
+	test("the tripwire never misses, but a sound word view still clears a quoted argument", () => {
+		// tripwire hits the raw text; the word view clears because the flag is inside a quote.
+		expect(gitPushForce("git commit -m 'note git " + "push --force here'")).toBe(false);
+		// a non-git push is cleared by the word view (today's behaviour).
+		expect(gitPushForce("docker push --force thing")).toBe(false);
+	});
+});
+
 // ── 1b. Fork: S0 credential inventory (XDG dotless homes included) ──────────
 
 describe("S0 credential inventory (fork: XDG dotless homes)", () => {

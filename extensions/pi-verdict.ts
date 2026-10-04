@@ -147,6 +147,14 @@ function wordBasename(w: string): string {
 
 const SHELL_NAMES: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true, ash: true };
 
+/**
+ * Sentinel word for a construct the scanner cannot resolve faithfully (a command substitution it
+ * does not re-parse, a re-parser like `eval`, a here-document, …). It cannot occur in natural
+ * output, so `gitPushInWords` treats its presence as a hit: the raw-text tripwire already
+ * decided the deny, and an unsound parse may only clear when it is sound (the monotonicity rule).
+ */
+const UNSOUND = "\u0000unsound\u0000";
+
 /** Command operators: split words and end a command segment. */
 const SHELL_OPERATORS: Record<string, true> = { ";": true, ";;": true, "&": true, "&&": true, "|": true, "||": true, "(": true, ")": true };
 
@@ -156,6 +164,12 @@ const SHELL_OPERATORS: Record<string, true> = { ";": true, ";;": true, "&": true
  * Deliberately not a shell parser: no glob, process-substitution or brace-expansion modelling, and
  * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
  * needed — unlike the danger regexes, it cannot backtrack).
+ *
+ * A construct the scanner cannot resolve faithfully emits the `UNSOUND` sentinel word instead of a
+ * misleading parse. The sound path stays faithful: an unquoted backslash-newline is a line
+ * continuation (consumed, appends nothing), unquoted `<`/`>`/`>>` end a word without ending a
+ * segment, and unquoted `(`/`)` remain plain operators. `gitPushInWords` treats a sentinel as a
+ * hit, so the deny only ever stands (the monotonicity rule).
  */
 export function shellWords(command: string): string[] {
 	const words: string[] = [];
@@ -168,36 +182,88 @@ export function shellWords(command: string): string[] {
 			inWord = false;
 		}
 	};
+	const unsound = () => {
+		flush();
+		words.push(UNSOUND);
+	};
 	let i = 0;
 	const n = command.length;
 	while (i < n) {
 		const ch = command[i];
 		if (ch === "'") {
 			const end = command.indexOf("'", i + 1);
-			cur += command.slice(i + 1, end === -1 ? n : end);
+			if (end === -1) {
+				unsound(); // unterminated single quote: the rest is not a sound parse
+				return words;
+			}
+			cur += command.slice(i + 1, end);
 			inWord = true;
+			i = end + 1;
+			continue;
+		}
+		if (ch === "`") {
+			unsound(); // backtick command substitution: not re-parsed
+			const end = command.indexOf("`", i + 1);
 			i = end === -1 ? n : end + 1;
 			continue;
 		}
 		if (ch === '"') {
 			i++;
-			while (i < n && command[i] !== '"') {
-				if (command[i] === "\\" && i + 1 < n && '\\"$`'.includes(command[i + 1])) {
-					cur += command[i + 1];
-					i += 2;
-				} else {
-					cur += command[i];
+			let closed = false;
+			while (i < n) {
+				const c = command[i];
+				if (c === '"') {
+					closed = true;
 					i++;
+					break;
 				}
+				if (c === "\\" && i + 1 < n) {
+					const nx = command[i + 1];
+					if (nx === "\n" || nx === "\r") {
+						// line continuation inside double quotes: append nothing
+						i += nx === "\r" && command[i + 2] === "\n" ? 3 : 2;
+						continue;
+					}
+					if ('\\"$`'.includes(nx)) {
+						cur += nx;
+						i += 2;
+						continue;
+					}
+				}
+				if (c === "$" && command[i + 1] === "(") {
+					unsound(); // command substitution inside double quotes: not re-parsed
+					i += 2;
+					continue;
+				}
+				cur += c;
+				i++;
 			}
-			i++; // closing quote; absent at end of string → i = n + 1, loop ends
+			if (!closed) unsound(); // unterminated double quote
 			inWord = true;
 			continue;
 		}
 		if (ch === "\\" && i + 1 < n) {
-			cur += command[i + 1];
+			const nx = command[i + 1];
+			if (nx === "\n" || nx === "\r") {
+				// unquoted line continuation: consume, append nothing, do NOT end the word
+				i += nx === "\r" && command[i + 2] === "\n" ? 3 : 2;
+				continue;
+			}
+			cur += nx;
 			inWord = true;
 			i += 2;
+			continue;
+		}
+		if (ch === "<" || ch === ">") {
+			// redirection: a word break, dropped (NOT a segment separator). `>>`/`<<` drop two.
+			flush();
+			if (ch === "<" && command[i + 1] === "<") {
+				unsound(); // here-document: body not re-parsed
+				i += 2;
+				continue;
+			}
+			if (command[i + 1] === "<" || command[i + 1] === ">") i += 2;
+			else i += 1;
 			continue;
 		}
 		if (ch === " " || ch === "\t" || ch === "\r") {
@@ -222,7 +288,41 @@ export function shellWords(command: string): string[] {
 		i++;
 	}
 	flush();
+	markReparsers(words);
 	return words;
+}
+
+/** `eval` and `env`'s split-string forms re-parse their arguments, which the scanner does not
+ *  follow: mark such a segment unsound so the tripwire's deny stands. Post-pass, linear. */
+function markReparsers(words: string[]): void {
+	let segStart = 0;
+	for (let i = 0; i <= words.length; i++) {
+		const atEnd = i === words.length;
+		if (!atEnd && SHELL_OPERATORS[words[i]] !== true) continue;
+		const first = words[segStart];
+		if (first !== undefined) {
+			const base = wordBasename(first);
+			if (base === "eval") {
+				words[segStart] = UNSOUND;
+			} else if (base === "env") {
+				for (let j = segStart + 1; j < i; j++) {
+					const opt = words[j].toLowerCase();
+					if (!opt.startsWith("-")) break;
+					if (
+						opt === "-s" ||
+						/^-[a-z]*s[a-z]*$/.test(opt) ||
+						opt.startsWith("-s") ||
+						opt === "--split-string" ||
+						opt.startsWith("--split-string=")
+					) {
+						words[segStart] = UNSOUND;
+						break;
+					}
+				}
+			}
+		}
+		segStart = i + 1;
+	}
 }
 
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
@@ -233,6 +333,8 @@ export function isForceFlag(word: string): boolean {
 	const t = word.toLowerCase();
 	if (/^-[a-z]*f[a-z]*$/.test(t)) return true;
 	if (/^--force-with-lease(?:=|$)/.test(t)) return false;
+	if (t === "--force-if-includes") return false; // no-op without a lease (git documents it)
+	if (/^\+./.test(t)) return true; // a `+` refspec forces the update (F24)
 	return /^--force(?![-\w])/.test(t) || t.startsWith("--force-");
 }
 
@@ -254,19 +356,41 @@ function commandSegments(words: string[]): string[][] {
 const GIT_PUSH_RECURSION_DEPTH = 3;
 
 /**
- * `git push` with a force flag, evaluated on a shell-word view so quoting is respected.
- * Two review findings motivate this over a raw-string regex: a legal refname may contain a shell
- * separator (`git push origin 'a&b' --force` — the old `[^;|&]*` class stopped at the `&` and
- * missed it), and text the shell never runs as a command (`git commit -m '… git push --force …'`)
- * was denied although it is an argument. A shell's own `-c` argument IS a command string and is
- * recursed into (`sh -c 'git push --force …'`, bounded depth); `$(…)` and `(…)` become their own
- * segments through the operator view. A `-c`/`-C` global option may sit between `git` and `push`.
+ * Raw-text tripwire: a coarse net that over-approximates a force push. Anchored on a `push`
+ * word with a fully flexible body (so `git --git-dir=X push …` and `-c/-C` gaps need no special
+ * handling), terminated by any of: a bare `--force`; another `--force-*` form (the invented
+ * spelling included — only `--force-with-lease` is exempt); a bundled short `f` flag (`-f`, `-fu`,
+ * `-uf`, and `-f>/dev/null`); or a `+` refspec word. Quoted content does not break it (the `a&b`
+ * refname is a genuine force push). The tokenised word view owns pairing precision — this only
+ * has to never MISS; a false trip is cleared by the word view.
+ *
+ * Continuation tolerance: a backslash-newline may split a flag in the raw text, so the tripwire
+ * also tests the spelling with UNESCAPED continuations removed (an escaped `\\` pair is left
+ * alone — the shell splits there, and both views still hit that input).
+ */
+function tripwireHit(command: string): boolean {
+	const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
+	const pattern = /\bpush\b[\s\S]*?(?:--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z]*f[a-zA-Z]*\b|\s\+)/i;
+	if (pattern.test(capped)) return true;
+	const joined = capped.replace(/(?<!\\)\\\r?\n/g, "");
+	return joined !== capped && pattern.test(joined);
+}
+
+/**
+ * `git push` with a force flag. The raw-text tripwire decides every hit (the monotonicity rule:
+ * a floor change may never turn a raw-text hit into a non-hit on an unsound parse); the tokenised
+ * word view may only CLEAR a hit when its parse is sound, and CONFIRM one. Two review findings
+ * motivate the word view over a bare regex: a legal refname may contain a shell separator
+ * (`git push origin 'a&b' --force`), and text the shell never runs as a command
+ * (`git commit -m '… git push --force …'`) must not be denied.
  */
 export function gitPushForce(command: string): boolean {
+	if (!tripwireHit(command)) return false;
 	return gitPushInWords(shellWords(command), 0);
 }
 
 function gitPushInWords(words: string[], depth: number): boolean {
+	if (words.includes(UNSOUND)) return true; // unsound parse: the tripwire's deny stands
 	for (const seg of commandSegments(words)) {
 		for (let i = 0; i + 1 < seg.length; i++) {
 			if (wordBasename(seg[i]) !== "git") continue;
@@ -277,16 +401,40 @@ function gitPushInWords(words: string[], depth: number): boolean {
 				else if (pushed && isForceFlag(word)) return true;
 			}
 		}
-		if (depth >= GIT_PUSH_RECURSION_DEPTH) continue;
 		for (let i = 0; i < seg.length; i++) {
 			if (SHELL_NAMES[wordBasename(seg[i])] !== true) continue;
+			// Scan the shell's options; `-o`/`-O`/`+o`/`--rcfile`/`--init-file` consume the next word.
+			// A dash-word the scan does not model is unsound (deny stands) rather than silently skipped
+			// (covers `bash -o pipefail -c …`, `sh -O extglob -c …`, `bash --rcfile x -c …`).
+			let hasReparseOption = false;
+			let unknownOption = false;
 			for (let j = i + 1; j < seg.length; j++) {
 				const opt = seg[j].toLowerCase();
-				if (!opt.startsWith("-")) break; // options ended: not a `-c <string>` invocation
-				if (/^-[a-z]*c[a-z]*$/.test(opt) && seg[j + 1] !== undefined) {
-					if (gitPushInWords(shellWords(seg[j + 1]), depth + 1)) return true;
+				if (!opt.startsWith("-") && !opt.startsWith("+")) break; // options ended
+				if (opt === "-o" || opt === "-O" || opt === "+o" || opt === "--rcfile" || opt === "--init-file") {
+					j++; // consumes its argument
+					continue;
+				}
+				if (/^-[a-z]*c[a-z]*$/.test(opt)) {
+					hasReparseOption = true;
 					break;
 				}
+				unknownOption = true;
+			}
+			if (unknownOption) return true; // unmodelled shell option: unsound
+			if (!hasReparseOption) continue;
+			if (depth >= GIT_PUSH_RECURSION_DEPTH) return true; // recursion cap: unsound
+			for (let j = i + 1; j < seg.length; j++) {
+				const opt = seg[j].toLowerCase();
+				if (!opt.startsWith("-")) break;
+				if (/^-[a-z]*c[a-z]*$/.test(opt) && seg[j + 1] !== undefined) {
+					const template = seg[j + 1];
+					// A `-c` template that references positionals forwards data the scanner cannot see.
+					if (/\$\{[0-9]+\}|\$[0-9]+|\$@|\$\*/.test(template)) return true;
+					if (gitPushInWords(shellWords(template), depth + 1)) return true;
+					break;
+				}
+				if (opt === "-o" || opt === "-O" || opt === "+o" || opt === "--rcfile" || opt === "--init-file") j++;
 			}
 		}
 	}

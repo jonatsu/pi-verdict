@@ -26,29 +26,29 @@ Total cases: 79.
 | force-push | force + if-includes | bash | rule | git-push-force |  |  |  |  |
 | force-push | five-deep unquoted substitution | bash | rule | git-push-force |  |  |  |  |
 | force-push | escaped backslash + newline | bash | rule | git-push-force |  |  |  |  |
-| force-push | substitution in double quotes | bash | rule | git-push-force |  |  | open | item=1 |
-| force-push | eval re-parser | bash | rule | git-push-force |  |  | open | item=2 |
-| force-push | eval joins its arguments | bash | rule | git-push-force |  |  | open | item=2 |
-| force-push | env -S re-parser | bash | rule | git-push-force |  |  | open | item=3 |
-| force-push | env -S with trailing args | bash | rule | git-push-force |  |  | open | item=3 |
-| force-push | env --split-string= | bash | rule | git-push-force |  |  | open | item=3 |
-| force-push | env -S attached | bash | rule | git-push-force |  |  | open | item=3 |
-| force-push | env -iS bundle | bash | rule | git-push-force |  |  | open | item=3 |
-| force-push | positional operand | bash | rule | git-push-force |  |  | open | item=4 |
-| force-push | positional $0 | bash | rule | git-push-force |  |  | open | item=4 |
-| force-push | positional brace form | bash | rule | git-push-force |  |  | open | item=4 |
-| force-push | positional "$@" | bash | rule | git-push-force |  |  | open | item=4 |
-| force-push | depth exhaustion | bash | rule | git-push-force |  |  | open | item=5 |
-| force-push | line continuation | bash | rule | git-push-force |  |  | open | item=11 |
-| force-push | backtick substitution | bash | rule | git-push-force |  |  | open | ref=F8 |
-| force-push | bash -o pipefail -c | bash | rule | git-push-force |  |  | open | ref=F8 |
-| force-push | -f with redirection | bash | rule | git-push-force |  |  | open | ref=F8 |
-| force-push | plus refspec | bash | rule | git-push-force |  |  | open | ref=F24 |
-| force-push | plus refspec with dst | bash | rule | git-push-force |  |  | open | ref=F24 |
-| force-push | plus refspec after -- | bash | rule | git-push-force |  |  | open | ref=F24 |
+| force-push | substitution in double quotes | bash | rule | git-push-force |  |  |  | item=1 |
+| force-push | eval re-parser | bash | rule | git-push-force |  |  |  | item=2 |
+| force-push | eval joins its arguments | bash | rule | git-push-force |  |  |  | item=2 |
+| force-push | env -S re-parser | bash | rule | git-push-force |  |  |  | item=3 |
+| force-push | env -S with trailing args | bash | rule | git-push-force |  |  |  | item=3 |
+| force-push | env --split-string= | bash | rule | git-push-force |  |  |  | item=3 |
+| force-push | env -S attached | bash | rule | git-push-force |  |  |  | item=3 |
+| force-push | env -iS bundle | bash | rule | git-push-force |  |  |  | item=3 |
+| force-push | positional operand | bash | rule | git-push-force |  |  |  | item=4 |
+| force-push | positional $0 | bash | rule | git-push-force |  |  |  | item=4 |
+| force-push | positional brace form | bash | rule | git-push-force |  |  |  | item=4 |
+| force-push | positional "$@" | bash | rule | git-push-force |  |  |  | item=4 |
+| force-push | depth exhaustion | bash | rule | git-push-force |  |  |  | item=5 |
+| force-push | line continuation | bash | rule | git-push-force |  |  |  | item=11 |
+| force-push | backtick substitution | bash | rule | git-push-force |  |  |  | ref=F8 |
+| force-push | bash -o pipefail -c | bash | rule | git-push-force |  |  |  | ref=F8 |
+| force-push | -f with redirection | bash | rule | git-push-force |  |  |  | ref=F8 |
+| force-push | plus refspec | bash | rule | git-push-force |  |  |  | ref=F24 |
+| force-push | plus refspec with dst | bash | rule | git-push-force |  |  |  | ref=F24 |
+| force-push | plus refspec after -- | bash | rule | git-push-force |  |  |  | ref=F24 |
 | force-push | lease | bash | classifier |  |  |  |  |  |
 | force-push | lease with ref | bash | classifier |  |  |  |  |  |
-| force-push | if-includes alone | bash | classifier |  |  | no-op without lease; git documents it | open | item=6 |
+| force-push | if-includes alone | bash | classifier |  |  | no-op without lease; git documents it |  | item=6 |
 | force-push | commit message quotes pattern | bash | classifier |  |  |  |  |  |
 | path-tier | XDG age key | read | rule |  | S0 |  | open | item=9 |
 | path-tier | XDG gnupg | read | rule |  | S0 |  | open | item=9 |

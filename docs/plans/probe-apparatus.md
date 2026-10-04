@@ -2,14 +2,14 @@
 
 Slug: `probe-apparatus-plan`
 
-**Revision 3 (2026-10-04):** folds two findings of the architecture audit
-(`.scratch/reviews/2026-10-04-pi-verdict-architecture-review.md`) into this round — F4's monotone floor (a raw
+**Revision 3 (2026-10-04):** folds two findings of the 2026-10-04 architecture audit
+(`research/2026-10-04-architecture-review.md`) into this round — F4's monotone floor (a raw
 tripwire decides every hit; the tokenised word view may only clear) replaces revision 2's tokeniser-per-spelling
 Phase 2, and F2's simple-command allow guard (BREAKING) becomes commit 3. The release is held: no bump, tag or push
 this round; the follow-up `gate-architecture-fixes` round owns the single bump/tag/push.
 
 **Revision 2 (2026-10-04):** incorporates the external review of revision 1
-(`.scratch/reviews/2026-10-04-probe-apparatus-plan-review.md`: findings F1–F24, the nits, and the four user
+(`research/2026-10-04-probe-apparatus-plan-review.md`: findings F1–F24, the nits, and the four user
 decisions recorded there). Revision 1 was never executed. The disposition table near the end maps every finding to
 the section that addresses it. Review evidence for F4/F5/F8/F24 was re-executed against HEAD `6136aa0` in this
 session and reproduces exactly.
