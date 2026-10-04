@@ -586,3 +586,31 @@ remaining items: F1+F3, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14-optional) ow
 - The synthetic policy fixture is minimal by design; the deployed policy is exercised through
   `PI_VERDICT_PROBE_POLICY` (or `probe/consumer-policy.real.json`), and any layer conflict surfaces as a case
   failure, not a prose debate.
+
+## Round outcome (2026-10-05, appended at execution close)
+
+Phase 4–6 landed as the plan's commits 4–6 plus one conformance-review sync commit; the case table
+is fully green.
+
+- Commits: `6594ebd` `fix(path): kernel walker items 7–8` (Phase 4 fixes 1–2; F1, F20),
+  `111dad4` `fix(path): XDG config root (item 9)` (fix 3; F15), `f2c009f` `fix(path): denyPaths +
+  user rules kernel tier (item 10)` (fix 4; F11; ADR-0002 amendment), `bb631c9` `docs(path): sync
+  verification record + README pipeline branch (F14)`. No bump, no tag, no push (release hold intact).
+- Probe progression this session: 72/0/7 → 77/0/2 → **79 pass, 0 fail, 0 open**. `bun test` 398 pass,
+  1 skip, 0 fail; typecheck and `biome ci .` clean; `docs/coverage.md` fresh at HEAD.
+- Provenance: `extensions/pi-verdict.ts` =
+  `650f5ffb65fab2169d2236e312b7aefa8ab94080e878e869c5061d5638915c28` at `f2c009f`, matching
+  `git show HEAD:extensions/pi-verdict.ts | sha256sum` (the commits after `f2c009f` are docs-only and
+  do not touch the extension blobs).
+- Deliberate deviations from the plan text: the plan's "three thin consumers" of `kernelWalk` landed
+  as `kernelForms` plus the `classifyPath` flag check consuming `kernelWalk` directly (no
+  `kernelUnresolved` one-return wrapper — repo rule `ts-no-tiny-functions`), and `kernelPath` landed
+  with its callers in the item-10 commit rather than the walker commit. `setXdgConfigRootsForTests`
+  takes raw dirs and derives rule forms internally.
+- Failing-before evidence: stash-verified per commit — walker tests 4/5 fail, item-10 tests 3/4 fail
+  (the fourth pins the deny-any direction), XDG seam tests error without the source change (the probe's
+  five XDG opens are the behavioral red); every marker removal went through the runner's open-case
+  semantics, which fired exactly twice (the five XDG cases, then the two item-10 cases — both expected).
+- Conformance review (plan-critic against this revision): found the two F14 gaps — the stale
+  "`denyPaths` … not changed" claim in `docs/verification-2026-10-04.md` and the missing
+  unresolved-write branch in the README pipeline text; both fixed in `bb631c9`. No other mismatch.
