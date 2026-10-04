@@ -192,3 +192,81 @@ Pinned by the `git push force-flag precision (fork)` tests. Failing-before evide
 stashing the source fix and re-running the suite: 8 of the 10 cases in that block fail against the
 previous pin (the four shell spellings and the four flag forms); the pre-existing `--force` and
 `-f` cases pass.
+
+## Path-layer residue pass (fork `v0.16.0-fork.6`)
+
+Residue from an independent review of the earlier rounds. Direct `adjudicate` probes with empty
+user rules, `hasUI: false` and `getModel: () => null` (anything reaching the classifier reports
+`deny/fail-closed`, which distinguishes it from a rule match).
+
+### Item 1 — `--force-*` recognition
+
+| payload | verdict |
+|---|---|
+| `git push --force origin main` | `deny/rule` — `rule git-push-force` |
+| `git push --force-with-lease origin main` | reaches the classifier |
+| `git push --force-with-lease=main origin main` | reaches the classifier |
+| `git push --force-something origin main` (invented) | `deny/rule` — `rule git-push-force` |
+
+`--force-with-lease[=ref]` is the only escaping spelling; every other `--force-*` form is denied.
+
+### Item 2 — shell-word view
+
+| payload | verdict |
+|---|---|
+| `git push origin 'a&b' --force` | `deny/rule` — `rule git-push-force` (was a floor miss) |
+| `git commit -m '… git push --force …'` | reaches the classifier (an argument, not a command) |
+| `sh -c 'git push --force origin main'` | `deny/rule` — `rule git-push-force` (recursed) |
+| `$(git push --force origin main)` | `deny/rule` — `rule git-push-force` |
+| `/usr/bin/git push --force origin main` | `deny/rule` — `rule git-push-force` |
+
+Method: **tokenised**, not another anchored regex. `gitPushForce` splits the command into words and
+operators (`shellWords`): a quoted separator no longer splits the command, a quoted argument is not
+re-read as one, and only a shell's own `-c` string is recursed into (so `sh -c '…'` stays denied
+while a commit message that quotes the pattern does not). The consumer's compensating policy rule
+can be pruned.
+
+### Item 3 — S0 `.config` anchoring
+
+| payload | verdict |
+|---|---|
+| `read ~/.config/age/key.txt` | `deny/rule` — S0 |
+| `read <repo>/.config/age/data` | `allow/rule` (write reaches the classifier) |
+| `read <repo>/foo.config/age/data` | `allow/rule` |
+
+The two fork entries are anchored to `<home>/.config`; the sibling dot entries keep the established
+segment-anywhere discipline.
+
+### Item 4 — symlink before `..`
+
+Host finding (read from the installed bundles): both hosts turn the tool `path` into the filesystem
+target with lexical resolution only and never `fs.realpath` before opening, and the extension hook
+receives the raw string first.
+- pi 0.84.3 `resolveToCwd` → `node:path.resolve` for absolute and relative inputs alike.
+- omp 18.5.1 `resolveToCwd` (`src/tools/path-utils.ts:307-320`):
+  `isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded)` — an **absolute** input is
+  returned verbatim, so the kernel resolves a symlink component before `..`.
+
+On omp the case is therefore live for absolute spellings. Probe (`link -> /`, temp dir):
+
+```
+raw      : /tmp/pv-i4-VmoEQV/proj/s/../etc/hostname
+resolve  : /tmp/pv-i4-VmoEQV/proj/etc/hostname   (path.resolve, lexical)
+readFile : "GPF67QNYG"                            (the kernel opened /etc/hostname)
+```
+
+Fix: `kernelForms(rawPath, cwd)` resolves symlinked components as the path descends and applies `..`
+to the already-resolved parent, mirroring the kernel; it is added to the floor (`classifyPath`), the
+protected write/read checks and the S0 forms. It returns `[]` unless the spelling contains `..` and
+caps length at 4096 (a content-sized argument is not walked). Regression tests: `symlink component
+before .. still hits S0` and `a symlink component before .. cannot reach the policy`; both fail with
+`kernelForms` disabled. `denyPaths` keeps its ADR-0002 base tier and is not changed.
+
+### Item 5 — scope-aware S0
+
+**No.** S0 is a single-target path list; subtree semantics belong to `denyPaths`, whose scope check is
+already bidirectional and which the consumer declares. Making S0 scope-aware would hard-deny ordinary
+broad reads (`grep -r … ~`, `ls ~`) that are not credential access, and the review marked the item
+optional. Recorded as a non-goal.
+
+Suite: `bun run typecheck` exit 0; `bun test` 358 pass, 1 skip, 0 fail; `biome ci .` clean.

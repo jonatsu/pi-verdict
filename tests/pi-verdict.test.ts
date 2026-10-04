@@ -23,10 +23,12 @@ import autoMode, {
 	declineDetail,
 	displaySafe,
 	EXPLAIN_GATE_DEFAULT_PROMPT,
+	gitPushForce,
 	renderJevBar,
 	resolveAgentDir,
 	SessionState,
 	setTmpdirBasesForTests,
+	shellWords,
 } from "../extensions/pi-verdict.ts";
 
 // ── Stub utilities ───────────────────────────────────────
@@ -396,6 +398,55 @@ describe("git push force-flag precision (fork)", () => {
 			expect(h.calls.length).toBe(0);
 		});
 	}
+	// Item 1: the `--force(?![-\w])` lookahead exempted every `--force-*` spelling; only lease may escape.
+	test("invented --force-something → floor deny", async () => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: "git " + "push --force-something origin main" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("git-push-force");
+		expect(h.calls.length).toBe(0);
+	});
+	// Item 2: a legal refname may contain a shell separator when quoted.
+	test("quoted separator before the flag → floor deny", async () => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: "git " + "push origin 'a&b' --force" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("git-push-force");
+		expect(h.calls.length).toBe(0);
+	});
+	// Item 2 converse: a quoted argument the shell never runs is not a command.
+	test("commit message quoting the pattern → not a rule match (gray → classifier)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> message quotes pattern" }];
+		const r = await toolCall(h, "bash", { command: "git commit -m 'note git " + "push --force here'" });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+});
+
+// ── 1a′. Fork: git-push shell-word view (path-layer review items 1–2) ───────
+
+describe("gitPushForce shell-word view (fork)", () => {
+	test("quoted separator keeps one command; an unquoted one splits it", () => {
+		expect(gitPushForce("git " + "push origin 'a&b' --force")).toBe(true);
+		expect(gitPushForce("git " + "push origin a&b --force")).toBe(false);
+	});
+	test("a quoted argument is not a command", () => {
+		expect(gitPushForce("git commit -m 'note git " + "push --force here'")).toBe(false);
+	});
+	test("a shell -c string is a command, including nested", () => {
+		expect(gitPushForce("sh -c 'git " + "push --force origin main'")).toBe(true);
+		expect(gitPushForce('sh -c "sh -c ' + "'git " + "push --force origin main'\"")).toBe(true);
+	});
+	test("--force-with-lease escapes; an unknown --force-* is denied", () => {
+		expect(gitPushForce("git " + "push --force-with-lease origin main")).toBe(false);
+		expect(gitPushForce("git " + "push --force-with-lease=main origin main")).toBe(false);
+		expect(gitPushForce("git " + "push --force-something origin main")).toBe(true);
+	});
+	test("shellWords removes quoting and splits operators", () => {
+		expect(shellWords("git push origin 'a&b' --force")).toEqual(["git", "push", "origin", "a&b", "--force"]);
+		expect(shellWords("a && b | c")).toEqual(["a", "&&", "b", "|", "c"]);
+	});
 });
 
 // ── 1b. Fork: S0 credential inventory (XDG dotless homes included) ──────────
@@ -433,6 +484,38 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 		const r = await toolCall(h, "write", { path: "~/.config/gnupg/private-keys-v1.d/x.key", content: "x" });
 		expect(r?.block).toBe(true);
 		expect(String(r?.reason)).toContain("S0");
+	});
+	// Item 3: the XDG credential-home patterns are anchored to `<home>/.config`, so a repository
+	// path that merely contains `.config/age` is not S0 (read allows, write reaches the classifier).
+	test("repository .config/age is not S0", async () => {
+		const repoPath = path.join(TMP_AGENT, "repo", ".config", "age", "data");
+		const hr = session({});
+		const read = await toolCall(hr, "read", { path: repoPath });
+		expect(read).toBeUndefined();
+		const hw = session({});
+		hw.responses = [{ text: "<verdict>allow</verdict> repo config" }];
+		const write = await toolCall(hw, "write", { path: repoPath, content: "x" });
+		expect(write).toBeUndefined();
+		expect(hw.calls.length).toBe(1);
+	});
+	test("a component spelled foo.config/age is not S0", async () => {
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(TMP_AGENT, "foo.config", "age", "data") });
+		expect(r).toBeUndefined();
+	});
+	// Item 4: a symlink component before `..` resolves differently in the kernel than under
+	// path.resolve's lexical collapse; omp opens an absolute input verbatim, so the floor must see
+	// the kernel spelling. `link -> /` makes `<dir>/link/../<home>/.config/age/key.txt` open the real
+	// credential home, which path.resolve would name as `<dir>/<home>/.config/…` (not S0).
+	test.skipIf(process.platform === "win32")("symlink component before .. still hits S0", async () => {
+		await withTempDir(".pv-i4-", async (dir) => {
+			fs.symlinkSync("/", path.join(dir, "link"));
+			const raw = `${dir}/link/../${os.homedir().replace(/^\//, "")}/.config/age/key.txt`;
+			const h = session({});
+			const r = await toolCall(h, "read", { path: raw });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("S0");
+		});
 	});
 });
 
@@ -2986,6 +3069,20 @@ describe("self-protection layer (ADR-0005)", () => {
 		const r = await toolCall(h, "bash", { command: "echo x > " + CFG() });
 		expect(r?.block).toBe(true);
 		expect(String(r?.reason)).toContain("self-protection");
+	});
+
+	// Item 4 (same class as the S0 case): omp opens an absolute input verbatim, so a symlink
+	// component before `..` must not route around the kernel-true self-protection forms.
+	test.skipIf(process.platform === "win32")("a symlink component before .. cannot reach the policy", async () => {
+		await withTempDir(".pv-sp-i4-", async (dir) => {
+			fs.symlinkSync("/", path.join(dir, "link"));
+			const raw = `${dir}/link/../${TMP_AGENT.replace(/^\//, "")}/config/pi-verdict.json`;
+			const h = session({});
+			const r = await toolCall(h, "write", { path: raw, content: "x" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+			expect(h.calls.length).toBe(0);
+		});
 	});
 
 	test("an allow rule, builtinDenyFloor:false and autoDeny:false cannot lift it", async () => {

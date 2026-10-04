@@ -92,8 +92,11 @@ import {
 // Rule layer: bash
 // ============================================================================
 
-/** Dangerous patterns: match the full command string (including pipelines and compound commands); any match denies (from research report §4.3). */
-const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> = [
+/** Dangerous patterns: match the full command string (including pipelines and compound commands); any match denies (from research report §4.3).
+ *  `git-push-force` is a `check` instead of a `pattern`: a regex over the raw string cannot tell an
+ *  argument from a command (see `gitPushForce` below), so it evaluates a shell-word view instead. */
+type BashDangerRule = { id: string; reason: string; pattern?: RegExp; check?: (command: string) => boolean };
+const BASH_DANGER_RULES: BashDangerRule[] = [
 	{
 		id: "rm-recursive",
 		pattern: /\brm\b[^;|&]*(\s-(?:[a-zA-Z]*r[a-zA-Z]*f?|[a-zA-Z]*f[a-zA-Z]*r)\b|--recursive)/i,
@@ -115,18 +118,15 @@ const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> 
 		pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|\bmkfs\.)/i,
 		reason: "raw device write/format",
 	},
-	// Fork fix: `--force\b` also matched `--force-with-lease`, denying the safe spelling.
-	// `--force(?![-\w])` accepts the bare flag only, so the longer `--force-*` forms pass to
-	// the classifier. The left anchor is the word boundary `\bgit`, not a whitespace/separator
-	// class: the whole command string is matched, so `$(git …)`, `(git …)`, `sh -c 'git …'`
-	// and `/usr/bin/git …` must all stay inside the floor (a separator-only anchor missed them).
-	// `-f` accepts a short-flag bundle (`-fu`, `-uf`), and a `-c`/`-C` global option may sit
-	// between `git` and `push`.
-	{
-		id: "git-push-force",
-		pattern: /\bgit\b(?:\s+-[cC]\s+\S+)*\s+push\b[^;|&]*(\s-[a-zA-Z]*f[a-zA-Z]*\b|--force(?![-\w]))/i,
-		reason: "git push --force",
-	},
+	// Fork fix: `git-push-force` is checked on a shell-word view, not a regex over the raw string.
+	// A regex cannot tell an argument from a command: `git push origin 'a&b' --force` (a legal refname
+	// containing `&`) evaded a `[^;|&]*` class, while `git commit -m '… git push --force …'` was denied
+	// although the quoted text is only an argument. `gitPushForce` splits the command into words and
+	// operators, so quoted separators do not split a command and a quoted argument is not re-read as
+	// one — except a shell's own `-c` string (`sh -c 'git push --force …'`), which IS a command and is
+	// recursed into. `--force-with-lease[=ref]` is the only escaping `--force-*` spelling; every other
+	// `--force-*` form stays denied (explicit is better than an unbounded lookahead).
+	{ id: "git-push-force", reason: "git push --force", check: gitPushForce },
 	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
 	{ id: "git-clean-force", pattern: /\bgit\s+clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)/i, reason: "git clean -f" },
 	{ id: "git-checkout-dot", pattern: /\bgit\s+checkout\s+(--\s+)?\.(?:\s|$)/i, reason: "git checkout . (discard working tree)" },
@@ -136,6 +136,162 @@ const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> 
 	{ id: "gh-release", pattern: /\bgh\s+release\s+(create|delete|edit)\b/i, reason: "GitHub release change" },
 	{ id: "fork-bomb", pattern: /:\(\)\s*\{/, reason: "fork bomb" },
 ];
+
+// ---- git-push-force: shell-word view (fork; 2026-10-04 path-layer review, items 1–2) ----
+
+/** Basename of a command word under both separator conventions (`/usr/bin/git`, `C:\bin\git`). */
+function wordBasename(w: string): string {
+	const i = Math.max(w.lastIndexOf("/"), w.lastIndexOf("\\"));
+	return (i === -1 ? w : w.slice(i + 1)).toLowerCase();
+}
+
+const SHELL_NAMES: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true, ash: true };
+
+/** Command operators: split words and end a command segment. */
+const SHELL_OPERATORS: Record<string, true> = { ";": true, ";;": true, "&": true, "&&": true, "|": true, "||": true, "(": true, ")": true };
+
+/**
+ * Split a shell command into words at unquoted whitespace and operators, quoting removed
+ * (`'a&b'` is one word `a&b`; `$(git …)` yields an operator `(` before the inner words).
+ * Deliberately not a shell parser: no glob, process-substitution or brace-expansion modelling, and
+ * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
+ * needed — unlike the danger regexes, it cannot backtrack).
+ */
+export function shellWords(command: string): string[] {
+	const words: string[] = [];
+	let cur = "";
+	let inWord = false;
+	const flush = () => {
+		if (inWord) {
+			words.push(cur);
+			cur = "";
+			inWord = false;
+		}
+	};
+	let i = 0;
+	const n = command.length;
+	while (i < n) {
+		const ch = command[i];
+		if (ch === "'") {
+			const end = command.indexOf("'", i + 1);
+			cur += command.slice(i + 1, end === -1 ? n : end);
+			inWord = true;
+			i = end === -1 ? n : end + 1;
+			continue;
+		}
+		if (ch === '"') {
+			i++;
+			while (i < n && command[i] !== '"') {
+				if (command[i] === "\\" && i + 1 < n && '\\"$`'.includes(command[i + 1])) {
+					cur += command[i + 1];
+					i += 2;
+				} else {
+					cur += command[i];
+					i++;
+				}
+			}
+			i++; // closing quote; absent at end of string → i = n + 1, loop ends
+			inWord = true;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < n) {
+			cur += command[i + 1];
+			inWord = true;
+			i += 2;
+			continue;
+		}
+		if (ch === " " || ch === "\t" || ch === "\r") {
+			flush();
+			i++;
+			continue;
+		}
+		if (ch === "\n" || SHELL_OPERATORS[ch] === true) {
+			flush();
+			const two = ch + (command[i + 1] ?? "");
+			if (two === "&&" || two === "||" || two === ";;") {
+				words.push(two);
+				i += 2;
+			} else {
+				words.push(ch);
+				i++;
+			}
+			continue;
+		}
+		cur += ch;
+		inWord = true;
+		i++;
+	}
+	flush();
+	return words;
+}
+
+/** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
+ *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the
+ *  classifier (an audit boundary: the unbounded lookahead `--force(?![-\w])` exempted unknown
+ *  spellings). Short flags are accepted in a bundle (`-f`, `-fu`, `-uf`). */
+export function isForceFlag(word: string): boolean {
+	const t = word.toLowerCase();
+	if (/^-[a-z]*f[a-z]*$/.test(t)) return true;
+	if (/^--force-with-lease(?:=|$)/.test(t)) return false;
+	return /^--force(?![-\w])/.test(t) || t.startsWith("--force-");
+}
+
+function commandSegments(words: string[]): string[][] {
+	const segs: string[][] = [];
+	let cur: string[] = [];
+	for (const w of words) {
+		if (SHELL_OPERATORS[w] === true) {
+			if (cur.length) segs.push(cur);
+			cur = [];
+		} else {
+			cur.push(w);
+		}
+	}
+	if (cur.length) segs.push(cur);
+	return segs;
+}
+
+const GIT_PUSH_RECURSION_DEPTH = 3;
+
+/**
+ * `git push` with a force flag, evaluated on a shell-word view so quoting is respected.
+ * Two review findings motivate this over a raw-string regex: a legal refname may contain a shell
+ * separator (`git push origin 'a&b' --force` — the old `[^;|&]*` class stopped at the `&` and
+ * missed it), and text the shell never runs as a command (`git commit -m '… git push --force …'`)
+ * was denied although it is an argument. A shell's own `-c` argument IS a command string and is
+ * recursed into (`sh -c 'git push --force …'`, bounded depth); `$(…)` and `(…)` become their own
+ * segments through the operator view. A `-c`/`-C` global option may sit between `git` and `push`.
+ */
+export function gitPushForce(command: string): boolean {
+	return gitPushInWords(shellWords(command), 0);
+}
+
+function gitPushInWords(words: string[], depth: number): boolean {
+	for (const seg of commandSegments(words)) {
+		for (let i = 0; i + 1 < seg.length; i++) {
+			if (wordBasename(seg[i]) !== "git") continue;
+			let pushed = false;
+			for (let k = i + 1; k < seg.length; k++) {
+				const word = seg[k];
+				if (word.toLowerCase() === "push") pushed = true;
+				else if (pushed && isForceFlag(word)) return true;
+			}
+		}
+		if (depth >= GIT_PUSH_RECURSION_DEPTH) continue;
+		for (let i = 0; i < seg.length; i++) {
+			if (SHELL_NAMES[wordBasename(seg[i])] !== true) continue;
+			for (let j = i + 1; j < seg.length; j++) {
+				const opt = seg[j].toLowerCase();
+				if (!opt.startsWith("-")) break; // options ended: not a `-c <string>` invocation
+				if (/^-[a-z]*c[a-z]*$/.test(opt) && seg[j + 1] !== undefined) {
+					if (gitPushInWords(shellWords(seg[j + 1]), depth + 1)) return true;
+					break;
+				}
+			}
+		}
+	}
+	return false;
+}
 
 type RuleVerdict = "allow" | "deny" | "gray" | "ask";
 interface RuleResult {
@@ -159,7 +315,8 @@ function classifyBash(command: string, floorOn: boolean): RuleResult {
 	if (floorOn) {
 		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			if (rule.pattern.test(capped)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
+			const hit = rule.check ? rule.check(capped) : rule.pattern!.test(capped);
+			if (hit) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command" };
@@ -209,6 +366,38 @@ function rebuiltForms(abs: string): string[] {
 			dir = parent;
 		}
 	}
+}
+
+/** Kernel-faithful forms of a spelling a host may open verbatim (path-layer review item 4): symlinked
+ *  components are resolved as the path descends and `..` applies to the already-resolved parent, unlike
+ *  path.resolve's lexical collapse. omp's file tools return an *absolute* input to the filesystem
+ *  verbatim (`resolveToCwd`: `isAbsolute ? expanded : path.resolve(cwd, expanded)`), so `link/../x`
+ *  (link -> /) opens `/x` while path.resolve names `<dir>/x` — the floor must see the spelling the
+ *  kernel would. Beyond the realpath tier: a direct symlink is already covered, this covers the
+ *  symlink-then-`..` combination. A nonexistent component stays lexical (rebuiltForms covers the tail).
+ *  Returns [] unless the spelling contains `..`, which is what makes lexical collapse diverge, and
+ *  caps length so a content-sized argument is not walked as a path. */
+function kernelForms(rawPath: string, cwd: string): string[] {
+	if (!rawPath || rawPath.length > 4096 || !rawPath.includes("..")) return [];
+	const expanded = rawPath.startsWith("~") ? os.homedir() + rawPath.slice(1) : rawPath;
+	const absolute = path.isAbsolute(expanded);
+	const root = absolute ? path.parse(expanded).root : path.resolve(cwd);
+	const tail = absolute ? expanded.slice(path.parse(expanded).root.length) : expanded;
+	let resolved = root;
+	for (const part of tail.split(/[\\/]+/)) {
+		if (part === "" || part === ".") continue;
+		if (part === "..") {
+			resolved = path.dirname(resolved);
+			continue;
+		}
+		const candidate = path.join(resolved, part);
+		try {
+			resolved = fs.realpathSync(candidate);
+		} catch {
+			resolved = candidate;
+		}
+	}
+	return rebuiltForms(resolved);
 }
 
 /** Case-insensitive filesystems (default macOS APFS, Windows) compare path strings
@@ -912,6 +1101,24 @@ function expandHome(p: string): string {
 	return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
 }
 
+/** The user's home in rule form — lexical and, when it resolves, realpath — regex-escaped. The
+ *  XDG credential homes sit at exactly `<home>/.config/<name>`, so anchoring there keeps a repository
+ *  path that merely contains `.config/age` (or `foo.config/age`) out of S0. The sibling dot entries
+ *  (`.ssh`, `.aws`, `.gnupg`, `.config/gh`) stay segment-anywhere by the established S0 discipline; the
+ *  two fork additions were the only ones the review named as unintentional over-match. */
+const HOME_RULE_ROOTS: string[] = (() => {
+	const lexical = toRuleForm(path.resolve(os.homedir()));
+	const roots = [lexical];
+	try {
+		const real = toRuleForm(fs.realpathSync(lexical));
+		if (real !== lexical) roots.push(real);
+	} catch {
+		/* home unresolvable → lexical root only */
+	}
+	return roots.map(escapeRegExp);
+})();
+const HOME_CONFIG_ROOT = `^(?:${HOME_RULE_ROOTS.join("|")})/\\.config/`;
+
 // All S-rules match case-insensitively (#21): on case-insensitive filesystems
 // (default macOS APFS, Windows) case variants name the same file — realpath
 // normalization covers existing targets, /i covers the lexical forms of
@@ -926,7 +1133,9 @@ const S0_SECRET = [
 	// unlocked private key at `~/.config/age/key.txt`, and SOPS reads its age key
 	// under `~/.config/sops`. The dot forms above cover `~/.gnupg` alone, so the
 	// live keyrings sat outside S0 and were only an ask where a policy declared them.
-	/\.config\/(?:gnupg|age|sops)(\/|$)/i,
+	// Anchored to `<home>/.config` (HOME_CONFIG_ROOT) rather than any `.config` substring:
+	// a repository that ships `.config/age/data` reaches the classifier instead of hard-denying.
+	new RegExp(`${HOME_CONFIG_ROOT}(?:gnupg|age|sops)(/|$)`, "i"),
 	/(^|\/)\.env(\.|$)/i,
 	/credentials?(\.|\/|$)/i,
 	/(^|\/)id_rsa/i,
@@ -935,7 +1144,8 @@ const S0_SECRET = [
 	/\.config\/gh(\/|$)/i,
 	// Fork: the glab sibling of the gh config above — `~/.config/glab-cli/config.yml`
 	// holds the GitLab token, and a non-S1 read was a deterministic allow.
-	/\.config\/glab-cli(\/|$)/i,
+	// Home-anchored like the XDG credential homes above.
+	new RegExp(`${HOME_CONFIG_ROOT}glab-cli(/|$)`, "i"),
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
@@ -1001,8 +1211,9 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 	const abs = path.resolve(cwd, expandHome(rawPath));
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
-	// the floor on its lexical spelling alone.
-	const forms = rebuiltForms(abs);
+	// the floor on its lexical spelling alone. kernelForms adds the spelling the kernel
+	// would open when a symlink component precedes `..` (path-layer review item 4).
+	const forms = [...new Set([...rebuiltForms(abs), ...kernelForms(rawPath, cwd)])];
 	const ruleForms = forms.map(toRuleForm);
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
 	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
@@ -1435,7 +1646,7 @@ function pathAlternation(forms: string[], agentDir: string): RegExp {
  *  bypass; a nonexistent target rebuilds its real form from the nearest existing ancestor (#20). */
 export function isProtectedWritePath(rawPath: string, cwd: string, prot: ProtectedSet): boolean {
 	if (!rawPath) return false;
-	for (const c of rebuiltForms(path.resolve(cwd, expandHome(rawPath)))) {
+	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(rawPath))), ...kernelForms(rawPath, cwd)]) {
 		if (prot.exact.includes(c)) return true;
 		for (const p of prot.prefixes) {
 			if (c === p || c.startsWith(p + path.sep)) return true;
@@ -1451,7 +1662,7 @@ export function isProtectedWritePath(rawPath: string, cwd: string, prot: Protect
 export function isProtectedReadPath(rawPath: string | undefined, cwd: string, prot: ProtectedSet): boolean {
 	if (prot.readDenied.length === 0) return false;
 	const target = rawPath ?? cwd; // #48: absent path → cwd is the effective target
-	for (const c of rebuiltForms(path.resolve(cwd, expandHome(target)))) {
+	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(target))), ...kernelForms(target, cwd)]) {
 		for (const p of prot.readDenied) {
 			if (c === p || c.startsWith(p + path.sep)) return true;
 		}
