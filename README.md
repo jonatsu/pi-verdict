@@ -181,7 +181,8 @@ tool_call
   │     └─ <agentDir>/verdicts/ reads and writes → deny
   │
   ├─ 1. Rule layer (deterministic, zero latency)
-  │     ├─ built-in deny floor: bash danger regexes + path sensitivity S0–S5
+  │     ├─ built-in deny floor: bash danger regexes + path sensitivity S0–S5;
+  │     │   a write whose kernel target is unresolvable (symlink loop) fails closed
   │     ├─ your rules: user deny beats user allow
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,

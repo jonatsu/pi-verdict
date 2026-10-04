@@ -270,3 +270,26 @@ broad reads (`grep -r … ~`, `ls ~`) that are not credential access, and the re
 optional. Recorded as a non-goal.
 
 Suite: `bun run typecheck` exit 0; `bun test` 358 pass, 1 skip, 0 fail; `biome ci .` clean.
+
+## Path fixes round (2026-10-05, post-fork.6, untagged)
+
+Commits `6594ebd` (items 7–8), `111dad4` (item 9) and `f2c009f` (item 10) close the remaining
+path-layer residue. Two claims in the Item 4 section above are superseded by this round and stood
+only for `v0.16.0-fork.6`:
+
+- "It returns `[]` unless the spelling contains `..`" — the walk now also runs when the leaf itself
+  is a symlink (item 8: dangling and loop leaves have no realpath), `kernelForms` is rebuilt on
+  `kernelWalk(rawPath, cwd) → { resolved, unresolved }` with POSIX walk tails splitting on `/` only
+  (item 7: a backslash is a legal filename character), and a loop or unreadable link target reports
+  unresolved — `classifyPath` fails such writes closed (`unresolved symlink (write fail-closed)`,
+  through the `D(...)` downgrade so `builtinDenyFloor: false` degrades it to gray).
+- "`denyPaths` keeps its ADR-0002 base tier and is not changed" — the item-10 amendment (ADR-0002)
+  adds `baseForms(kernelPath(expanded, cwd))` for `..`-spellings on both sides of the comparison;
+  the no-ancestor-rebuild rule is unchanged.
+
+Item 9: the two home-anchored S0 entries union `XDG_CONFIG_ROOTS` (an absolute, non-empty
+`XDG_CONFIG_HOME`; `setXdgConfigRootsForTests` rebuilds them under `bun test`). Item 10: user-rule
+path targets take the same kernel tier, deny = any target matches, allow = every target matches (F11).
+
+Suite: `bun run typecheck` exit 0; `bun test` 398 pass, 1 skip, 0 fail; `mise exec -- biome ci .` clean;
+`bun run probe` 79 pass, 0 fail, 0 open; `docs/coverage.md` fresh.
