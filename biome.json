@@ -1,7 +1,7 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
 	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-	"files": { "includes": ["extensions/**/*.ts", "tests/**/*.ts"] },
+	"files": { "includes": ["extensions/**/*.ts", "tests/**/*.ts", "probe/**/*.ts", "tools/**/*.ts"] },
 	"formatter": {
 		"enabled": true,
 		"indentStyle": "tab",

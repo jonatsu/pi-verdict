@@ -48,6 +48,10 @@
 	"scripts": {
 		"typecheck": "tsc --noEmit -p tsconfig.json",
 		"test": "bun test",
+		"probe": "bun run probe/probe.ts",
+		"coverage": "bun run tools/coverage.ts",
+		"provenance": "bun run tools/provenance.ts",
+		"release-check": "bun run tools/release-check.ts",
 		"lint": "mise exec -- biome lint .",
 		"format": "mise exec -- biome format --write ."
 	},

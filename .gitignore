@@ -7,3 +7,7 @@ node_modules/
 
 # scratch: throwaway probes and hand-over notes
 .scratch/
+
+# probe: the consumer's real policy file (documented default override location;
+# the synthetic probe/consumer-policy.json is committed instead)
+probe/consumer-policy.real.json

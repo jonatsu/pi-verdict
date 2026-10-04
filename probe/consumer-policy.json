@@ -1,0 +1,9 @@
+{
+	"_meta": {
+		"synthetic": true,
+		"note": "Representative of agents/omp/pi-verdict.json; the real policy stays consumer-side. Override with PI_VERDICT_PROBE_POLICY=<path> or probe/consumer-policy.real.json. _meta is stripped before loading."
+	},
+	"deny": ["git push[^\\n]*--force(?![\\-\\w])"],
+	"builtinDenyFloor": true,
+	"autoDeny": true
+}

@@ -36,7 +36,9 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 | --- | --- |
 | `extensions/` | Shipped runtime code (the two files above) |
 | `tests/` | `bun:test` suites, one per extension file |
-| `docs/` | `configuration.md`, `security-principles.md`, `adr/` (NNNN-*.md), `agents/` (skill config, not product docs), `images/`, `demo.gif` |
+| `probe/` | The shared gate-testing contract: `cases.ts` (the case table), `probe.ts` (three-run runner), `fixtures.ts`, `consumer-policy.json`, `README.md`. Dev artifact; not shipped |
+| `tools/` | `provenance.ts`, `coverage.ts` (generates `docs/coverage.md`), `release-check.ts`. Dev artifacts; not shipped |
+| `docs/` | `configuration.md`, `security-principles.md`, `layers.md` (the layer map the probe asserts), `coverage.md` (generated), `plans/` (tracked plans), `adr/` (NNNN-*.md), `handover-*` archives, `agents/` (skill config, not product docs), `images/`, `demo.gif` |
 | `research/` | Evidence notes + offline sims (`cache-sim/`, `rule-engine-sim/`); not part of tests/typecheck |
 | `scripts/` | `demo.tape` (vhs recording of `docs/demo.gif`; macOS/zsh/RamDisk-specific) |
 | `.github/workflows/` | `ci.yml`, `publish.yml` |
@@ -45,13 +47,17 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 
 ```bash
 bun install                 # use --frozen-lockfile in CI; bun.lock must match package.json
-bun run typecheck           # tsc --noEmit -p tsconfig.json (covers extensions/**/*.ts ONLY)
+bun run typecheck           # tsc --noEmit -p tsconfig.json (extensions/, probe/, tools/)
 bun test                    # all tests
 bun test tests/pi-verdict.test.ts
 bun test -t "<substring>"   # filter by test name
+bun run probe               # the shared case-table contract; --filter "<label>" runs a subset
+bun run coverage            # regenerate docs/coverage.md from probe/cases.ts
+bun run provenance          # sha256 of the committed extension blobs at HEAD
+bun run release-check       # package.json version == annotated tag v<version> (local pre-tag gate)
 ```
 
-No `build`, `lint`, or `format` script exists and no eslint/prettier/biome config — don't invent one. Run `typecheck` and `bun test` after any change to `extensions/`. For headless smoke-testing of a build, see "Smoke-testing" below.
+`lint`/`format` scripts exist (`mise exec -- biome …`) and `biome.json` is the config; CI runs `biome ci .`, so probe/ and tools/ must pass the same strict rules (no `any`). Run `bun run typecheck`, `bun test`, and `bun run probe` after any change to `extensions/`, `probe/`, or `tools/`. For headless smoke-testing of a build, see "Smoke-testing" below.
 
 ## Code Conventions & Common Patterns
 
@@ -79,12 +85,13 @@ No `build`, `lint`, or `format` script exists and no eslint/prettier/biome confi
 - **Bun** is the package manager and test runner (`bun.lock` committed). **TypeScript** (`tsc`) for typechecking only. Node 22 is used only in `publish.yml` for `npm pack/publish`.
 - Zero runtime dependencies; the pi package is an optional peer dep. Don't add runtime deps without a strong reason.
 - Published to GitHub Packages (`https://npm.pkg.github.com`, scope `@frapetti-dev`).
-- CI (`ci.yml`): `bun install --frozen-lockfile` → `bun run typecheck` → `bun test`. Publish (`publish.yml`, on GitHub Release): tag must equal `v` + `package.json` version and HEAD must be the tag commit, then typecheck + test + publish.
+- CI (`ci.yml`): `bun install --frozen-lockfile` → `bun run typecheck` → `biome ci .` → `bun test` → `bun run probe` → `bun run coverage && git diff --exit-code docs/coverage.md`. Publish (`publish.yml`, on GitHub Release): tag must equal `v` + `package.json` version and HEAD must be the tag commit, then typecheck + test + publish.
 - Dev workstation is Windows; `PI_CODING_AGENT_DIR` and home-relative fixtures must work cross-platform (Windows path separators are handled in code).
 
 ## Testing & QA
 
-- Runner `bun:test` (`describe, test, expect, beforeAll, afterAll, afterEach`). `tests/pi-verdict.test.ts` (~200 tests) and `tests/jev-adapter.test.ts` (~40). `tests/` is **not** typechecked. No coverage threshold.
+- Runner `bun:test` (`describe, test, expect, beforeAll, afterAll, afterEach`). `tests/pi-verdict.test.ts` (~200 tests) and `tests/jev-adapter.test.ts` (~40). `tests/` is **not** typechecked; `probe/` and `tools/` are (they are `tsc`-included and biome-strict). No coverage threshold.
+- `bun run probe` is the shared case-table contract (see `probe/README.md`): one case asserts the layer that decides a call, across three runs (A headless, B interactive, C consumer policy). A case tagged `known: "open"` must fail today; the runner **exits 1 if an open case passes** (remove the marker instead). `--filter "<label>"` runs a subset. `docs/coverage.md` is generated from the case table and CI checks it fresh.
 - Everything is offline: no network, no real model, no module mocks. A hand-built fake host is passed to the extension's default export.
 - Helpers in `tests/pi-verdict.test.ts`: `makeHarness`, `session(cfg, opts)` (writes config, builds harness, installs — ordering matters; prefer it over hand-wiring), `setConfig`, `toolCall(h, name, input)` → `{block, reason}` or `undefined`, `userMsg`, `readAudit`/`clearAudit`, `withTempDir`. Model stub: set `h.responses = [{ text: "<verdict>allow</verdict> reason" }]` (an `Error` instance is thrown; the last response repeats); inspect `h.calls`. UI stubs record `notifies`, `confirms`, `selectPicks`, etc.
 - Dialog tests: `driveDialogs` (EXPLAIN-GATE describe) and `driveMouseDialog` (`ask dialog mouse clicks` describe) replay key scripts against the real `buildApproveDialog` component via a fake `ui.custom`. `driveMouseDialog` hosts the component under a 3-line filler with `terminal`/`children` metrics and clicks by computing the SGR row from the rendered option line.

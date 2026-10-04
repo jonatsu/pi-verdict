@@ -34,4 +34,10 @@ jobs:
       - name: Test
         run: bun test
 
+      - name: Probe
+        run: bun run probe
+
+      - name: Coverage freshness
+        run: bun run coverage && git diff --exit-code docs/coverage.md
+
 # trigger re-registration: touch v2
