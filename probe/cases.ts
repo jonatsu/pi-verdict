@@ -399,7 +399,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			kernelOpens: `${protectedBase}/secret`,
 			config: { denyPaths: [protectedBase] },
 			item: 10,
-			expected: { layer: "protected-path", known: "open" },
+			expected: { layer: "protected-path" },
 		},
 		{
 			label: "kernel-resolved base form",
@@ -429,7 +429,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			kernelOpens: `${protectedBase}/secret`,
 			config: { deny: ["protected/secret"] },
 			item: 10,
-			expected: { layer: "rule", reasonIncludes: "user deny rule", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "user deny rule" },
 		},
 	);
 

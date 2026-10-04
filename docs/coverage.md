@@ -78,10 +78,10 @@ Total cases: 79.
 | self-protection | read the audit dir denies | read | rule |  | self-protection |  |  |  |
 | self-protection | read the policy passes | read | allow |  |  |  |  |  |
 | deny-paths | direct touch asks | read | protected-path |  |  |  |  |  |
-| deny-paths | symlink before .. evaded it | read | protected-path |  |  |  | open | item=10 |
+| deny-paths | symlink before .. evaded it | read | protected-path |  |  |  |  | item=10 |
 | deny-paths | kernel-resolved base form | read | protected-path |  |  |  |  |  |
 | user-rules | user deny on the lexical path | read | rule |  | user deny rule |  |  |  |
-| user-rules | user deny on the kernel path | read | rule |  | user deny rule |  | open | item=10 |
+| user-rules | user deny on the kernel path | read | rule |  | user deny rule |  |  | item=10 |
 | user-allow | simple allow still allows | bash | allow |  | user allow rule |  |  |  |
 | user-allow | newline hides a command | bash | classifier |  |  |  |  | ref=arch-F2 |
 | user-allow | single & hides a command | bash | classifier |  |  |  |  | ref=arch-F2 |

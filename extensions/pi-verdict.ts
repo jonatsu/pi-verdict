@@ -659,6 +659,15 @@ function kernelForms(rawPath: string, cwd: string): string[] {
 	return resolved === null ? [] : rebuiltForms(resolved);
 }
 
+/** Kernel-true spelling only — the base tier for `denyPathForms` and user-rule targets (item 10):
+ *  no ancestor rebuild (ADR-0002's no-rebuild rule is unchanged), and gated on `..` so a plain
+ *  path token pays no syscall walk. Null when the spelling has no `..` (those spellings stay
+ *  base tier) or the walk is skipped/unresolvable. */
+function kernelPath(rawPath: string, cwd: string): string | null {
+	if (!rawPath.includes("..")) return null;
+	return kernelWalk(rawPath, cwd).resolved;
+}
+
 /** Case-insensitive filesystems (default macOS APFS, Windows) compare path strings
  *  case-folded; realpath already normalizes case whenever it resolves, this covers
  *  the lexical-only forms of nonexistent targets (#21). Linux stays case-sensitive.
@@ -1579,18 +1588,25 @@ function isScopeTool(toolName: string): boolean {
 	return toolName === "grep" || toolName === "find" || toolName === "ls";
 }
 
-/** User-rule match target: bash/powershell = full command string; path tools = parsed absolute path; other tools do not participate.
- *  Scope tools with an omitted path resolve to the cwd (#48) — user rules match
- *  the effective target, never a null that skips the whole rule block. */
-function userRuleTarget(toolName: string, input: Record<string, unknown>, cwd: string): string | null {
+/** User-rule match targets: bash/powershell = the full command string; path tools = the parsed
+ *  absolute path plus — item 10, plan-review F11 — the kernel-true spelling when the raw spelling
+ *  contains `..` (omp opens an absolute input verbatim, so `subLink/../secret` reaches a different
+ *  file than `path.resolve` names). Deduped; scope tools with an omitted path resolve to the cwd
+ *  (#48) — user rules match the effective target, never an empty list that skips the rule block.
+ *  Semantics: deny = ANY target matches; allow = EVERY target matches (F11) — an allow regex that
+ *  matches only the lexical spelling must not allow the call. */
+function userRuleTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
 	const kind = toolKind(toolName);
-	if (kind === "command") return String(input.command ?? "");
+	if (kind === "command") return [String(input.command ?? "")];
 	if (kind === "file") {
 		const p = typeof input.path === "string" && input.path ? input.path : null;
-		if (!p) return isScopeTool(toolName) ? toRuleForm(path.resolve(cwd)) : null;
-		return toRuleForm(path.resolve(cwd, expandHome(p)));
+		if (!p) return isScopeTool(toolName) ? [toRuleForm(path.resolve(cwd))] : [];
+		const lexical = toRuleForm(path.resolve(cwd, expandHome(p)));
+		const kernel = kernelPath(p, cwd);
+		if (kernel === null) return [lexical];
+		return [...new Set([lexical, toRuleForm(kernel)])];
 	}
-	return null;
+	return [];
 }
 
 // ============================================================================
@@ -1729,14 +1745,21 @@ export function bashPathTokens(command: string): string[] {
 	return out;
 }
 
-/** Normalized forms of one path for denyPaths comparison: base tier only (ADR-0002) —
- *  no ancestor rebuild; a nonexistent target under a symlinked dir falls to the
- *  classifier + existence hint instead (pinned by a regression test). */
+/** Normalized forms of one path for denyPaths comparison: base tier (ADR-0002) plus, for
+ *  `..`-spellings, the kernel-true spelling the host would open (item 10, ADR-0002 amendment):
+ *  omp's file tools return an absolute input verbatim, so `subLink/../secret` opens
+ *  `<subLinkTarget>/../secret` while `path.resolve` names `<cwd>/secret` — the declaration and
+ *  the candidate both gain the same tier through this one function, which is what keeps the
+ *  comparison sound. Still no ancestor rebuild: a nonexistent target under a symlinked dir
+ *  falls to the classifier + existence hint instead (pinned by a regression test). */
 function denyPathForms(raw: string, cwd: string): string[] {
 	if (!raw) return [];
 	// denyPaths spellings accept $HOME/ as an alias for ~/ (user-rule targets stay raw strings — no $ expansion there)
 	const expanded = expandHome(raw.replace(/^\$HOME(?=\/|$)/, os.homedir()));
-	return baseForms(path.resolve(cwd, expanded));
+	const forms = baseForms(path.resolve(cwd, expanded));
+	const kernel = kernelPath(expanded, cwd);
+	if (kernel !== null) for (const f of baseForms(kernel)) if (!forms.includes(f)) forms.push(f);
+	return forms;
 }
 
 /** Normalize the configured denyPaths against one cwd (ADR-0002: anchored once per session, never re-derived) */
@@ -2109,10 +2132,11 @@ function classifyByRules(
 	}
 	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
 
-	const target = userRuleTarget(toolName, input, cwd);
-	if (target !== null) {
+	const targets = userRuleTargets(toolName, input, cwd);
+	if (targets.length > 0) {
+		// Item 10 / F11: deny = any target matches; allow = every target matches.
 		for (const re of user.deny) {
-			if (re.test(target)) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
+			if (targets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
 		}
 		// Forced .omp gate: terminal ask, after user deny, before denyPaths/user allow.
 		// Reason carries no path (it travels back into agent context); the path is UI-only detail.
@@ -2132,7 +2156,7 @@ function classifyByRules(
 		const allowOk = kind !== "command" || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
-				if (re.test(target)) return { verdict: "allow", reason: "user allow rule" };
+				if (targets.every((t) => re.test(t))) return { verdict: "allow", reason: "user allow rule" };
 			}
 		}
 	}

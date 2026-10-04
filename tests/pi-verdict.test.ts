@@ -1784,6 +1784,65 @@ describe("denyPaths (ADR-0002)", () => {
 	});
 });
 
+// ── 10.4c kernel tier for denyPaths + user rules (item 10, plan-review F11) ──
+
+describe("denyPaths + user rules kernel tier (item 10)", () => {
+	// Fixtures under the real home (macOS /var TMPDIR would hit S1 before the rule layer).
+	// `<proj>/link/../secret.md` opens `<root>/protected/secret.md` in the kernel — omp
+	// returns an absolute input verbatim — while path.resolve names `<proj>/secret.md`.
+	const root = fs.mkdtempSync(path.join(os.homedir(), ".pv-item10-"));
+	const proj = path.join(root, "proj");
+	const outside = path.join(root, "outside");
+	const protectedDir = path.join(root, "protected");
+
+	beforeAll(() => {
+		fs.mkdirSync(proj, { recursive: true });
+		fs.mkdirSync(protectedDir, { recursive: true });
+		fs.mkdirSync(outside, { recursive: true });
+		fs.writeFileSync(path.join(protectedDir, "secret.md"), "x");
+		fs.symlinkSync(path.join(protectedDir, "sub"), path.join(proj, "link"));
+		fs.symlinkSync(path.join(outside, "sub"), path.join(proj, "escape"));
+	});
+	afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+	test.skipIf(process.platform === "win32")(
+		"denyPaths hits through a symlink before .. (kernel form on both sides, ADR-0002 amendment)",
+		async () => {
+			const h = session({ denyPaths: [protectedDir] }, { cwd: proj });
+			await toolCall(h, "read", { path: `${proj}/link/../secret.md` });
+			expect(h.confirms).toBe(1);
+			expect(h.calls.length).toBe(0);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")("user deny matches the kernel spelling", async () => {
+		const h = session({ deny: ["protected/secret"] }, { cwd: proj });
+		const r = await toolCall(h, "read", { path: `${proj}/link/../secret.md` });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("user deny rule");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test.skipIf(process.platform === "win32")(
+		"an allow matching only the lexical spelling does not allow (F11: allow = every target)",
+		async () => {
+			const h = session({ allow: [`^${proj}/secret\\.md$`] }, { cwd: proj });
+			h.responses = [{ text: "<verdict>allow</verdict> mock" }];
+			const r = await toolCall(h, "write", { path: `${proj}/escape/../secret.md`, content: "x" });
+			expect(h.calls.length).toBe(1); // the kernel spelling escapes the allow → classifier decides
+			expect(r).toBeUndefined();
+		},
+	);
+
+	test.skipIf(process.platform === "win32")("deny = any target still denies on the lexical spelling alone", async () => {
+		const h = session({ deny: ["secret"] }, { cwd: proj });
+		const r = await toolCall(h, "read", { path: path.join(protectedDir, "secret.md") });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("user deny rule");
+		expect(h.calls.length).toBe(0);
+	});
+});
+
 // ── 10.4b linear bash path-token extraction (#32) ──
 
 describe("bash path-token extraction (#32: linear tokenizer, regex as oracle)", () => {

@@ -44,7 +44,7 @@ The classifier receives only what it needs to judge: a condensed transcript (use
 
 ### 7. Protected resources are matched by canonical identity
 
-Path matching compares lexical and realpath forms (#20), with case folding on case-insensitive filesystems and macOS firmlink prefixes (#21). Relative, `~`, `$HOME`, and environment-variable spellings are normalized. The path-sensitivity floor reconstructs non-existent targets from the nearest realpath ancestor; `denyPaths` uses base-tier matching only, so such targets may fall to the classifier's existence hint. A path that merely *looks* workspace-local is not trusted as workspace-local.
+Path matching compares lexical and realpath forms (#20), with case folding on case-insensitive filesystems and macOS firmlink prefixes (#21). Relative, `~`, `$HOME`, and environment-variable spellings are normalized. The path-sensitivity floor reconstructs non-existent targets from the nearest realpath ancestor; `denyPaths` and user-rule path targets match base tier plus the kernel-true spelling for `..`-spellings, with no ancestor rebuild, so such targets may fall to the classifier's existence hint. A path that merely *looks* workspace-local is not trusted as workspace-local.
 
 ### 8. User policy may weaken only the built-in floor by explicit opt-in
 

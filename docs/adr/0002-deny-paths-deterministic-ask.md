@@ -183,3 +183,21 @@ verdicts directory carries no special read/write protection. This ADR's own
 decisions (deterministic ask on a denyPaths hit, the existence hint,
 bidirectional scope-tool matching) are unaffected — only the passages above
 that assumed the now-removed layer's existence are stale.
+
+## Amendment (2026-10-05): kernel-true spelling tier (path-layer review item 10, plan-review F11)
+
+denyPaths compares base forms of **both** the lexical and the kernel-true
+spelling (`denyPathForms` gains `baseForms(kernelPath(expanded, cwd))` for
+`..`-spellings): omp's file tools return an absolute input verbatim to the
+filesystem, so `subLink/../secret` (link → `<root>/protected/sub`) opens
+`<root>/protected/secret` while `path.resolve` names `<proj>/secret` — a
+lexical-only comparison was a real bypass for a declaration whose base sits
+behind a symlinked component. Both sides of the comparison (the anchored
+declaration and the candidate) gain the same tier through this one function,
+which is what keeps the match sound. The no-ancestor-rebuild rule is
+unchanged: the kernel tier adds only the spelling the kernel itself would
+open, never a rebuilt form of a nonexistent target (the tier-discipline
+regression stays pinned). User-rule path targets take the same tier for
+`..`-spellings, with asymmetric semantics: deny matches when **any** target
+matches, allow only when **every** target matches — an allow regex that
+matches only the lexical spelling must not allow the call.
