@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**pi-verdict** (`@frapetti-dev/pi-verdict`) is a minimal permission-gate extension for [Pi](https://github.com/earendil-works/pi-coding-agent) and oh-my-pi (`omp`): a deterministic **rule layer** plus a **model classifier** for the gray zone. Every tool call is adjudicated to one of three states: `allow` / `ask` / `deny`. Default posture is allow-unless-intercepted ("Auto Mode"), the reverse of Claude Code.
+**pi-verdict** (`@jonatsu/pi-verdict`) is a minimal permission-gate extension for [Pi](https://github.com/earendil-works/pi-coding-agent) and oh-my-pi (`omp`): a deterministic **rule layer** plus a **model classifier** for the gray zone. Every tool call is adjudicated to one of three states: `allow` / `ask` / `deny`. Default posture is allow-unless-intercepted ("Auto Mode"), the reverse of Claude Code.
 
 Domain terms live in `CONTEXT.md` (glossary); decisions live in `docs/adr/`; design conclusions are backed by measurements under `research/`. Read those before changing behavior, and use the glossary terms exactly (e.g. adjudication pipeline, dual-form matching, gray zone, `denyPaths` — always plural).
 
@@ -84,7 +84,7 @@ bun run release-check       # package.json version == annotated tag v<version> (
 
 - **Bun** is the package manager and test runner (`bun.lock` committed). **TypeScript** (`tsc`) for typechecking only. Node 22 is used only in `publish.yml` for `npm pack/publish`.
 - Zero runtime dependencies; the pi package is an optional peer dep. Don't add runtime deps without a strong reason.
-- Published to GitHub Packages (`https://npm.pkg.github.com`, scope `@frapetti-dev`).
+- Package name is `@jonatsu/pi-verdict` (renamed from `@frapetti-dev/pi-verdict`). The deployment installs via the git spec; GitHub Packages publishing requires the scope to match `@jonatsu` — `publish.yml` still names the old scope, so fix or remove it before any Release publishes.
 - CI (`ci.yml`): `bun install --frozen-lockfile` → `bun run typecheck` → `biome ci .` → `bun test` → `bun run probe` → `bun run coverage && git diff --exit-code docs/coverage.md`. Publish (`publish.yml`, on GitHub Release): tag must equal `v` + `package.json` version and HEAD must be the tag commit, then typecheck + test + publish.
 - Dev workstation is Windows; `PI_CODING_AGENT_DIR` and home-relative fixtures must work cross-platform (Windows path separators are handled in code).
 
