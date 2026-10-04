@@ -133,7 +133,7 @@ The same cases are pinned as tests in `self-protection layer (ADR-0005)`.
   order). The formatting commit is `a6912b0`; its only transformation was the formatter plus
   the organizeImports assist (lint was clean beforehand, so no lint fix was applied).
 
-## Built-in layers pass (fork `v0.16.0-fork.3`)
+## Built-in layers pass (fork `v0.16.0-fork.4`)
 
 Direct `adjudicate` probes with empty user rules, `hasUI: false` and `getModel: () => null`
 (so anything reaching the classifier reports `deny/fail-closed`, which distinguishes it from a
@@ -154,9 +154,11 @@ rule-layer match):
 | `write /etc/hosts` | `deny/rule` — S1 system directory |
 | `write ~/.bashrc` | reaches the classifier (S2 write gray) |
 | `write /tmp/repo/.git/hooks/pre-commit` | `deny/rule` — S3 `.git` metadata |
-| `read ~/.config/glab-cli/config.yml` | `allow/rule` — **no S0 rule covers it** |
+| `read ~/.config/glab-cli/config.yml` | `deny/rule` — S0 (fork addition; was a deterministic `allow` before it) |
 | `bash "cat ~/.ssh/id_rsa"` | reaches the classifier (the documented bash-side hole) |
 
 Both changes are pinned by permanent tests: `git push force-flag precision (fork)` and
-`S0 credential inventory (fork: XDG dotless homes)`. Against the unfixed source the new tests
-fail (2 of 4 force-flag cases, 4 of 16 S0 cases), which is the failing-before evidence.
+`S0 credential inventory (fork: XDG dotless homes)`. Failing-before evidence, measured by
+stashing the fix and re-running: the two `--force-with-lease` cases fail (2 of 4), the XDG cases
+fail against the pre-fork S0 (4 of the 16 then in the table), and the glab case fails against the
+code of `v0.16.0-fork.3` (1 of 17).

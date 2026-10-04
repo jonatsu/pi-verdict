@@ -929,6 +929,9 @@ const S0_SECRET = [
 	/\.pem$/i,
 	/_history$/i,
 	/\.config\/gh(\/|$)/i,
+	// Fork: the glab sibling of the gh config above — `~/.config/glab-cli/config.yml`
+	// holds the GitLab token, and a non-S1 read was a deterministic allow.
+	/\.config\/glab-cli(\/|$)/i,
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,

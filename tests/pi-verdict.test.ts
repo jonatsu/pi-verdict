@@ -381,6 +381,7 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 		["~/.vault-token", "vault token"],
 		["~/.docker/config.json", "docker config"],
 		["~/.config/gh/hosts.yml", "gh CLI config"],
+		["~/.config/glab-cli/config.yml", "glab CLI config"],
 		["~/.netrc", "netrc"],
 		["~/.gem/credentials", "gem credentials"],
 		["~/.omp/agent/auth.json", "agent auth"],

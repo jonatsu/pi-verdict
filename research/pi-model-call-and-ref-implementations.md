@@ -289,7 +289,7 @@ Synthesized from pi-permission prompt rules and ai-guard `SAFETY_RULES`:
 
 | Tier | Paths | Default action |
 |---|---|---|
-| S0 Secrets/credentials (high risk even to read) | `~/.ssh/**`, `~/.aws/**`, `~/.gnupg/**`, `~/.config/gnupg/**`, `~/.config/age/**`, `~/.config/sops/**` (the last three are the fork addition for XDG dotless credential homes), `**/.env*`, `**/*credentials*`, `**/id_rsa*`, `**/*.pem`, `**/*_history`, `~/.config/gh/**`, `~/.pi/agent/auth.json` | deny (read) / deny (write) |
+| S0 Secrets/credentials (high risk even to read) | `~/.ssh/**`, `~/.aws/**`, `~/.gnupg/**`, `~/.config/gnupg/**`, `~/.config/age/**`, `~/.config/sops/**`, `~/.config/glab-cli/**` (the last four are the fork addition for XDG dotless credential homes and the glab CLI), `**/.env*`, `**/*credentials*`, `**/id_rsa*`, `**/*.pem`, `**/*_history`, `~/.config/gh/**`, `~/.pi/agent/auth.json` | deny (read) / deny (write) |
 | S1 System configuration | `/etc/**`, `/usr/**`, `/var/**`, `/System/**`, `/etc/sudoers*`, `**/authorized_keys` | deny (write); reading → ask/AI |
 | S2 User configuration (persistence entry points) | `~/.bashrc` `~/.zshrc` `~/.profile`, shell RC, `~/.gitconfig`, `crontab`, `~/Library/LaunchAgents/**`, `~/.config/systemd/**` | writing → ask/deny; reading allowed (non-secret parts) |
 | S3 Repository metadata | `.git/hooks/**`, `.git/config`, `.gitmodules` | deny writes (executable-code entry points) |
