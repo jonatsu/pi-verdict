@@ -4,3 +4,6 @@
 
 # dependencies
 node_modules/
+
+# scratch: throwaway probes and hand-over notes
+.scratch/
