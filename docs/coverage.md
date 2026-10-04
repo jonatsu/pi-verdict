@@ -69,9 +69,9 @@ Total cases: 79.
 | path-tier | GNUPGHOME not anchored | read | allow |  |  | GNUPGHOME is not an anchored root |  |  |
 | kernel-path | escape link before .. (read) | read | classifier |  |  |  |  |  |
 | kernel-path | escape link before .. (policy write) | write | rule |  | self-protection |  |  |  |
-| kernel-path | backslash in a filename | read | classifier |  |  |  | open | item=7 |
-| kernel-path | dangling link write into a protected file | write | rule |  | self-protection |  | open | item=8 |
-| kernel-path | symlink loop write fails closed | write | rule |  | unresolved symlink |  | open | item=8 |
+| kernel-path | backslash in a filename | read | classifier |  |  |  |  | item=7 |
+| kernel-path | dangling link write into a protected file | write | rule |  | self-protection |  |  | item=8 |
+| kernel-path | symlink loop write fails closed | write | rule |  | unresolved symlink |  |  | item=8 |
 | self-protection | write the policy denies | write | rule |  | self-protection |  |  |  |
 | self-protection | write the trust store denies | write | rule |  | self-protection |  |  |  |
 | self-protection | write the audit log denies | write | rule |  | self-protection |  |  |  |

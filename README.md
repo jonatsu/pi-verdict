@@ -28,7 +28,7 @@ pi-verdict adds the missing gate: a model decides whether each call should run, 
 - **Semantics over syntax** — the classifier judges what an action *does*, not how long it is.
 - **Judgments, not proofs** — a classifier `allow` is an informed opinion; the floor exists because that is all it is.
 - **Minimal trusted input** — no tool results in the transcript (#22), zero path plaintext to the classifier (ADR-0002).
-- **Canonical identity** — lexical + realpath dual-form matching; a workspace-*looking* path is not trusted as one (#20/#21).
+- **Canonical identity** — dual-form matching (lexical + realpath, plus the kernel-true form of a spelling a host may open verbatim); a workspace-*looking* path is not trusted as one (#20/#21).
 - **A permission gate, not a sandbox** — stack OS isolation on top; this gate never replaces it.
 
 Full statement in [docs/security-principles.md](docs/security-principles.md).

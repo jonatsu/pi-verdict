@@ -883,6 +883,73 @@ describe("path floor dual-form matching (#20)", () => {
 	});
 });
 
+// ── 3.4b Kernel-true walk: separator-correct split + leaf-symlink resolution (items 7–8) ──
+
+describe("kernel walk (path-layer items 7–8)", () => {
+	// Fixtures under the real home (see the #20 block above for the macOS TMPDIR caveat).
+	// POSIX-only: a backslash is a legal filename character there and the leaf cases need
+	// symlink(); win32 skips. The dangling link points at a never-created file under the
+	// write-protected verdicts prefix, so the protected-set hit does not depend on any
+	// other test's filesystem state.
+	const root = fs.mkdtempSync(path.join(os.homedir(), ".pv-walker-"));
+	const proj = path.join(root, "proj");
+	const dangling = path.join(proj, "dangling");
+	const DANGLING_TARGET = path.join(TMP_AGENT, "verdicts", "pv-walker-dangling.jsonl");
+
+	beforeAll(() => {
+		fs.mkdirSync(proj, { recursive: true });
+		// <proj>/link\name → / : a filename containing a backslash is ONE segment on POSIX
+		fs.symlinkSync("/", path.join(proj, `${"link"}\\name`));
+		fs.symlinkSync(DANGLING_TARGET, dangling);
+		fs.symlinkSync("loop", path.join(proj, "loop"));
+	});
+	afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+	test.skipIf(process.platform === "win32")(
+		"backslash in a filename is one component: link\\name/../etc grades gray, not a silent lexical allow (item 7)",
+		async () => {
+			const h = session({}, { cwd: proj });
+			h.responses = [{ text: "<verdict>allow</verdict> mock" }];
+			const r = await toolCall(h, "read", { path: `${proj}/link\\name/../etc/hosts` });
+			expect(r).toBeUndefined();
+			expect(h.calls.length).toBe(1); // gray → classifier consulted, not the old in-cwd allow
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"write through a dangling link into a protected target is self-protection-denied (item 8)",
+		async () => {
+			const h = session({}, { cwd: proj });
+			const r = await toolCall(h, "write", { path: dangling, content: "x" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+			expect(h.calls.length).toBe(0);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")("symlink loop write fails closed (item 8)", async () => {
+		const h = session({}, { cwd: proj });
+		const r = await toolCall(h, "write", { path: path.join(proj, "loop"), content: "x" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("unresolved symlink");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test.skipIf(process.platform === "win32")("loop write degrades to gray with builtinDenyFloor:false (F20 pin)", async () => {
+		const h = session({ builtinDenyFloor: false }, { cwd: proj });
+		h.responses = [{ text: "<verdict>deny</verdict> mock" }];
+		const r = await toolCall(h, "write", { path: path.join(proj, "loop"), content: "x" });
+		expect(h.calls.length).toBe(1); // classifier consulted: the floor branch degraded to gray, not bypassed
+		expect(r?.block).toBe(true);
+	});
+
+	test.skipIf(process.platform === "win32")("loop read stays a plain read (reads are left alone)", async () => {
+		const h = session({}, { cwd: proj });
+		expect(await toolCall(h, "read", { path: path.join(proj, "loop") })).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+});
+
 // ── 3.45 S-rule case folding + macOS firmlink prefixes (#21) ──
 
 describe("S-rule case folding + firmlink prefixes (#21)", () => {

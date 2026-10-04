@@ -317,7 +317,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			kernelOpens: "/etc/hosts",
 			skipOn: "win32",
 			item: 7,
-			expected: { layer: "classifier", known: "open" },
+			expected: { layer: "classifier" },
 		},
 		{
 			label: "dangling link write into a protected file",
@@ -326,7 +326,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { path: fx.dangling, content: "x" },
 			skipOn: "win32",
 			item: 8,
-			expected: { layer: "rule", reasonIncludes: "self-protection", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "self-protection" },
 		},
 		{
 			label: "symlink loop write fails closed",
@@ -335,7 +335,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { path: fx.loop, content: "x" },
 			skipOn: "win32",
 			item: 8,
-			expected: { layer: "rule", reasonIncludes: "unresolved symlink", known: "open" },
+			expected: { layer: "rule", reasonIncludes: "unresolved symlink" },
 		},
 	);
 

@@ -567,23 +567,47 @@ function rebuiltForms(abs: string): string[] {
 	}
 }
 
-/** Kernel-faithful forms of a spelling a host may open verbatim (path-layer review item 4): symlinked
- *  components are resolved as the path descends and `..` applies to the already-resolved parent, unlike
- *  path.resolve's lexical collapse. omp's file tools return an *absolute* input to the filesystem
- *  verbatim (`resolveToCwd`: `isAbsolute ? expanded : path.resolve(cwd, expanded)`), so `link/../x`
- *  (link -> /) opens `/x` while path.resolve names `<dir>/x` — the floor must see the spelling the
- *  kernel would. Beyond the realpath tier: a direct symlink is already covered, this covers the
- *  symlink-then-`..` combination. A nonexistent component stays lexical (rebuiltForms covers the tail).
- *  Returns [] unless the spelling contains `..`, which is what makes lexical collapse diverge, and
- *  caps length so a content-sized argument is not walked as a path. */
-function kernelForms(rawPath: string, cwd: string): string[] {
-	if (!rawPath || rawPath.length > 4096 || !rawPath.includes("..")) return [];
+/** Splitter for walk tails and readlink targets: on POSIX a backslash is a legal filename
+ *  character (path-layer review item 7), so only `/` separates components; win32 treats both. */
+const SPLIT_PATH_SEPS = process.platform === "win32" ? /[\\/]+/ : /\/+/;
+
+/** Symlink-expansion budget for kernelWalk: a chain deeper than this is unresolvable, not walked. */
+const SYMLINK_HOP_BUDGET = 8;
+
+/** Kernel-faithful walk of a spelling a host may open verbatim (path-layer review item 4; items 7–8):
+ *  symlinked components are resolved as the path descends and `..` applies to the already-resolved
+ *  parent, unlike path.resolve's lexical collapse. omp's file tools return an *absolute* input to the
+ *  filesystem verbatim (`resolveToCwd`: `isAbsolute ? expanded : path.resolve(cwd, expanded)`), so
+ *  `link/../x` (link -> /) opens `/x` while path.resolve names `<dir>/x` — the floor must see the
+ *  spelling the kernel would. The walk runs when the spelling contains `..` (what makes lexical
+ *  collapse diverge) OR when the leaf itself is a symlink: a dangling or looping leaf has no
+ *  realpath, so only readlink sees the file a later kernel open/create would touch (item 8; a
+ *  missing leaf fails the kernel call regardless — the lexical candidate is what the kernel sees).
+ *  Per component: realpath success advances; on failure lstat decides — a symlink expands via
+ *  readlink (`SYMLINK_HOP_BUDGET`; exceeding marks the spelling unresolved), an existing non-link
+ *  or a missing final component keeps the lexical candidate. A looping or unreadable link target
+ *  returns `resolved: null` with `unresolved: true` — writes must fail closed there
+ *  (kernelUnresolved). Inherits `~` expansion and caps length so a content-sized argument is not
+ *  walked as a path. */
+function kernelWalk(rawPath: string, cwd: string): { resolved: string | null; unresolved: boolean } {
+	if (!rawPath || rawPath.length > 4096) return { resolved: null, unresolved: false };
 	const expanded = rawPath.startsWith("~") ? os.homedir() + rawPath.slice(1) : rawPath;
+	if (!expanded.includes("..")) {
+		try {
+			if (!fs.lstatSync(path.resolve(cwd, expanded)).isSymbolicLink()) return { resolved: null, unresolved: false };
+		} catch {
+			return { resolved: null, unresolved: false };
+		}
+	}
 	const absolute = path.isAbsolute(expanded);
 	const root = absolute ? path.parse(expanded).root : path.resolve(cwd);
-	const tail = absolute ? expanded.slice(path.parse(expanded).root.length) : expanded;
+	const tail = absolute ? expanded.slice(root.length) : expanded;
 	let resolved = root;
-	for (const part of tail.split(/[\\/]+/)) {
+	const parts = tail.split(SPLIT_PATH_SEPS);
+	let hops = 0;
+	while (parts.length > 0) {
+		const part = parts.shift();
+		if (part === undefined) break;
 		if (part === "" || part === ".") continue;
 		if (part === "..") {
 			resolved = path.dirname(resolved);
@@ -592,11 +616,47 @@ function kernelForms(rawPath: string, cwd: string): string[] {
 		const candidate = path.join(resolved, part);
 		try {
 			resolved = fs.realpathSync(candidate);
+			continue;
 		} catch {
+			/* Did not resolve — dangling link, loop, or missing component: lstat decides. */
+		}
+		let st: fs.Stats;
+		try {
+			st = fs.lstatSync(candidate);
+		} catch {
+			// Missing final component: the lexical candidate is what the kernel sees/creates.
 			resolved = candidate;
+			continue;
+		}
+		if (!st.isSymbolicLink()) {
+			resolved = candidate;
+			continue;
+		}
+		let target: string;
+		try {
+			target = fs.readlinkSync(candidate);
+		} catch {
+			return { resolved: null, unresolved: true };
+		}
+		hops++;
+		if (hops > SYMLINK_HOP_BUDGET) return { resolved: null, unresolved: true };
+		if (path.isAbsolute(target)) {
+			resolved = path.parse(target).root;
+			parts.unshift(...target.slice(path.parse(target).root.length).split(SPLIT_PATH_SEPS));
+		} else {
+			parts.unshift(...target.split(SPLIT_PATH_SEPS));
 		}
 	}
-	return rebuiltForms(resolved);
+	return { resolved, unresolved: false };
+}
+
+/** Kernel-faithful forms (floor + self-protection tier, #20): the walk result passed through the
+ *  ancestor-rebuild tier — a resolvable spelling contributes its rebuilt forms, a skipped or
+ *  unresolvable walk contributes nothing. The self-protection helpers share this derivation;
+ *  classifyPath consumes the walk result directly so one walk feeds forms + the fail-closed flag. */
+function kernelForms(rawPath: string, cwd: string): string[] {
+	const { resolved } = kernelWalk(rawPath, cwd);
+	return resolved === null ? [] : rebuiltForms(resolved);
 }
 
 /** Case-insensitive filesystems (default macOS APFS, Windows) compare path strings
@@ -1410,9 +1470,11 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 	const abs = path.resolve(cwd, expandHome(rawPath));
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
-	// the floor on its lexical spelling alone. kernelForms adds the spelling the kernel
-	// would open when a symlink component precedes `..` (path-layer review item 4).
-	const forms = [...new Set([...rebuiltForms(abs), ...kernelForms(rawPath, cwd)])];
+	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
+	// kernel would open when a symlink component precedes `..` or the leaf is a symlink
+	// itself (path-layer review items 4, 7–8); one walk feeds this and the check below.
+	const walk = kernelWalk(rawPath, cwd);
+	const forms = [...new Set([...rebuiltForms(abs), ...(walk.resolved === null ? [] : rebuiltForms(walk.resolved))])];
 	const ruleForms = forms.map(toRuleForm);
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
 	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
@@ -1430,6 +1492,12 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 	if (hit(s1Rules)) return D(`write to system directory: ${rawPath}`);
 	if (hit(S3_GIT_META)) return D(`write to .git metadata (executable code entry point): ${rawPath}`);
 	if (hit(S2_USER_RC)) return { verdict: "gray", reason: `write to user config/persistence entry point: ${rawPath}` };
+	// Item 8 (plan-review F20): a write whose kernel target is unknowable (symlink loop,
+	// unreadable link target) fails closed — the lexical spelling must not grade as a plain
+	// in-cwd write whose destination the floor never saw. Reads stay alone: the open fails
+	// ELOOP and exposes nothing. Through D(...): with builtinDenyFloor:false this degrades
+	// to gray like every other floor branch.
+	if (isWrite && walk.unresolved) return D("unresolved symlink (write fail-closed)");
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
 	// (in either its lexical or real form) — a lexical prefix hit whose real
 	// form escapes the project (symlink alias) grades as an outside-cwd write.
