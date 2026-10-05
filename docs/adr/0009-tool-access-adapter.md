@@ -300,6 +300,11 @@ targets also contribute the peeled form, for the raw and the expanded spelling a
 `find`, `ls` or the mutating tools, which the host does not peel; a tool the gate does not model gets
 the peeled form too, because an extra form only widens what is graded.
 
+*Image questions.* The host's `read` also cuts a `?q=<question>` suffix from every path that is not a
+`scheme://` URL (`splitImageQuestionTarget`, 18.6.1), so `read` targets contribute the path before the
+`?` as well, ahead of the selector peel; `.env?q=x` is `.env`. A `?q=` with no value is left alone, and
+the missing-target check below reads the peeled path too.
+
 *Delimited entries.* The host splits every `read`, `grep`, `glob`, `ast_grep` and `ast_edit` path
 entry at top-level `;`, `,` and whitespace (`expandDelimitedPathEntries`, 18.6.1; a brace group and a
 backslash-escaped character are not separators), so each such tool's targets contribute the parts of

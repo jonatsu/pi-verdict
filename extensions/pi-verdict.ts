@@ -1967,6 +1967,8 @@ interface HostPathFormOptions {
 	peelSelector?: boolean;
 	/** Also grade each part of a `;`, `,` or whitespace separated list. */
 	splitList?: boolean;
+	/** Also grade the path with a `?q=` image question removed. */
+	peelImageQuestion?: boolean;
 }
 
 /** Every spelling of one target that the gate must grade: the raw text and the host's expansion of
@@ -1979,14 +1981,17 @@ export function hostPathForms(target: string, how: HostPathFormOptions = {}): st
 	if (how.splitList) for (const part of hostPathListParts(whole)) entries.add(part);
 	const forms = new Set<string>();
 	for (const entry of entries) {
-		forms.add(entry);
-		forms.add(expandHostPath(entry));
-		if (!how.peelSelector) continue;
-		for (const form of [entry, expandHostPath(entry)]) {
-			const peeled = peelHostSelector(form);
-			if (peeled === null) continue;
-			forms.add(peeled);
-			forms.add(expandHostPath(peeled));
+		const asked = how.peelImageQuestion ? peelImageQuestion(entry) : null;
+		for (const variant of asked === null ? [entry] : [entry, asked]) {
+			forms.add(variant);
+			forms.add(expandHostPath(variant));
+			if (!how.peelSelector) continue;
+			for (const form of [variant, expandHostPath(variant)]) {
+				const peeled = peelHostSelector(form);
+				if (peeled === null) continue;
+				forms.add(peeled);
+				forms.add(expandHostPath(peeled));
+			}
 		}
 	}
 	for (const form of [...forms]) {
@@ -2002,6 +2007,16 @@ function wslDriveAlias(target: string): string | null {
 	const wsl = process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 	const match = wsl ? /^([A-Za-z]):[\\/](.*)$/.exec(path.win32.normalize(target.trim())) : null;
 	return match === null ? null : path.posix.join("/mnt", match[1].toLowerCase(), ...match[2].split("\\").filter(Boolean));
+}
+
+/** The path with an image question (`?q=<text>`) removed, or null when the text carries none;
+ *  mirrors omp's splitImageQuestionTarget (18.6.1). The host asks a vision model about the file
+ *  before the question and opens the rest, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query. */
+function peelImageQuestion(target: string): string | null {
+	if (target.includes("://")) return null;
+	const queryIndex = target.indexOf("?");
+	if (queryIndex === -1) return null;
+	return new URLSearchParams(target.slice(queryIndex + 1)).get("q") ? target.slice(0, queryIndex) : null;
 }
 
 /** A text the host opens as a filesystem path that is relative to the project. */
@@ -2028,12 +2043,13 @@ function readMayRelocate(entry: string, cwd: string): boolean {
 	return (parts.length > 0 ? parts : [whole]).some(missingRelative);
 }
 
-/** The path omp's `read` opens for one entry, in the host's order: a trailing selector is cut unless
- *  the whole text names an existing file, then the path is expanded. */
+/** The path omp's `read` opens for one entry, in the host's order: the image question is cut, then a
+ *  trailing selector is cut unless the whole text names an existing file, then the path is expanded. */
 export function hostReadPath(entry: string, cwd: string): string {
-	const peeled = peelHostSelector(entry);
-	const literalExists = peeled !== null && fs.existsSync(path.resolve(cwd, expandHostPath(entry)));
-	return expandHostPath(peeled === null || literalExists ? entry : peeled);
+	const asked = peelImageQuestion(entry) ?? entry;
+	const peeled = peelHostSelector(asked);
+	const literalExists = peeled !== null && fs.existsSync(path.resolve(cwd, expandHostPath(asked)));
+	return expandHostPath(peeled === null || literalExists ? asked : peeled);
 }
 
 // ============================================================================
@@ -2348,7 +2364,11 @@ function hostSeparators(target: string): string {
  *  and of the directory the glob walks wins: the spelling still matches a floor rule on its tail
  *  (`**` + `/*.pem`), the prefix covers the directory. */
 function gradedForms(toolName: string, targets: string[]): string[] {
-	const how = { peelSelector: peelsHostSelector(toolName), splitList: splitsHostList(toolName) };
+	const how = {
+		peelSelector: peelsHostSelector(toolName),
+		splitList: splitsHostList(toolName),
+		peelImageQuestion: toolName !== "grep" && peelsHostSelector(toolName),
+	};
 	const forms = targets.flatMap((t) => hostPathForms(t, how));
 	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return [...new Set(forms)];
 	return [...new Set(forms.flatMap((f) => [f, hostSeparators(f), globLiteralPrefix(hostSeparators(f))]))];

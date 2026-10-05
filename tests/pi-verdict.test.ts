@@ -5931,6 +5931,7 @@ describe("host path spelling (ADR-0009)", () => {
 					"a.ts:1-5",
 					"a.ts:1-5,40-60",
 					"My Notes.md",
+					"My Notes.md?q=what",
 					"c,d.ts",
 					"src",
 					".",
@@ -6020,6 +6021,37 @@ describe("host path spelling (ADR-0009)", () => {
 					expect((await toolCall(h, "glob", { path: p }))?.block).toBe(true);
 					expect(h.confirms).toBe(1);
 				}
+			},
+			home,
+		);
+	});
+
+	test("hostPathForms peels an image question the way the host does", () => {
+		const ask = { peelImageQuestion: true };
+		expect(hostPathForms("a.png?q=what", ask)).toEqual(["a.png?q=what", "a.png"]);
+		expect(hostPathForms("a.png?q=", ask)).toEqual(["a.png?q="]);
+		expect(hostPathForms("a.png?x=1", ask)).toEqual(["a.png?x=1"]);
+		expect(hostPathForms("https://h/a?q=x", ask)).toEqual(["https://h/a?q=x"]);
+		expect(hostPathForms("a.png?q=x")).toEqual(["a.png?q=x"]);
+		expect(hostPathForms("a.png:1-5?q=x", { ...ask, peelSelector: true })).toContain("a.png");
+	});
+
+	test("a read path with an image question is graded as the file the host opens", async () => {
+		const h = session({});
+		for (const p of ["~/.netrc?q=x", ".env?q=x", "key.pem?q=x", ".env:raw?q=x"]) {
+			expect((await toolCall(h, "read", { path: p }))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("an existing project file with an image question keeps its rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, "a.png"), "x");
+				const h = session({}, { cwd });
+				expect(await toolCall(h, "read", { path: "a.png?q=what" })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
 			},
 			home,
 		);
