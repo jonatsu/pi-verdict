@@ -926,6 +926,20 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "allow" },
 		},
 		{
+			label: "grep with a backslash path behind an unregistered scheme lookalike is denied like the slash spelling",
+			family: "host-path",
+			tool: "grep",
+			input: { pattern: "x", path: "a://..\\.ssh\\id_rsa" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "grep with a backslash path behind a registered internal scheme is still a rule allow",
+			family: "host-path",
+			tool: "grep",
+			input: { pattern: "x", path: "local://notes\\a.md" },
+			expected: { layer: "allow" },
+		},
+		{
 			label: "read of an existing relative project file is still a rule allow",
 			family: "host-path",
 			tool: "read",

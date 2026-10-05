@@ -5952,6 +5952,22 @@ describe("host path spelling (ADR-0009)", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	test("backslashes become slashes behind an unregistered scheme but not a registered one", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({}, { cwd });
+				// `a://..\..\.config\age\keys.txt` is a relative path: two parents up from the project is the home directory.
+				for (const unregistered of ["a://..\\..\\.config\\age\\keys.txt", "file2://..\\..\\.config\\age\\keys.txt"]) {
+					expect((await toolCall(h, "grep", { pattern: "x", path: unregistered }))?.block).toBe(true);
+				}
+				expect(await toolCall(h, "grep", { pattern: "x", path: "local://notes\\a.md" })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+			},
+			home,
+		);
+	});
+
 	test("ordinary spellings keep their verdict", async () => {
 		await withTempDir(
 			"pv-hps-",

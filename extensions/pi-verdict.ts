@@ -2313,9 +2313,10 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
 }
 
 /** omp's search tools turn every backslash in a path into a slash on every platform, so
- *  a path written with backslashes after a tilde opens the slash spelling even on POSIX. Internal URLs are left alone. */
+ *  a path written with backslashes after a tilde opens the slash spelling even on POSIX. Only a URL of a
+ *  scheme the host registers is left alone; any other `scheme://` text is an ordinary relative path. */
 function hostSeparators(target: string): string {
-	return /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target : target.replace(/\\/g, "/");
+	return isHostInternalUrl(target) ? target : target.replace(/\\/g, "/");
 }
 
 /** Every form of each target that the floor and the path layers grade (see hostPathForms). A

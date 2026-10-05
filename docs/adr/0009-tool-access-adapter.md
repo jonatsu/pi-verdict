@@ -320,3 +320,12 @@ expansion), and a list is examined part by part only when the whole entry is mis
 that exists, an absolute path and a directory are unchanged, and so is a session whose project
 directory does not exist, because there is nothing to relocate to. This is a **BREAKING** narrowing of
 the rule allow for reads: a typo in a relative path now costs a classifier call.
+
+*Registered schemes only.* The search tools' backslash-to-slash conversion is skipped for a URL of a
+scheme that omp's InternalUrlRouter registers (`skill`, `rule`, `memory`, `agent`, `history`,
+`artifact`, `local`, `proc`, `cfg`, `ssh`, `security`, `vault`, `issue`, `pr`, `mcp`, `omp`, `xd`,
+`attachment`, `conflict`; 18.6.1) and applied to everything else. Any other `scheme://` text is an
+ordinary relative path to the host (`a:` is a directory name), so `a://..\..\.config\age\keys.txt`
+reaches a credential file two directories up. The same list decides which `@` shorthand targets
+`expandHostPath` accepts. Hosts that register more schemes through an extension (omp's RPC host URIs)
+are not listed; their URLs are graded converted, the safe direction.
