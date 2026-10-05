@@ -91,6 +91,9 @@ interface ToolAccess {
   the `tools` exemption are skipped. Before the amendment, a wildcard spelling such as
   `~/.config/g?/hosts.yml` matched neither the S0 regexes nor a `denyPaths` base and was allowed
   with no model call.
+- **Search over a credential directory's parent** (amendment): a scope tool whose target strictly
+  contains a home-anchored S0 directory (`~/.config` over `~/.config/gh`, or `~` itself) is graded
+  gray, not allow, because the search walks into it. A plain `read` of a directory is unchanged.
 - **Consumer migration.** `userRuleTargets` (feeds user `deny` *and* `allow`) stays scoped to known
   observing/mutating tools: an unlisted tool's shape-inferred fields never reach user rules, so a
   `deny`/`allow` regex can never key on an MCP tool's payload by coincidence. `denyPathCandidates`

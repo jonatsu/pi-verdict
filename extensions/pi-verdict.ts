@@ -1730,6 +1730,30 @@ function classifyWrites(targets: string[], cwd: string, floorOn: boolean): RuleR
 /** Read-side analog of classifyWrites: the worst outcome wins (deny beats gray
  *  beats allow) so a list-split part cannot silently evade the floor either
  *  (Claude-review F6 — over-extraction is the safe direction on both sides). */
+/** Credential directories under the home directory that the S0 floor denies by path. */
+const S0_HOME_DIRECTORIES = [
+	".ssh",
+	".aws",
+	".gnupg",
+	".kube",
+	".config/gnupg",
+	".config/age",
+	".config/sops",
+	".config/glab-cli",
+	".config/gh",
+];
+
+/** Does the target strictly contain one of S0_HOME_DIRECTORIES? A target that is or sits inside
+ *  one is already an S0 deny, so only the ancestors (`~/.config`, `~`) matter here. */
+function s0DirectoryBeneath(target: string, cwd: string): boolean {
+	const abs = path.resolve(cwd, expandHome(target));
+	const homes = baseForms(os.homedir());
+	return baseForms(abs).some((t) => {
+		const prefix = t.endsWith(path.sep) ? t : t + path.sep;
+		return homes.some((h) => S0_HOME_DIRECTORIES.some((rel) => fold(path.join(h, ...rel.split("/"))).startsWith(fold(prefix))));
+	});
+}
+
 function classifyReads(targets: string[], cwd: string, floorOn: boolean): RuleResult {
 	if (targets.length === 0) return { verdict: "allow" };
 	const results = targets.map((t) => classifyPath(t, cwd, false, floorOn));
@@ -2661,6 +2685,11 @@ function classifyByRules(
 	} else if (access.direction === "observing") {
 		const readTargets = access.gradedReads.length > 0 ? access.gradedReads : [cwd];
 		base = classifyReads(readTargets, cwd, user.builtinDenyFloor);
+		// A scope search below a credential directory's parent walks into it, so the floor's allow
+		// for the parent is not a verdict; a plain read of a directory is not a search.
+		if (base.verdict === "allow" && access.scope && readTargets.some((t) => s0DirectoryBeneath(t, cwd))) {
+			base = { verdict: "gray", reason: "search scope contains a credential directory" };
+		}
 	} else if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// Phase 3 (F13): the bash floor applies to a Python eval cell's extracted shell-out
 		// lines only (pyEvalShellLines) — never the whole code text, which the floor's danger

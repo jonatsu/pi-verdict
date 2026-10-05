@@ -634,6 +634,27 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "grep over the parent of an S0 directory is never a rule allow",
+			family: "tool-access",
+			tool: "grep",
+			input: { pattern: "oauth_token", path: "~/.config" },
+			expected: { layer: "classifier" },
+		},
+		{
+			label: "grep over the home directory itself is never a rule allow",
+			family: "tool-access",
+			tool: "grep",
+			input: { pattern: "oauth_token", path: "~" },
+			expected: { layer: "classifier" },
+		},
+		{
+			label: "grep over an unrelated project directory is still a rule allow",
+			family: "tool-access",
+			tool: "grep",
+			input: { pattern: "todo", path: `${fx.work}` },
+			expected: { layer: "allow" },
+		},
+		{
 			label: "grep with a backslash-separated path to an S0 file is denied like the slash spelling",
 			family: "tool-access",
 			tool: "grep",
