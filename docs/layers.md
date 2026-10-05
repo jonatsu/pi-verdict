@@ -19,7 +19,7 @@ whose `source` names the deciding layer.
 | 5 | Over-cap action ask | an action whose counted text exceeds the 8192-char budget (item 6a) — asked **before** user `allow` so no rule can allow an unread tail | `rule` |
 | 6 | User `allow` rules / `tools` exemption | a user allow regex matching every known-tool target in every form the host can resolve it to, or an exact `tools` name match (never for `kind:"code"`, and never for an opaque call or a call whose scope-tool path holds a glob metacharacter) | `rule` |
 | 7 | Opaque ask | a known mutating call (write/edit/ast_edit, ADR-0009) whose payload names no extractable target: no target at all, or patch text that does not parse (a `path`/`paths` beside it does not rescue the call) | `rule` |
-| 8 | Classifier | the gray zone, adjudicated by the model (fail-closed) | `classifier` / `fail-closed` |
+| 8 | Classifier | the gray zone, adjudicated by the model (fail-closed); a `read` of a relative path that does not exist is gray, because the host may open another file | `classifier` / `fail-closed` |
 | 9 | Policy degradation | while `policyDegraded` holds (the user's own rules failed to load, ADR-0010), a layer-8 allow is withheld: the first layer and the cascade fallback become an **ask**; the subagent second model is **denied outright** (no human is left to ask) | `degraded-policy` (on the ask paths) |
 
 Deny beats allow at every step. There is no built-in allowlist: a command the floor does not deny

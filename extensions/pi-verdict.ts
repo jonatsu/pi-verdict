@@ -1980,6 +1980,38 @@ function wslDriveAlias(target: string): string | null {
 	return match === null ? null : path.posix.join("/mnt", match[1].toLowerCase(), ...match[2].split("\\").filter(Boolean));
 }
 
+/** A text the host opens as a filesystem path that is relative to the project. */
+function isRelativeFilesystemPath(p: string): boolean {
+	return p.length > 0 && !path.isAbsolute(p) && !path.win32.isAbsolute(p) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(p);
+}
+
+/** Could omp's `read` open a different file than the one this entry names? When a relative path does
+ *  not exist, the host looks for a unique workspace file that ends with the same path and reads that
+ *  instead (a missing `id_ed25519` becomes `.ssh/id_ed25519` in a project that holds one), so the
+ *  spelling says nothing about the file that is opened. Only the path the host would choose counts:
+ *  a whole entry that exists, with or without a selector or an image question, is read as it is, and
+ *  a `;`, `,` or whitespace list is read part by part only when the whole entry is missing. A project
+ *  directory that does not exist holds nothing to relocate to. */
+function readMayRelocate(entry: string, cwd: string): boolean {
+	if (!fs.existsSync(cwd)) return false;
+	const missingRelative = (unit: string): boolean => {
+		const chosen = hostReadPath(unit, cwd);
+		return isRelativeFilesystemPath(chosen) && !fs.existsSync(path.resolve(cwd, chosen));
+	};
+	const whole = normalizeHostPathEntry(entry);
+	if (fs.existsSync(path.resolve(cwd, hostReadPath(whole, cwd)))) return false;
+	const parts = hostPathListParts(whole);
+	return (parts.length > 0 ? parts : [whole]).some(missingRelative);
+}
+
+/** The path omp's `read` opens for one entry, in the host's order: a trailing selector is cut unless
+ *  the whole text names an existing file, then the path is expanded. */
+export function hostReadPath(entry: string, cwd: string): string {
+	const peeled = peelHostSelector(entry);
+	const literalExists = peeled !== null && fs.existsSync(path.resolve(cwd, expandHostPath(entry)));
+	return expandHostPath(peeled === null || literalExists ? entry : peeled);
+}
+
 // ============================================================================
 // Tool-access adapter (ADR-0009): one host-agnostic model of what a tool call
 // touches — built from the call's own payload alone (universal-plugin
@@ -2888,6 +2920,7 @@ function classifyByRules(
 
 	const access = toolAccess(toolName, input);
 	let base: RuleResult;
+	let relocatable = false;
 	if (isCommandTool(toolName)) {
 		base = classifyBash(String(input.command ?? ""), user.builtinDenyFloor);
 	} else if (access.direction === "mutating") {
@@ -2901,6 +2934,12 @@ function classifyByRules(
 		// for the parent is not a verdict; a plain read of a directory is not a search.
 		if (base.verdict === "allow" && access.scope && readTargets.some((t) => s0DirectoryBeneath(t, cwd))) {
 			base = { verdict: "gray", reason: "search scope contains a credential directory" };
+		}
+		// The host reads a missing relative target from a workspace file it finds by suffix, so no rule
+		// may vouch for the spelling; the classifier sees the call instead.
+		relocatable = toolName === "read" && access.reads.some((t) => readMayRelocate(t, cwd));
+		if (relocatable && base.verdict === "allow") {
+			base = { verdict: "gray", reason: "relative read target does not exist (the host may open another file)" };
 		}
 	} else if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// Phase 3 (F13): the bash floor applies to a Python eval cell's extracted shell-out
@@ -2984,7 +3023,7 @@ function classifyByRules(
 	// on that basis is the fail-open direction this closes.
 	// An opaque call's path/paths are model-supplied while its real target is unknown, so no
 	// rule can vouch for it (the same call is denied without an allow rule configured).
-	if (targets.length > 0 && !policyDegraded && !access.globbed && !access.opaque) {
+	if (targets.length > 0 && !policyDegraded && !access.globbed && !access.opaque && !relocatable) {
 		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
@@ -2999,7 +3038,7 @@ function classifyByRules(
 	// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
 	// is non-code tools; a user who listed eval here loses the exemption (BREAKING). Suspended
 	// with user allow while policyDegraded (ADR-0010).
-	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded && !access.globbed && !access.opaque)
+	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded && !access.globbed && !access.opaque && !relocatable)
 		return { verdict: "allow", reason: "user tools allow rule" };
 
 	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at

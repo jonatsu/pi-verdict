@@ -309,3 +309,14 @@ cannot see the filesystem the host sees, so it grades the parts of every split. 
 observing tools' earlier split of the single `path` field, which left `paths` entries and `ast_edit`
 whole. `write` and `edit` open one file and are not split. A part is graded like any other form: the
 worst grade wins, and a user `allow` regex has to admit it.
+
+*Missing relative `read` targets.* When a relative path does not exist, omp's `read` looks for a unique
+workspace file whose path ends with the same text and reads that (`findUniqueWorkspaceSuffix`, 18.6.1),
+so the spelling of a missing path says nothing about the file opened. A `read` with such a target, or
+a list with one such part, grades gray. Only the path the host would choose counts (`hostReadPath`:
+image question cut, then the selector cut unless the whole text names an existing file, then
+expansion), and a list is examined part by part only when the whole entry is missing, so
+`src/a.ts:1-5,40-60` and `docs/My Notes.md` keep their allow when the file exists. The gray grade withholds the floor's allow, and neither a user `allow` rule nor a `tools` entry admits the call, so the classifier decides (headless: fail-closed deny). A target
+that exists, an absolute path and a directory are unchanged, and so is a session whose project
+directory does not exist, because there is nothing to relocate to. This is a **BREAKING** narrowing of
+the rule allow for reads: a typo in a relative path now costs a classifier call.

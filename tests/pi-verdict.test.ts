@@ -5898,6 +5898,60 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("a read of a missing relative file reaches the classifier, not a rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, "a.ts"), "x");
+				const h = session({ allow: ["^.*$"], tools: ["read"] }, { cwd });
+				h.responses = [{ text: "<verdict>deny</verdict> unknown target" }];
+				for (const spelling of ["id_ed25519", "sub/dir/key.txt", "id_ed25519:1-5", "a.ts;id_ed25519"]) {
+					h.calls.length = 0;
+					const r = await toolCall(h, "read", { path: spelling });
+					expect(h.calls).toHaveLength(1);
+					expect(r?.block).toBe(true);
+				}
+			},
+			home,
+		);
+	});
+
+	test("a read whose target exists, or is absolute, or is a list of existing files keeps its rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, "a.ts"), "x");
+				fs.writeFileSync(path.join(cwd, "b.ts"), "x");
+				fs.mkdirSync(path.join(cwd, "src"));
+				const h = session({}, { cwd });
+				fs.writeFileSync(path.join(cwd, "My Notes.md"), "x");
+				fs.writeFileSync(path.join(cwd, "c,d.ts"), "x");
+				for (const spelling of [
+					"a.ts",
+					"a.ts:1-5",
+					"a.ts:1-5,40-60",
+					"My Notes.md",
+					"c,d.ts",
+					"src",
+					".",
+					"a.ts;b.ts",
+					path.join(cwd, "missing.ts"),
+				]) {
+					expect(await toolCall(h, "read", { path: spelling })).toBeUndefined();
+				}
+				expect(await toolCall(h, "read", {})).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+			},
+			home,
+		);
+	});
+
+	test("a missing relative path does not reach the classifier when the project directory itself is missing", async () => {
+		const h = session({}, { cwd: path.join(home, ".pv-hps-no-such-dir") });
+		expect(await toolCall(h, "read", { path: "x.md" })).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+	});
+
 	test("ordinary spellings keep their verdict", async () => {
 		await withTempDir(
 			"pv-hps-",

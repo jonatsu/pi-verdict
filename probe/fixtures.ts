@@ -66,6 +66,7 @@ export function buildFixtures(agentDir: string): FixtureTree {
 	writeFile(path.join(work, "src", "a.ts"), "export {};\n");
 	writeFile(path.join(work, "@my-file.txt"), "literal\n");
 	writeFile(path.join(work, "foo:bar"), "colon\n");
+	writeFile(path.join(work, "docs", "My Notes.md"), "notes\n");
 
 	// Plain files/dirs the path-tier cases name.
 	writeFile(path.join(root, "repo", ".config", "age", "data"), "repo-config-age\n");
