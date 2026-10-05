@@ -292,3 +292,10 @@ contributes its mount form, because the host opens `C:\x` as `/mnt/c/x` (`normal
 transcript action lines and the action cap still show and count the targets as the model wrote them.
 A target longer than the action budget gets no derived forms, because it is asked about before any
 allow.
+
+*Selector suffixes.* The host's `read` and `grep` split a trailing selector (`:N-M`, `:-N`, `:raw`,
+`:conflicts`, `:img`, or one range plus `:raw`) from the path and open the rest, so both tools'
+targets also contribute the peeled form, for the raw and the expanded spelling alike (`.env:raw` is
+`.env`). The peel mirrors omp's `splitPathAndSel` (18.6.1). It is not applied to `ast_grep`, `glob`,
+`find`, `ls` or the mutating tools, which the host does not peel; a tool the gate does not model gets
+the peeled form too, because an extra form only widens what is graded.

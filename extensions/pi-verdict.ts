@@ -1851,11 +1851,54 @@ export function expandHostPath(target: string, home: string = os.homedir()): str
  *  asked about before any allow, so deriving forms for it would only cost time. */
 const HOST_PATH_FORMS_MAX_CHARS = BASH_MAX_MATCH_LEN;
 
+const SELECTOR_LINE_RANGE = String.raw`L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?`;
+const SELECTOR_RANGE_CHUNK = `${SELECTOR_LINE_RANGE}(?<=[\\d.-])`;
+const SELECTOR_RANGE_LIST = `${SELECTOR_RANGE_CHUNK}(?:,${SELECTOR_RANGE_CHUNK})*`;
+const SELECTOR_TAIL = String.raw`-\d+`;
+const SELECTOR_RE = new RegExp(`^(?:${SELECTOR_RANGE_LIST}|${SELECTOR_TAIL}|raw|conflicts|img)$`, "i");
+const SELECTOR_RANGE_ONLY_RE = new RegExp(`^(?:${SELECTOR_RANGE_LIST}|${SELECTOR_TAIL})$`, "i");
+
+/** The path with a trailing read selector (`:N-M`, `:-N`, `:raw`, `:conflicts`, `:img`, or one range
+ *  plus `:raw`) removed, or null when the text carries none; mirrors omp's splitPathAndSel (18.6.1).
+ *  The host opens the peeled path, so `.env:raw` reads `.env`. */
+function peelHostSelector(target: string): string | null {
+	const colon = target.lastIndexOf(":");
+	if (colon <= 0 || !SELECTOR_RE.test(target.slice(colon + 1))) return null;
+	const candidate = target.slice(colon + 1);
+	let base = target.slice(0, colon);
+	const inner = base.lastIndexOf(":");
+	if (inner > 0) {
+		const innerCandidate = base.slice(inner + 1);
+		const innerIsRaw = /^raw$/i.test(innerCandidate);
+		const outerIsRaw = /^raw$/i.test(candidate);
+		const innerIsRange = SELECTOR_RANGE_ONLY_RE.test(innerCandidate);
+		const outerIsRange = SELECTOR_RANGE_ONLY_RE.test(candidate);
+		if ((innerIsRaw && outerIsRange) || (innerIsRange && outerIsRaw)) base = base.slice(0, inner);
+	}
+	return base;
+}
+
+/** The tools whose path argument the host splits a read selector from. A tool the gate does not model
+ *  is read both ways: an extra form only widens what is graded. */
+function peelsHostSelector(toolName: string): boolean {
+	return toolName === "read" || toolName === "grep" || !(OBSERVING_TOOL_NAMES.has(toolName) || MUTATING_TOOL_NAMES.has(toolName));
+}
+
 /** Every spelling of one target that the gate must grade: the raw text and the host's expansion of
- *  it. Deduplicated; an ordinary path yields itself alone. */
-export function hostPathForms(target: string): string[] {
+ *  it, each also without a trailing read selector when `peelSelector` is set. Deduplicated; an
+ *  ordinary path yields itself alone. */
+export function hostPathForms(target: string, peelSelector = false): string[] {
 	if (target.length > HOST_PATH_FORMS_MAX_CHARS) return [target];
 	const forms = new Set([target, expandHostPath(target)]);
+	if (peelSelector) {
+		for (const form of [...forms]) {
+			const peeled = peelHostSelector(form);
+			if (peeled !== null) {
+				forms.add(peeled);
+				forms.add(expandHostPath(peeled));
+			}
+		}
+	}
 	for (const form of [...forms]) {
 		const alias = wslDriveAlias(form);
 		if (alias !== null) forms.add(alias);
@@ -2191,14 +2234,16 @@ function hostSeparators(target: string): string {
  *  and of the directory the glob walks wins: the spelling still matches a floor rule on its tail
  *  (`**` + `/*.pem`), the prefix covers the directory. */
 function gradedForms(toolName: string, targets: string[]): string[] {
-	const forms = targets.flatMap(hostPathForms);
+	const peel = peelsHostSelector(toolName);
+	const forms = targets.flatMap((t) => hostPathForms(t, peel));
 	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return [...new Set(forms)];
 	return [...new Set(forms.flatMap((f) => [f, hostSeparators(f), globLiteralPrefix(hostSeparators(f))]))];
 }
 
 function withGradedTargets(toolName: string, a: Omit<ToolAccess, "gradedReads" | "gradedWrites" | "globbed">): ToolAccess {
 	const globbed =
-		GLOB_PATH_TOOL_NAMES.has(toolName) && [...a.reads, ...a.writes].flatMap(hostPathForms).some((t) => GLOB_METACHARACTER.test(t));
+		GLOB_PATH_TOOL_NAMES.has(toolName) &&
+		[...a.reads, ...a.writes].flatMap((t) => hostPathForms(t)).some((t) => GLOB_METACHARACTER.test(t));
 	return { ...a, gradedReads: gradedForms(toolName, a.reads), gradedWrites: gradedForms(toolName, a.writes), globbed };
 }
 

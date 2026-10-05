@@ -5787,6 +5787,63 @@ describe("host path spelling (ADR-0009)", () => {
 		});
 	});
 
+	test("hostPathForms peels a trailing read selector the way the host does", () => {
+		expect(hostPathForms(".env:raw", true)).toEqual([".env:raw", ".env"]);
+		expect(hostPathForms("a/b.pem:1-5", true)).toEqual(["a/b.pem:1-5", "a/b.pem"]);
+		expect(hostPathForms("a.ts:-20", true)).toEqual(["a.ts:-20", "a.ts"]);
+		expect(hostPathForms("a.ts:1-5:raw", true)).toEqual(["a.ts:1-5:raw", "a.ts"]);
+		expect(hostPathForms("a.ts:raw:1-5", true)).toEqual(["a.ts:raw:1-5", "a.ts"]);
+		expect(hostPathForms("@~/k:2", true)).toEqual(["@~/k:2", `${home}/k:2`, "@~/k", `${home}/k`]);
+	});
+
+	test("hostPathForms keeps a colon that does not start a selector", () => {
+		for (const p of ["foo:bar", "C:", ":raw", "a:xyz"]) expect(hostPathForms(p, true)).toEqual([p]);
+		expect(hostPathForms(".env:raw")).toEqual([".env:raw"]);
+	});
+
+	test("a read or grep path with a selector suffix is graded as the file the host opens", async () => {
+		const h = session({});
+		for (const [tool, input] of [
+			["read", { path: ".env:raw" }],
+			["read", { path: "~/.netrc:1-50" }],
+			["read", { path: "key.pem:1-5" }],
+			["read", { path: "@~/.config/age/keys.txt:1-5:raw" }],
+			["grep", { pattern: "k", path: ".env:1-9" }],
+		] as const) {
+			expect((await toolCall(h, tool, input))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a selector suffix does not hide a protected path from denyPaths", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const secret = path.join(cwd, "secret.txt");
+				const h = session({ denyPaths: [secret] }, { cwd });
+				h.confirmAnswer = false;
+				const r = await toolCall(h, "read", { path: "secret.txt:1-5" });
+				expect(h.confirms).toBe(1);
+				expect(r?.block).toBe(true);
+			},
+			home,
+		);
+	});
+
+	test("a project file that exists with a selector or a colon in its name keeps its verdict", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, "a.ts"), "x");
+				fs.writeFileSync(path.join(cwd, "foo:bar"), "x");
+				const h = session({}, { cwd });
+				for (const p of ["a.ts:1-5", "a.ts:raw", "foo:bar"]) expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+			},
+			home,
+		);
+	});
+
 	test("ordinary spellings keep their verdict", async () => {
 		await withTempDir(
 			"pv-hps-",
