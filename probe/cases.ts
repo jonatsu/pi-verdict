@@ -13,7 +13,7 @@
 import type { FixtureTree } from "./fixtures.ts";
 
 /** The layer that must decide the call (assert the source, not the verdict). */
-export type Layer = "rule" | "allow" | "classifier" | "protected-path" | "rule-ask";
+export type Layer = "rule" | "allow" | "classifier" | "protected-path" | "rule-ask" | "degraded-policy";
 
 export interface Expectation {
 	layer: Layer;
@@ -30,13 +30,26 @@ export interface Expectation {
 export interface Case {
 	/** Named for the behaviour, never the implementation. */
 	label: string;
-	family: "force-push" | "path-tier" | "kernel-path" | "self-protection" | "deny-paths" | "user-rules" | "user-allow" | "tool-access";
+	family:
+		| "force-push"
+		| "path-tier"
+		| "kernel-path"
+		| "self-protection"
+		| "deny-paths"
+		| "user-rules"
+		| "user-allow"
+		| "tool-access"
+		| "policy-degraded";
 	tool: string;
 	input: Record<string, unknown>;
 	/** Additionally asserted under the consumer-policy fixture config (run C). */
 	policy?: "consumer";
 	/** Exact config written for this case; mutually exclusive with `policy`. */
 	config?: Record<string, unknown>;
+	/** The config is DELIBERATELY unloadable (ADR-0010): its skipped entry is the point —
+	 *  it is what sets `policyDegraded` — so the runner's fixture-quality guard (a skipped
+	 *  entry fails the case) must not fire for this case. */
+	degradedConfig?: boolean;
 	/** Runner-side kernel truth check: readFile(raw spelling) must equal readFile(kernelOpens). */
 	kernelOpens?: string;
 	/** POSIX-only families (symlink + /etc). */
@@ -573,6 +586,35 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { ops: [{ pat: "x", out: "y" }] },
 			ref: "R2-4",
 			expected: { layer: "rule-ask" },
+		},
+	);
+
+	// ---- policy-degraded (ADR-0010: broken policy fail-closed) ------------------------------
+	// The config is deliberately unloadable: an uncompilable deny regex is skipped, and that
+	// skipped entry is exactly what sets policyDegraded. Only run B has the stub model, so
+	// only B can show the withheld allow (degraded-policy/ask); run A fail-closes before any
+	// model allow could exist (fail-closed/deny — the `classifier` A/C shape).
+	cases.push(
+		{
+			label: "broken deny entry: the classifier allow is withheld as an ask",
+			family: "policy-degraded",
+			tool: "bash",
+			input: { command: "cargo build" },
+			config: { deny: ["("] }, // uncompilable regex → compile() skips it → policyDegraded
+			degradedConfig: true,
+			expected: { layer: "degraded-policy" },
+		},
+		{
+			label: "broken deny entry: a still-listed allow rule is suspended (no mechanical allow)",
+			family: "policy-degraded",
+			tool: "bash",
+			// `^cargo` matches this command: without the suspension this would be a
+			// rule-allow in run A too, failing the fail-closed expectation — the case pins
+			// the classifyByRules suspension (ADR-0010 point 3) end to end.
+			input: { command: "cargo build" },
+			config: { allow: ["^cargo"], deny: ["("] },
+			degradedConfig: true,
+			expected: { layer: "degraded-policy" },
 		},
 	);
 

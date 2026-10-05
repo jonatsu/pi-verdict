@@ -24,6 +24,7 @@ import autoMode, {
 	displaySafe,
 	EXPLAIN_GATE_DEFAULT_PROMPT,
 	gitPushForce,
+	renderFooter,
 	renderJevBar,
 	resolveAgentDir,
 	SessionState,
@@ -5033,5 +5034,124 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		const t = readTranscript(h);
 		expect(t).not.toContain("<protected-path>");
 		expect(t).toContain("/tmp/pv-unrelated.txt");
+	});
+});
+
+// ── policyDegraded (item 6c, Phase 6) ──────────────────────
+
+describe("policyDegraded (item 6c, Phase 6)", () => {
+	const CFG = path.join(TMP_AGENT, "config", "pi-verdict.json");
+	/** Writes raw config text, creating the config dir first (an isolated test run never
+	 *  passes through setConfig, which is what normally creates it). Mirrors the
+	 *  malformed-config test's direct-write setup. */
+	const writeRaw = (text: string): void => {
+		fs.mkdirSync(path.dirname(CFG), { recursive: true });
+		fs.writeFileSync(CFG, text);
+	};
+
+	test("a config parse failure warns at session_start and withholds every model-originated allow (headless)", async () => {
+		writeRaw('{"allow": ["^ls\\b",}'); // invalid JSON — parse failure (EMPTY_RULES.audit is false here, so no audit record is expected)
+		const h = makeHarness();
+		h.install();
+		await h.handlers["session_start"]({}, h.ctx);
+		expect(h.notifies.some(([m, l]) => l === "warning" && m.includes("policy degraded"))).toBe(true); // primary signal (ADR-0010)
+
+		h.ctx.hasUI = false; // headless: the withheld ask degrades to a deny
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "bash", { command: "echo hi" });
+		expect(r?.block).toBe(true);
+		expect(h.calls.length).toBe(1); // it did reach the classifier — the allow was withheld after, not before
+		expect(r?.reason).toContain("policy degraded"); // every block reason names the state
+	});
+
+	test("a skipped deny entry marks degraded; the withheld classifier allow reaches a confirm, headless degrades to a degraded-policy deny", async () => {
+		// valid JSON, but deny carries an invalid regex → compile() skips it → degraded (F11)
+		writeRaw(JSON.stringify({ allow: ["^echo hi"], deny: ["("], audit: true }));
+
+		const h = makeHarness();
+		h.install();
+		await h.handlers["session_start"]({}, h.ctx);
+		expect(h.notifies.some(([m, l]) => l === "warning" && m.includes("policy degraded"))).toBe(true);
+
+		// interactive: the classifier allow becomes a confirm instead of a silent pass —
+		// the command must be GRAY (no allow rule matches it) or the rule layer allows
+		// before the classifier is ever reached.
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		h.confirmAnswer = false; // decline
+		const r = await toolCall(h, "bash", { command: "echo yo" });
+		expect(h.calls.length).toBe(1);
+		expect(h.confirms).toBe(1);
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("policy degraded"); // every block reason names the state
+
+		// user allow is SUSPENDED while degraded (ADR-0010): `echo hi` matches the still-loaded
+		// allow rule ["^echo hi"] but must NOT mechanically allow — it reaches the classifier,
+		// whose allow is then withheld like any other model-originated allow.
+		clearAudit();
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		h.confirmAnswer = false; // decline
+		const allowed = await toolCall(h, "bash", { command: "echo hi" });
+		expect(h.calls.length).toBe(2); // classifier reached — no rule-layer allow
+		expect(h.confirms).toBe(2); // and withheld into a confirm, not silently passed
+		expect(allowed?.block).toBe(true);
+		expect(allowed?.reason).toContain("policy degraded");
+
+		// headless: the same withheld ask degrades to a deny, recorded with the
+		// degraded-policy origin (the AuditRecord seam the plan names)
+		clearAudit();
+		h.ctx.hasUI = false;
+		const headless = await toolCall(h, "bash", { command: "echo yo again" });
+		expect(headless?.block).toBe(true);
+		const rec = readAudit()[0];
+		expect(rec.verdict).toBe("deny");
+		expect(rec.source).toBe("degraded-policy");
+	});
+
+	test("a healthy config never sets the state: a classifier allow passes with no degradation", async () => {
+		setConfig({ allow: ["^echo hi"] });
+		const h = makeHarness();
+		h.install();
+		await h.handlers["session_start"]({}, h.ctx);
+		expect(h.notifies.some(([m]) => m.includes("policy degraded"))).toBe(false);
+
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "bash", { command: "echo hi" });
+		expect(r).toBeUndefined(); // allowed normally — nothing withheld
+		expect(h.confirms).toBe(0);
+	});
+
+	test("/automode status names the state", async () => {
+		writeRaw('{"allow": ["^ls\\b",}');
+		const h = makeHarness();
+		h.install();
+		await h.handlers["session_start"]({}, h.ctx);
+		const before = h.notifies.length;
+		await h.commands.automode.handler("", h.ctx);
+		// assert ONLY what the /automode call itself produced — the session-start warning
+		// above already contains "policy degraded" and would satisfy a whole-array check
+		// (Phase 6 gate F1: a bare .some() here does not pin policyHint).
+		const statusNotices = h.notifies.slice(before);
+		expect(statusNotices).toHaveLength(1);
+		expect(statusNotices[0]?.[0]).toContain("policy degraded");
+	});
+});
+
+describe("policyDegraded footer badge (item 6c, Phase 6)", () => {
+	const base: Parameters<typeof renderFooter>[0] = {
+		enabled: true,
+		classifier: { id: "mock/glm", thinking: "off", state: "inherited" },
+		fallback: null,
+		counts: { allow: 1, ask: 0, deny: 0 },
+		floorOff: false,
+		minConfidence: null,
+		autoDenyOff: false,
+		subagentGate: "normal",
+		policyDegraded: false,
+	};
+	const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s, bg: () => "", getBgAnsi: () => "" } as never;
+
+	test("the risk badge renders only while the state holds", () => {
+		expect(renderFooter({ ...base, policyDegraded: true }, theme, "compact")).toContain("policy degraded");
+		expect(renderFooter(base, theme, "compact")).not.toContain("policy degraded");
 	});
 });

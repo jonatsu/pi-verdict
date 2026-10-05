@@ -201,6 +201,11 @@ tool_call
   │     │        action under review always last
   │     └─ output contract: <verdict>allow|ask|deny</verdict> prefix-anchored
   │
+  ├─ 2a. policy degraded (your own rules failed to load — ADR-0010)
+  │     ├─ first-layer / cascade allow → ask (source "degraded-policy"; headless → deny),
+  │     │   subagent second-model allow → denied outright
+  │     └─ user allow / tools exemption suspended; floor + deny side unchanged
+  │
   └─ 3. Three-state adjudication
         ├─ allow → pass
         ├─ deny  → block, reason returned to the agent

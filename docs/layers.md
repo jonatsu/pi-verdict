@@ -12,13 +12,15 @@ whose `source` names the deciding layer.
 | Order | Layer | Decides | `Verdict.source` |
 |---|---|---|---|
 | 0 | Self-protection | writes to the gate's own config/trust/audit and the installed copy | `rule` |
-| 1 | Built-in deny floor | bash danger rules (regex `pattern` or `check`) and path-sensitivity grades S0–S5, graded over every tool-access adapter target | `rule` |
-| 2 | User `deny` rules | any user deny regex matching a known tool's adapter target | `rule` |
+| 1 | Built-in deny floor | bash danger rules (regex `pattern` or `check`) and path-sensitivity grades S0–S5, graded over every tool-access adapter target; for a `language:"py"` eval cell, the extracted shell-out lines only | `rule` |
+| 2 | User `deny` rules | any user deny regex matching a known tool's adapter target (for a code call, the whole code text) | `rule` |
 | 3 | Forced `.omp` gate | `gateOmpDir` asks on a `.omp` access (any tool's adapter target, including an unlisted tool's) | `protected-path` |
 | 4 | `denyPaths` | a declared protected path match (any tool's adapter target, including an unlisted tool's) | `protected-path` |
-| 5 | User `allow` rules / `tools` exemption | a user allow regex matching every known-tool target, or an exact `tools` name match | `rule` |
-| 6 | Opaque ask | a known mutating call (write/edit/ast_edit, ADR-0009) whose payload names no target at all | `rule` |
-| 7 | Classifier | the gray zone, adjudicated by the model (fail-closed) | `classifier` / `fail-closed` |
+| 5 | Over-cap action ask | an action whose counted text exceeds the 8192-char budget (item 6a) — asked **before** user `allow` so no rule can allow an unread tail | `rule` |
+| 6 | User `allow` rules / `tools` exemption | a user allow regex matching every known-tool target, or an exact `tools` name match (never for `kind:"code"`) | `rule` |
+| 7 | Opaque ask | a known mutating call (write/edit/ast_edit, ADR-0009) whose payload names no target at all | `rule` |
+| 8 | Classifier | the gray zone, adjudicated by the model (fail-closed) | `classifier` / `fail-closed` |
+| 9 | Policy degradation | while `policyDegraded` holds (the user's own rules failed to load, ADR-0010), a layer-8 allow is withheld: the first layer and the cascade fallback become an **ask**; the subagent second model is **denied outright** (no human is left to ask) | `degraded-policy` (on the ask paths) |
 
 Deny beats allow at every step. There is no built-in allowlist: a command the floor does not deny
 and no user rule covers reaches the classifier.

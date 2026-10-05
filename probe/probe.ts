@@ -121,6 +121,13 @@ function assertLayer(v: Verdict, c: Case, run: "A" | "B" | "C"): string | null {
 			// ask; A and C are headless → the ask degrades to deny (checked below).
 			want = run === "B" ? { source: "rule", verdict: "ask" } : { source: "rule", verdict: "deny" };
 			break;
+		case "degraded-policy":
+			// ADR-0010: a model-originated allow withheld while the user's own policy failed to
+			// load. Only run B can produce this source: it has the stub model whose allow is
+			// then converted to an ask. Runs A and C have no model, so a gray call fail-closes
+			// BEFORE any model allow could exist — the same A/C shape as the `classifier` layer.
+			want = run === "B" ? { source: "degraded-policy", verdict: "ask" } : { source: "fail-closed", verdict: "deny" };
+			break;
 	}
 	if (v.source !== want.source || v.verdict !== want.verdict) {
 		return `run ${run}: got ${v.source}/${v.verdict}, expected ${want.source}/${want.verdict}`;
@@ -162,7 +169,7 @@ async function runCase(c: Case, consumerPolicy: Record<string, unknown>): Promis
 
 	const call = { toolName: c.tool, input: c.input };
 	const { state: stateA, skipped: skipA } = makeState(c.config ?? null);
-	if (skipA.length > 0) {
+	if (skipA.length > 0 && !c.degradedConfig) {
 		return { c, channel: "A", message: `config skipped entries: ${skipA.join(", ")}`, pass: false };
 	}
 	const a = await ext.adjudicate(stateA, call, envFor(false, false));

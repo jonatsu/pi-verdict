@@ -42,6 +42,11 @@ case fails.
   adapter's opaque ask: a known mutating call naming no target at all, ADR-0009). Run B asserts
   `rule/ask`; runs A and C assert `rule/deny` **with `degraded: true`** — a plain rule deny must
   never pass as a degraded rule-ask.
+- `degraded-policy` — a model-originated allow withheld because the user's own policy failed to
+  load (parse/load/trusted-project failure or a skipped `deny`/`denyPaths` entry, ADR-0010). Only
+  run B can produce it (it has the stub model): run B asserts `degraded-policy/ask`; runs A and C
+  have no model, so the gray call fail-closes before any model allow could exist — they assert
+  `fail-closed/deny`, the same A/C shape as `classifier`.
 
 `expected.ruleId` and `expected.reasonIncludes` are substrings of the verdict reason. The floor
 reason is `rule <id>: <reason>`, so `ruleId: "git-push-force"` matches the force-push floor rule.

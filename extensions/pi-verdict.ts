@@ -1135,6 +1135,11 @@ interface LoadedRules {
 	skipped: string[];
 	shortcutWarning: string | null;
 	project: { path: string; trusted: boolean; applied: boolean } | null;
+	/** item 6c (Phase 6): policyDegraded — set when the user's own declarations could not be
+	 *  fully loaded: a config parse failure, a load exception, a trusted-project parse/shape
+	 *  failure, or any skipped `deny`/`denyPaths` entry (Claude-review F11). While set, every
+	 *  model-originated allow becomes an ask (see adjudicate) — see ADR-0010. */
+	degraded: boolean;
 }
 
 const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -1240,7 +1245,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			} catch {
 				/* Silently skip in read-only environments */
 			}
-			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null, project: null };
+			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null, project: null, degraded: false };
 		}
 		let raw: {
 			allow?: unknown;
@@ -1277,9 +1282,12 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				skipped: [`config parse failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded (${p})`],
 				shortcutWarning: null,
 				project: null,
+				degraded: true, // item 6c: the user's own declarations are gone entirely (ADR-0010)
 			};
 		}
 		const skipped: string[] = [];
+		// item 6c (Phase 6): tracks the failure families that make policyDegraded true (ADR-0010)
+		let degraded = false;
 		// R9: an unrecognised user-config key is a typo that would silently drop a
 		// protection — name it and the file, keep loading the rest.
 		for (const k of Object.keys(raw as Record<string, unknown>)) {
@@ -1304,6 +1312,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				try {
 					projRaw = JSON.parse(fs.readFileSync(pp, "utf8"));
 				} catch (err) {
+					degraded = true; // item 6c: a TRUSTED project override failed to load (ADR-0010)
 					skipped.push(
 						`project config parse failed: ${err instanceof Error ? err.message : String(err)} — project overrides not loaded (${pp})`,
 					);
@@ -1311,6 +1320,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			}
 			if (projRaw !== undefined) {
 				if (typeof projRaw !== "object" || projRaw === null || Array.isArray(projRaw)) {
+					degraded = true; // item 6c: a TRUSTED project override's top level is not an object (ADR-0010)
 					skipped.push(`project config ${pp}: top level must be a JSON object — project overrides not loaded`);
 				} else {
 					// Only the allowlisted keys merge (ADR-0006): the classifier/explain-gate
@@ -1334,13 +1344,18 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				}
 			}
 		}
-		const compile = (list: unknown): RegExp[] =>
+		// item 6c (Phase 6): only a skipped DENY entry marks policy degraded — a skipped allow
+		// entry cannot make the gate MORE permissive than it already is (it never granted
+		// anything); a dropped deny silently removes a protection (Claude-review F11). The
+		// deny call site below passes the marker; the allow call site does not.
+		const compile = (list: unknown, onSkip?: () => void): RegExp[] =>
 			(Array.isArray(list) ? list : [])
 				.filter((x): x is string => typeof x === "string")
 				.flatMap((src) => {
 					try {
 						return [new RegExp(src)];
 					} catch {
+						onSkip?.();
 						skipped.push(src);
 						return [];
 					}
@@ -1349,7 +1364,10 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		// anything else is skipped into the one-shot warning channel (invalid config never disables the gate)
 		const denyPaths = (Array.isArray(raw.denyPaths) ? raw.denyPaths : []).flatMap((x) => {
 			if (typeof x !== "string" || !x.trim()) {
-				if (x !== undefined && x !== null) skipped.push(`denyPaths: ${JSON.stringify(x)}`);
+				if (x !== undefined && x !== null) {
+					degraded = true; // item 6c: a dropped denyPaths entry silently removes a protection (ADR-0010)
+					skipped.push(`denyPaths: ${JSON.stringify(x)}`);
+				}
 				return [];
 			}
 			return [x.trim()];
@@ -1402,7 +1420,9 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		return {
 			rules: {
 				allow: compile(raw.allow),
-				deny: compile(raw.deny),
+				deny: compile(raw.deny, () => {
+					degraded = true; // item 6c: a dropped deny regex silently removes a protection (ADR-0010)
+				}),
 				denyPaths,
 				tools,
 				builtinDenyFloor: raw.builtinDenyFloor !== false,
@@ -1426,6 +1446,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			skipped,
 			shortcutWarning: shortcut.warning,
 			project,
+			degraded,
 		};
 	} catch (err) {
 		// An unexpected failure (not the JSON-parse path above) must not vanish: load
@@ -1435,6 +1456,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 			skipped: [`config load failed: ${err instanceof Error ? err.message : String(err)} — user rules not loaded`],
 			shortcutWarning: null,
 			project: null,
+			degraded: true, // item 6c: an unexpected load exception, same fail-direction change (ADR-0010)
 		};
 	}
 }
@@ -2490,8 +2512,9 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
  *   3a. over-cap action → terminal ask (item 6a, Phase 4): never a mechanical allow on an
  *       action the floor could not fully read (F8's ordering gap)
  *   4. user allow → allow (never for kind "code": a code call always reaches the classifier
- *      unless something above denies or asks first)
- *   5. custom-tool exact match (user.tools) → allow (bypasses classifier; never for kind "code")
+ *      unless something above denies or asks first; never while policyDegraded — ADR-0010)
+ *   5. custom-tool exact match (user.tools) → allow (bypasses classifier; never for kind "code";
+ *      never while policyDegraded — ADR-0010)
  *   6. opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target
  *   7. base (observing default allow/gray; everything else gray) → classifier
  */
@@ -2502,6 +2525,11 @@ function classifyByRules(
 	user: UserRules,
 	prot: ProtectedSet,
 	denyPathBases: string[],
+	/** item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, the user
+	 *  allow loop and the tools exemption are suspended (steps 4/5) — deny-side layers and
+	 *  the floor above them are unchanged, and everything they do not decide falls through
+	 *  to the classifier, whose allow is then withheld by adjudicate. */
+	policyDegraded: boolean,
 ): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
 	if (sp) return sp;
@@ -2581,7 +2609,10 @@ function classifyByRules(
 	// User allow (known-tool targets only, same scope as user deny above). ADR-0008: a user
 	// allow admits ONE simple command. A compound command, an unsound parse, a redirection or
 	// a write-shaped git invocation is never rule-allowed — it reaches the classifier.
-	if (targets.length > 0) {
+	// Suspended while policyDegraded (ADR-0010): a partially-loaded policy's allow list may
+	// still be present while a deny/denyPaths entry was dropped — granting mechanical allows
+	// on that basis is the fail-open direction this closes.
+	if (targets.length > 0 && !policyDegraded) {
 		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
@@ -2594,8 +2625,10 @@ function classifyByRules(
 	// BEFORE the opaque ask / gray fall-through (ADR-0009) — a listed tool carrying a
 	// protected-path target now faces the ask above instead of a silent allow here. kind
 	// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
-	// is non-code tools; a user who listed eval here loses the exemption (BREAKING).
-	if (user.tools.includes(toolName) && access.kind !== "code") return { verdict: "allow", reason: "user tools allow rule" };
+	// is non-code tools; a user who listed eval here loses the exemption (BREAKING). Suspended
+	// with user allow while policyDegraded (ADR-0010).
+	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded)
+		return { verdict: "allow", reason: "user tools allow rule" };
 
 	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at
 	// all — deterministic ask, headless → deny (never for an unknown tool: see toolAccess).
@@ -3231,8 +3264,10 @@ export interface AuditRecord {
 	reason: string;
 	/** #62: protected-path asks are recorded too — their user answers grade the
 	 *  denyPaths rules; rule allow/deny verdicts remain unaudited. "rule" covers a
-	 *  rule-layer ask whose askSource is not "protected-path" (ask-source seam). */
-	source: "model" | "fail-closed" | "protected-path" | "rule";
+	 *  rule-layer ask whose askSource is not "protected-path" (ask-source seam).
+	 *  "degraded-policy" is a model-originated allow converted to an ask while the
+	 *  user's own policy failed to load (item 6c, Phase 6; ADR-0010). */
+	source: "model" | "fail-closed" | "protected-path" | "rule" | "degraded-policy";
 	degraded: boolean;
 	/** #62 ground truth: the user's answer to an interactive ask confirm. Present only
 	 *  on records whose confirm actually ran; headless/degraded asks omit it. */
@@ -3313,6 +3348,9 @@ export interface RulesLoadReport {
 	skipped: string[];
 	shortcutWarning: string | null;
 	project: { path: string; trusted: boolean; applied: boolean } | null;
+	/** item 6c (Phase 6): copied from LoadedRules — the presentation layer shows it as a
+	 *  footer badge, an `/automode` status line and every block reason while set. */
+	degraded: boolean;
 }
 
 /**
@@ -3329,12 +3367,21 @@ export class SessionState {
 	private readonly agentDir: string | null;
 	/** Final pipeline verdicts this session (root calls only; an ask counts once whatever the user answers). Reset on session start, kept across /verdict reloads. */
 	verdictCounts = { allow: 0, ask: 0, deny: 0 };
+	/** item 6c (Phase 6): the user's own policy failed to load (parse/load/trusted-project
+	 *  failure, or a skipped deny/denyPaths entry) — while true, every model-originated allow
+	 *  becomes an ask (ADR-0010). Part of the reset list via reloadRules. */
+	policyDegraded = false;
 
-	constructor(userRules: UserRules = loadUserRules().rules, agentDir: string | null = null) {
-		this.userRules = userRules;
+	constructor(userRules?: UserRules, agentDir: string | null = null) {
 		this.agentDir = agentDir;
 		this.prot = buildProtectedSet(agentDir ?? agentDirPath(), OWN_FILE_PATH);
-		this.audit = this.makeAudit(userRules);
+		// item 6c: load once (not once as a default param + once here) so rules and
+		// policyDegraded always come from the same load — a direct construction (tests,
+		// install before session_start) must not depend on reloadRules having run.
+		const loaded = loadUserRules();
+		this.userRules = userRules ?? loaded.rules;
+		this.policyDegraded = loaded.degraded;
+		this.audit = this.makeAudit(this.userRules);
 	}
 
 	/** #54: the audit flag follows the rules (applies to new sessions); the dir is anchored to the install path */
@@ -3347,9 +3394,10 @@ export class SessionState {
 	reloadRules(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
 		const loaded = loadUserRules(cwd, sessionTrustedRoot);
 		this.userRules = loaded.rules;
+		this.policyDegraded = loaded.degraded; // item 6c (Phase 6): /verdict reloads must carry it too (F11)
 		this.denyPathBases = anchorDenyPaths(loaded.rules.denyPaths, cwd); // anchored to the session cwd, once (ADR-0002)
 		this.audit = this.makeAudit(loaded.rules);
-		return { skipped: loaded.skipped, shortcutWarning: loaded.shortcutWarning, project: loaded.project };
+		return { skipped: loaded.skipped, shortcutWarning: loaded.shortcutWarning, project: loaded.project, degraded: loaded.degraded };
 	}
 
 	/** Session reset: reload rules, re-anchor denyPaths to the session cwd, and reset verdict statistics. */
@@ -3374,8 +3422,10 @@ export class SessionState {
 
 /** Verdict source: a key in the presentation template (orthogonal to degraded). rule = rule layer;
  *  protected-path = denyPaths match; classifier = gray-zone classifier
- *  result (including its fail-closed result, which uses the same presentation template); fail-closed = no classifier model available. */
-export type VerdictSource = "rule" | "protected-path" | "classifier" | "fail-closed";
+ *  result (including its fail-closed result, which uses the same presentation template); fail-closed = no classifier model available;
+ *  degraded-policy = a model-originated allow converted to an ask while the user's own policy
+ *  failed to load (item 6c, Phase 6; ADR-0010). */
+export type VerdictSource = "rule" | "protected-path" | "classifier" | "fail-closed" | "degraded-policy";
 
 /** Pipeline output for one tool call. Protected-path detail is UI-only; `degraded`
  *  marks asks converted to denies when no interactive UI is available. */
@@ -3537,7 +3587,16 @@ export async function resolveAskWithoutHuman(
 	v: Verdict,
 	actionLine: string,
 ): Promise<{ verdict: "allow" | "deny"; reason: string; fb?: FallbackAudit }> {
-	if (v.autoResolve === "allow") return { verdict: "allow", reason: v.reason };
+	// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a genuine
+	// model-originated allow is withheld — no human answered, so the ask cannot be escalated
+	// and degrades straight to a deny, named for the degraded state. Plain denials below are
+	// unchanged: they never granted anything. (There is no Verdict.source seam here: this
+	// path never produces a Verdict, it only reports allow/deny.)
+	const withhold = (modelAllowReason: string): { verdict: "allow" | "deny"; reason: string } =>
+		state.policyDegraded
+			? { verdict: "deny", reason: `${WITHHELD_ALLOW_PREFIX}${modelAllowReason}` }
+			: { verdict: "allow", reason: modelAllowReason };
+	if (v.autoResolve === "allow") return withhold(v.reason);
 	if (v.autoResolve !== "consult") return { verdict: "deny", reason: `no human answer — ${v.reason}` };
 	const rules = state.userRules;
 	if (!rules.classifierFallbackModel || !env.getFallbackModel) {
@@ -3576,7 +3635,7 @@ export async function resolveAskWithoutHuman(
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";
 	const result: { verdict: "allow" | "deny"; reason: string } = allowed
-		? { verdict: "allow", reason: `second model allows: ${outcome.reason}` }
+		? withhold(`second model allows: ${outcome.reason}`)
 		: {
 				verdict: "deny",
 				reason: `second model did not approve (${outcome.source === "model" ? outcome.verdict : "error"}): ${outcome.reason}`,
@@ -3603,12 +3662,32 @@ export async function resolveAskWithoutHuman(
 /** [pi-verdict local patch: autoDeny] reason suffix on asks that would have been auto-denies */
 const AUTO_DENY_OFF_SUFFIX = " (autoDeny is off: this would have been denied — your call)";
 
+/** item 6c (ADR-0010): shared naming for a withheld model-originated allow — all three
+ *  conversion sites (gray first layer, fail-closed cascade, subagent second model) build
+ *  their reason from this prefix (clean-code C1: it lived in three inline copies, two of
+ *  them byte-identical). */
+const WITHHELD_ALLOW_PREFIX = "policy degraded: allow withheld (ADR-0010) — ";
+
+/** item 6c (ADR-0010): the one predicate the conversion sites share — the policy is broken
+ *  AND this result would have been an allow, so it is withheld (an ask, or a denial where
+ *  no human can be asked). */
+const withholdsModelAllow = (policyDegraded: boolean, verdict: "allow" | "ask" | "deny" | undefined): boolean =>
+	policyDegraded && verdict === "allow";
+
 export async function adjudicate(
 	state: SessionState,
 	call: { toolName: string; input: Record<string, unknown> },
 	env: AdjudicateEnv,
 ): Promise<Verdict> {
-	const rule = classifyByRules(call.toolName, call.input, env.cwd, state.userRules, state.prot, state.anchoredDenyPathBases(env.cwd));
+	const rule = classifyByRules(
+		call.toolName,
+		call.input,
+		env.cwd,
+		state.userRules,
+		state.prot,
+		state.anchoredDenyPathBases(env.cwd),
+		state.policyDegraded, // item 6c (Phase 6): suspend user allow/tools while the policy is degraded (ADR-0010)
+	);
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") {
 		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI)
@@ -3692,40 +3771,58 @@ export async function adjudicate(
 			redact,
 		);
 		const eff = cascade.effective;
-		const effAskHeadless = eff?.verdict === "ask" && !env.hasUI;
+		// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a
+		// model-originated allow (the cascade's second model here) becomes an ask — the
+		// normal headless ask→deny degradation applies unchanged.
+		const effDegraded = withholdsModelAllow(state.policyDegraded, eff?.verdict);
+		const effVerdict = effDegraded ? ("ask" as const) : eff?.verdict;
+		const effReason = (effDegraded && eff ? `${WITHHELD_ALLOW_PREFIX}${eff.reason}` : eff?.reason) ?? reason;
+		const effSource: VerdictSource = effDegraded ? "degraded-policy" : (eff?.source ?? "fail-closed");
+		const effAskHeadless = effVerdict === "ask" && !env.hasUI;
+		// What the audit record itself shows: an interactive ask records as the ask that ran;
+		// a headless (or absent) result records the deny that was applied.
+		let fcVerdict: AuditRecord["verdict"] = "deny";
+		if (effVerdict === "allow") fcVerdict = "allow";
+		else if (effVerdict === "ask" && !effAskHeadless) fcVerdict = "ask";
 		const fcRecord = buildRecord(
 			{
-				verdict: eff ? (effAskHeadless ? "deny" : eff.verdict) : "deny",
-				reason: eff?.reason ?? reason,
-				source: "fail-closed",
+				verdict: fcVerdict,
+				reason: effReason,
+				// AuditRecord vocabulary (#54): the record's origin stays "fail-closed" (the
+				// no-first-model origin) unless the degraded-policy conversion fired; it never
+				// carries "model"/"classifier" here — that is the gray path's own record.
+				source: effDegraded ? "degraded-policy" : "fail-closed",
 				degraded: effAskHeadless,
 			},
 			null,
 		);
 		if (cascade.fb) fcRecord.fallback = cascade.fb;
-		if (eff?.verdict === "ask" && env.hasUI) {
+		if (effVerdict === "ask" && env.hasUI) {
 			return {
 				verdict: "ask",
-				reason: eff.reason,
-				source: eff.source,
+				reason: effReason,
+				source: effSource,
 				degraded: false,
 				autoResolve: "deny",
 				...(state.audit ? { pendingAudit: fcRecord } : {}),
 			};
 		}
-		if (eff?.verdict !== "allow" && !state.userRules.autoDeny && env.hasUI) {
+		if (effVerdict !== "allow" && !state.userRules.autoDeny && env.hasUI) {
 			return {
 				verdict: "ask",
-				reason: (eff?.reason ?? reason) + AUTO_DENY_OFF_SUFFIX,
-				source: eff?.source ?? "fail-closed",
+				reason: effReason + AUTO_DENY_OFF_SUFFIX,
+				source: effSource,
 				degraded: false,
 				autoResolve: "deny",
 				...(state.audit ? { pendingAudit: fcRecord } : {}),
 			};
 		}
 		state.audit?.append(fcRecord);
-		if (eff?.verdict === "allow") return { verdict: "allow", reason: eff.reason, source: "classifier", degraded: false };
-		if (eff) return { verdict: "deny", reason: eff.reason, source: eff.source, degraded: effAskHeadless };
+		if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: "classifier", degraded: false };
+		if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: effAskHeadless };
+		// ask: no UI degrades it to deny — but only a genuine ask conversion is "degraded";
+		// a missing cascade result (no effective verdict at all) is a plain fail-closed deny.
+		if (effVerdict === "ask") return { verdict: "deny", reason: effReason, source: effSource, degraded: true };
 		return { verdict: "deny", reason, source: "fail-closed", degraded: false };
 	}
 
@@ -3758,9 +3855,18 @@ export async function adjudicate(
 					redact,
 				)
 			: {};
-	const effVerdict = cascade.effective?.verdict ?? outcome.verdict;
-	const effReason = cascade.effective?.reason ?? outcome.reason;
-	const effSource = cascade.effective?.source ?? "classifier";
+	let effVerdict = cascade.effective?.verdict ?? outcome.verdict;
+	let effReason = cascade.effective?.reason ?? outcome.reason;
+	let effSource: VerdictSource = cascade.effective?.source ?? "classifier";
+	// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a
+	// model-originated allow (first layer or the cascade's second model) becomes an ask —
+	// the normal headless ask→deny degradation below applies unchanged.
+	const effDegraded = withholdsModelAllow(state.policyDegraded, effVerdict);
+	if (effDegraded) {
+		effReason = `${WITHHELD_ALLOW_PREFIX}${effReason}`;
+		effSource = "degraded-policy";
+		effVerdict = "ask";
+	}
 
 	// #62/#67: top-level keeps first-layer semantics except that a fail-closed origin
 	// rescued by an enforcing fallback records its applied verdict, not the default deny.
@@ -3770,7 +3876,9 @@ export async function adjudicate(
 		{
 			verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict,
 			reason: fcRescued ? effReason : outcome.reason,
-			source: outcome.source,
+			// item 6c: the record names the degraded-policy origin when the conversion fired;
+			// otherwise the first layer's own outcome (model/fail-closed vocabulary, #54).
+			source: effDegraded ? "degraded-policy" : outcome.source,
 			degraded: appliedAskHeadless,
 		},
 		outcome.auditRaw ?? null,
@@ -4504,6 +4612,16 @@ function serializeDialog<T>(fn: () => Promise<T>): Promise<T> {
 // Extension body
 // ============================================================================
 
+/** presentVerdict's ask-dialog reason-line label, keyed by verdict source (presentation only;
+ *  the protected-path branch renders its own dialog and never reads this map). */
+const ASK_SOURCE_LABEL: Record<VerdictSource, string> = {
+	rule: "Rule",
+	"protected-path": "Protected path",
+	classifier: "Classifier opinion",
+	"fail-closed": "Fail-closed",
+	"degraded-policy": "Policy degraded", // item 6c (Phase 6): names the state in the dialog's reason line
+};
+
 /** Agent-facing block reason (#53): the text must be self-sufficient — structural
  * error signaling does not reach several provider lanes, and verbatim rule/classifier
  * reasons can be empty or too terse for the acting model to recognize as a block. */
@@ -4537,6 +4655,8 @@ export interface FooterInfo {
 	minConfidence: number | null;
 	autoDenyOff: boolean;
 	subagentGate: "off" | "normal" | "auto";
+	/** item 6c (Phase 6): the user's own policy failed to load — shown as a risk badge (ADR-0010). */
+	policyDegraded: boolean;
 }
 
 type ThemeBg = Parameters<Theme["bg"]>[0];
@@ -4569,6 +4689,8 @@ export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full"
 	if (info.floorOff) risks.push({ text: "floor off", color: "error" });
 	// "off" is the fail-open deviation now that "normal" is the default (ADR-0006)
 	if (info.subagentGate === "off") risks.push({ text: "subagent off", color: "warning" });
+	// item 6c (Phase 6): the user's own rules failed to load — model allows are withheld (ADR-0010)
+	if (info.policyDegraded) risks.push({ text: "policy degraded", color: "error" });
 
 	const bgFn = theme.bg;
 	const bgAnsi = theme.getBgAnsi;
@@ -4635,6 +4757,18 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	// Session state: reset list belongs to SessionState.reset
 	const state = new SessionState(undefined, agentDirPath());
 
+	/** item 6c (Phase 6; ADR-0010): every block reason names the degraded-policy state while
+	 *  it holds — a silent degradation would contradict the session-start warning's role as
+	 *  the primary signal. Wraps the module-level blockedReason so its message contract
+	 *  (the BLOCKED … never claim it succeeded wording) stays in one place. */
+	const blockReason = (tag: string, detail: string): string =>
+		state.policyDegraded
+			? blockedReason(
+					tag,
+					`${detail} [policy degraded: the user's own rules failed to load, so model-originated allows are withheld — ADR-0010]`,
+				)
+			: blockedReason(tag, detail);
+
 	/** Verdict → UI (the extension's single presentation point): presentation keys on
 	 *  source alone; protected-path wording carries the ask-degradation context. */
 	async function presentVerdict(
@@ -4661,21 +4795,28 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			return undefined;
 		}
 		if (v.verdict === "deny") {
+			if (v.source === "degraded-policy") {
+				// item 6c (Phase 6): the ask this denial came from exists because the user's own
+				// policy failed to load — name it, action line included (no protected path here:
+				// the source is a model verdict, never a matched path).
+				note(`🛡️ Auto Mode blocked (policy degraded, allow withheld): ${v.reason}\n  ${action}`, "warning");
+				return { block: true, reason: blockReason("degraded-policy", v.reason) };
+			}
 			if (v.source === "protected-path") {
 				// No action line: the action string may include the touched path; notifications must not carry protected-path plaintext
 				note(`🛡️ Auto Mode blocked (non-interactive, protected-path ask→deny): ${v.reason}`, "warning");
-				return { block: true, reason: blockedReason("protected-path", `ask degraded to block in non-interactive mode: ${v.reason}`) };
+				return { block: true, reason: blockReason("protected-path", `ask degraded to block in non-interactive mode: ${v.reason}`) };
 			}
 			if (v.source === "fail-closed") {
 				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
-				return { block: true, reason: blockedReason("fail-closed", v.reason) };
+				return { block: true, reason: blockReason("fail-closed", v.reason) };
 			}
 			if (v.source === "rule") {
 				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
-				return { block: true, reason: blockedReason("rule", v.reason) };
+				return { block: true, reason: blockReason("rule", v.reason) };
 			}
 			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
-			return { block: true, reason: blockedReason("classifier", v.reason) };
+			return { block: true, reason: blockReason("classifier", v.reason) };
 		}
 		// ask → human confirmation; non-interactive calls were degraded inside the pipeline, so reaching here means UI is available
 		if (v.source === "protected-path") {
@@ -4702,9 +4843,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				if (debug) note("🛡️ allow (protected-path confirm)", "info");
 				return undefined;
 			}
-			return { block: true, reason: blockedReason("user-declined", declineDetail("user declined protected-path access", d.reason)) };
+			return { block: true, reason: blockReason("user-declined", declineDetail("user declined protected-path access", d.reason)) };
 		}
-		const label = v.source === "rule" ? "Rule" : v.source === "fail-closed" ? "Fail-closed" : "Classifier opinion";
+		const label = ASK_SOURCE_LABEL[v.source];
 		const reasonLine = `${label}: ${v.reason}`;
 		const d = await confirmAsk(
 			ui,
@@ -4722,7 +4863,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			{ signal: opts.signal, explain: (question) => explainAsk(opts.ctx, call, action, reasonLine, question) },
 		);
 		if (d === "aborted") return "aborted";
-		return d.allow ? undefined : { block: true, reason: blockedReason("user-declined", declineDetail("user declined", d.reason)) };
+		return d.allow ? undefined : { block: true, reason: blockReason("user-declined", declineDetail("user declined", d.reason)) };
 	}
 
 	/** Classifier model as the footer shows it: same precedence as resolveClassifier, but side-effect free (no warnings, no calls). */
@@ -4755,6 +4896,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			minConfidence: rules.classifierMinConfidence,
 			autoDenyOff: !rules.autoDeny,
 			subagentGate: rules.subagentGate,
+			policyDegraded: state.policyDegraded, // item 6c (Phase 6)
 		};
 	}
 
@@ -4790,6 +4932,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			);
 		}
 		if (report.shortcutWarning) ctx.ui.notify(`pi-verdict: ${report.shortcutWarning}`, "warning");
+		// item 6c (Phase 6; ADR-0010): the primary signal for the degraded state — fires
+		// whether or not the failure produced a skipped entry (a parse failure would otherwise
+		// rely on the count line above to imply it).
+		if (report.degraded)
+			ctx.ui.notify(
+				"pi-verdict: policy degraded — your own rules could not be fully loaded, so model-originated allows are withheld (each becomes a confirm) until the config is fixed (ADR-0010)",
+				"warning",
+			);
 	}
 
 	// session_start reloads rules and resets per-session verdict statistics.
@@ -4889,6 +5039,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		state.userRules.classifierMinConfidence !== null || state.userRules.classifierFallbackModel
 			? `\n${state.fallback.summary(state.userRules.classifierFallbackMode)}`
 			: "";
+	/** Status line degraded-policy hint (item 6c, Phase 6): named whenever the state holds */
+	const policyHint = () => (state.policyDegraded ? "\npolicy degraded: model-originated allows withheld (ADR-0010)" : "");
 
 	pi.registerCommand("automode", {
 		description: "Show Auto Mode status, or set it: /automode on|off",
@@ -4897,7 +5049,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			// Bare call: read-only status.
 			if (arg === "") {
 				ctx.ui.notify(
-					`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`,
+					`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${policyHint()}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`,
 					"info",
 				);
 				return;
@@ -5389,7 +5541,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// Root session (and pi): unchanged behavior; no signal is passed, so "aborted" cannot occur
 		if (!sub) {
 			const r = await present();
-			const presented = r === "aborted" ? { block: true as const, reason: blockedReason("user-declined", "user declined") } : r;
+			const presented = r === "aborted" ? { block: true as const, reason: blockReason("user-declined", "user declined") } : r;
 			finalize(answerAudit(presented));
 			return presented;
 		}
@@ -5413,7 +5565,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				`🛡️ [${label}] Auto Mode blocked (subagent ask, no human): ${res.reason}${verdict.source === "protected-path" ? "" : `\n  ${action}`}`,
 				"warning",
 			);
-			return { block: true, reason: blockedReason("subagent-auto", res.reason) };
+			return { block: true, reason: blockReason("subagent-auto", res.reason) };
 		};
 
 		if (mode === "normal" && ui !== null) {
@@ -5426,7 +5578,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}
 			if (ctx.signal?.aborted) {
 				finalize({ subagent: { ...sub, resolution: "timeout" } });
-				return { block: true, reason: blockedReason("subagent-cancelled", "subagent run was cancelled while awaiting approval") };
+				return { block: true, reason: blockReason("subagent-cancelled", "subagent run was cancelled while awaiting approval") };
 			}
 			return finishWithoutHuman("timeout");
 		}

@@ -22,7 +22,7 @@ Layer 0 of the adjudication pipeline, using hard denials that user policies cann
 
 ### verdict
 
-The determination for a single tool call. The `tool_call` hook produces it; an allow does not intervene, while a block returns `{ block: true, reason }`. Its runtime carrier is a `Verdict` value object (verdict / reason / detail / source / degraded): `detail` is UI-only plaintext (protected paths enter only the local confirmation dialog, per ADR-0002's zero-leakage commitment); `source` distinguishes rule / protected-path / classifier / fail-closed; `degraded` marks an ask-degradation result.
+The determination for a single tool call. The `tool_call` hook produces it; an allow does not intervene, while a block returns `{ block: true, reason }`. Its runtime carrier is a `Verdict` value object (verdict / reason / detail / source / degraded): `detail` is UI-only plaintext (protected paths enter only the local confirmation dialog, per ADR-0002's zero-leakage commitment); `source` distinguishes rule / protected-path / classifier / fail-closed / degraded-policy; `degraded` marks an ask-degradation result.
 
 ### verdict notification
 
@@ -107,6 +107,10 @@ Handling of `ask` when no UI is available (non-interactive modes: `pi -p` / json
 ### fail-closed
 
 Default behavior for any exceptional path (classifier error, timeout, unparseable output): block, never silently allow.
+
+### policyDegraded
+
+Session state (ADR-0010) set when the user's own policy could not be fully loaded: a config parse failure, a load exception, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry. While set, **every model-originated allow is withheld** (the first classifier layer and the confidence-cascade fallback become an **ask** — `source: "degraded-policy"`, headless → deny; the subagent second model is **denied outright**, no human left to ask) and user `allow`/`tools` are suspended inside the rule layer, so a partially-loaded policy can never be more permissive than a healthy one. The built-in floor and every deny-side layer are unchanged. Named in the footer risk badge, `/automode` status, every block reason, and a session-start warning (the primary signal). Part of the `SessionState` reset list via `reloadRules`.
 
 
 ### confidence demotion
