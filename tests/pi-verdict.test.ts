@@ -25,6 +25,7 @@ import autoMode, {
 	displaySafe,
 	EXPLAIN_GATE_DEFAULT_PROMPT,
 	gitPushForce,
+	redactorFor,
 	renderFooter,
 	renderJevBar,
 	resolveAgentDir,
@@ -5440,5 +5441,18 @@ describe("end-to-end adjudication deadline (item 7, Phase 7)", () => {
 		expect(budgetedTimeoutMs(15_000, 5_000, 0)).toBe(5_000); // the last step may use what is left
 		expect(budgetedTimeoutMs(15_000, -100, 0)).toBe(1); // starved: still a token window to fail in
 		expect(budgetedTimeoutMs(25_000, Number.NaN, 0)).toBe(25_000); // no deadline: the cap, not NaN
+	});
+});
+
+describe("redactor spellings", () => {
+	test("a root denyPaths base does not redact a call that names no path", () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pv-redact-"));
+		try {
+			const redact = redactorFor(cwd, [path.parse(cwd).root]);
+			expect(redact({ note: "no path here" })).toBe(false);
+			expect(redact({ path: path.join(cwd, "a.txt") })).toBe(true);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });

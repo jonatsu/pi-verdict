@@ -2840,7 +2840,7 @@ const PROTECTED_PATH_MARKER = "<protected-path>";
  *  calls (recorded residual, ADR-0002 amendment — PC-review F5b). User-message lines are
  *  deliberately never redacted — the user's own disclosure in their own message is theirs
  *  (PC-review F5c). */
-function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
+export function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
 	const spellings = new Set<string>();
 	const home = os.homedir();
 	for (const base of bases) {
@@ -2854,7 +2854,9 @@ function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
 				for (const resolved of denyPathForms(form, cwd)) spellings.add(resolved); // literal + cwd-resolved, both ways
 			}
 		}
-		if (base.endsWith(path.sep)) spellings.add(base.slice(0, -path.sep)); // prefix form without a trailing slash
+		// Prefix form without a trailing separator. A root base strips to "", which would match every string.
+		const withoutSep = base.endsWith(path.sep) ? base.slice(0, -path.sep.length) : "";
+		if (withoutSep) spellings.add(withoutSep);
 		// The cwd-relative spelling of an in-cwd base — a past call may spell the
 		// same path relatively ("secrets/a.txt"), which neither the absolute form nor its
 		// raw-JSON substring can catch.
