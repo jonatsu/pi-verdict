@@ -1760,6 +1760,22 @@ const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set(["write", "edit", "ast_
  *  denyPaths compare is bidirectional (hitDenyPaths/hitOmpDir). */
 const SCOPE_TOOL_NAMES: ReadonlySet<string> = new Set(["grep", "find", "ls", "glob", "ast_grep", "ast_edit"]);
 
+/** Scope tools whose `path`/`paths` may carry a glob. `ls` takes a directory only. */
+const GLOB_PATH_TOOL_NAMES: ReadonlySet<string> = new Set(["grep", "find", "glob", "ast_grep", "ast_edit"]);
+const GLOB_METACHARACTER = /[*?[{]/;
+
+/** The part of a glob path before the first segment that holds a metacharacter, with its trailing
+ *  separator; a path that starts with a glob segment grades as the cwd. The whole subtree below
+ *  the prefix is what the call can reach, so grading the prefix is the most the gate can say
+ *  without expanding the glob. */
+function globLiteralPrefix(target: string): string {
+	const at = target.search(GLOB_METACHARACTER);
+	if (at < 0) return target;
+	const separators = path.sep === "\\" ? ["/", "\\"] : ["/"];
+	const cut = Math.max(...separators.map((sep) => target.lastIndexOf(sep, at)));
+	return cut < 0 ? "." : target.slice(0, cut + 1);
+}
+
 function isCommandTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "powershell";
 }
@@ -1838,6 +1854,13 @@ interface ToolAccess {
 	 *  which a tool naming no file at all is not (narrowed 2026-10-05). */
 	opaque: boolean;
 	scope: boolean;
+	/** `reads` and `writes` as the floor and the path layers must grade them. A glob-capable
+	 *  tool's target also contributes its literal prefix (see globLiteralPrefix); every other target is unchanged. */
+	gradedReads: string[];
+	gradedWrites: string[];
+	/** A glob-capable tool names a target with a glob metacharacter. The literal prefix cannot say
+	 *  what such a target matches, so no rule layer may allow the call. */
+	globbed: boolean;
 }
 
 /** Hashline header tag: `#` + exactly 4 hex digits, anchored at the end of the
@@ -1967,7 +1990,15 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
 		const reads = new Set<string>();
 		if (unwrapped !== null) for (const p of splitObservingPathList(unwrapped)) reads.add(p);
 		for (const p of pathsField) reads.add(p);
-		return { direction: "observing", kind: "file", reads: [...reads], writes: [], command: null, opaque: false, scope };
+		return withGradedTargets(toolName, {
+			direction: "observing",
+			kind: "file",
+			reads: [...reads],
+			writes: [],
+			command: null,
+			opaque: false,
+			scope,
+		});
 	}
 	if (MUTATING_TOOL_NAMES.has(toolName)) {
 		const writes = new Set<string>();
@@ -1988,7 +2019,15 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
 		} else {
 			opaque = writes.size === 0;
 		}
-		return { direction: "mutating", kind: "file", reads: [], writes: [...writes], command: null, opaque, scope };
+		return withGradedTargets(toolName, {
+			direction: "mutating",
+			kind: "file",
+			reads: [],
+			writes: [...writes],
+			command: null,
+			opaque,
+			scope,
+		});
 	}
 	// unknown: never opaque, never mutating-by-shape (2026-10-05 re-review) — whatever
 	// targets the payload yields still feed the deny-side layers; otherwise gray, as today.
@@ -1998,7 +2037,32 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
 	const writes = new Set<string>();
 	if (patchText !== null) for (const t of parseHashlineTargets(patchText)) writes.add(t);
 	const { kind, command } = inferUnknownShape(input);
-	return { direction: "unknown", kind, reads: [...reads], writes: [...writes], command, opaque: false, scope: false };
+	return withGradedTargets(toolName, {
+		direction: "unknown",
+		kind,
+		reads: [...reads],
+		writes: [...writes],
+		command,
+		opaque: false,
+		scope: false,
+	});
+}
+
+/** Each target as spelled plus its literal prefix, so the worst grade of the two wins: the raw
+ *  spelling still matches a floor rule on its tail (`**` + `/*.pem`), the prefix covers the
+ *  directory the glob walks. */
+function withLiteralPrefixes(targets: string[]): string[] {
+	return [...new Set(targets.flatMap((t) => [t, globLiteralPrefix(t)]))];
+}
+
+function withGradedTargets(toolName: string, a: Omit<ToolAccess, "gradedReads" | "gradedWrites" | "globbed">): ToolAccess {
+	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return { ...a, gradedReads: a.reads, gradedWrites: a.writes, globbed: false };
+	return {
+		...a,
+		gradedReads: withLiteralPrefixes(a.reads),
+		gradedWrites: withLiteralPrefixes(a.writes),
+		globbed: [...a.reads, ...a.writes].some((t) => GLOB_METACHARACTER.test(t)),
+	};
 }
 
 /** Dialog-only suffix (ADR-0002: local plaintext, never a block reason) naming a multi-target
@@ -2209,8 +2273,8 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 		return bashPathTokens(path.sep === "\\" ? cmd.replace(/\\/g, "/") : cmd);
 	}
 	const access = toolAccess(toolName, input);
-	if (access.direction === "mutating") return access.writes;
-	if (access.direction === "observing") return access.reads.length > 0 ? access.reads : [cwd];
+	if (access.direction === "mutating") return access.gradedWrites;
+	if (access.direction === "observing") return access.gradedReads.length > 0 ? access.gradedReads : [cwd];
 	// unknown: whatever targets the payload yields still feed denyPaths — the surviving
 	// BREAKING change (an unknown tool's extracted targets now hit this ask where today
 	// nothing grades them; `userRuleTargets` stays known-tool-only, see R2-2 above).
@@ -2586,9 +2650,9 @@ function classifyByRules(
 	} else if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
-		base = access.opaque ? { verdict: "gray" } : classifyWrites(access.writes, cwd, user.builtinDenyFloor);
+		base = access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, cwd, user.builtinDenyFloor);
 	} else if (access.direction === "observing") {
-		const readTargets = access.reads.length > 0 ? access.reads : [cwd];
+		const readTargets = access.gradedReads.length > 0 ? access.gradedReads : [cwd];
 		base = classifyReads(readTargets, cwd, user.builtinDenyFloor);
 	} else if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// Phase 3 (F13): the bash floor applies to a Python eval cell's extracted shell-out
@@ -2600,6 +2664,10 @@ function classifyByRules(
 		base = { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 	}
 	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
+	// A glob target names files the prefix grade cannot see, so the floor's allow is not a
+	// verdict for it; the deny-side layers below still run on the prefix.
+	if (access.globbed && base.verdict === "allow")
+		base = { verdict: "gray", reason: "path contains glob metacharacters (not graded as a literal path)" };
 
 	// User deny (known-tool targets only — R2-2: an unknown tool's shape-inferred fields
 	// never reach user rules; Item 10 / F11: deny fires on ANY target match). kind "code"
@@ -2657,7 +2725,7 @@ function classifyByRules(
 	// Suspended while policyDegraded (ADR-0010): a partially-loaded policy's allow list may
 	// still be present while a deny/denyPaths entry was dropped — granting mechanical allows
 	// on that basis is the fail-open direction this closes.
-	if (targets.length > 0 && !policyDegraded) {
+	if (targets.length > 0 && !policyDegraded && !access.globbed) {
 		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
@@ -2672,7 +2740,7 @@ function classifyByRules(
 	// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
 	// is non-code tools; a user who listed eval here loses the exemption (BREAKING). Suspended
 	// with user allow while policyDegraded (ADR-0010).
-	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded)
+	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded && !access.globbed)
 		return { verdict: "allow", reason: "user tools allow rule" };
 
 	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at

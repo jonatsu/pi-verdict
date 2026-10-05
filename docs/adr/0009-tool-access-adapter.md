@@ -78,6 +78,17 @@ interface ToolAccess {
   tool (`ast_edit`) it does not — the call is opaque instead. A pathless `read`/scope call keeps the
   grading it always had; a pathless `write`/`edit`/`ast_edit` deliberately changes **silent in-cwd
   allow → deterministic ask**.
+- **Glob paths** (amendment): a `grep`, `find`, `glob`, `ast_grep` or `ast_edit` target is graded
+  twice, as spelled and by its literal prefix, the part before the first path segment containing
+  `*`, `?`, `[` or `{` (a leading glob segment grades as the cwd). The worst grade wins in the floor
+  (S0 and `.git` patterns), in `gateOmpDir` and in `denyPaths`, so `**/*.pem` still hits the S0
+  extension rule through its spelling and `~/.ssh/*.pub` hits it through its prefix. The prefix gets
+  no subtree rule of its own except in `denyPaths`, whose scope compare is already bidirectional.
+  Because neither grade can say what the glob matches, a call with such a
+  target never receives a rule allow: the floor's allow becomes gray, and the user `allow` loop and
+  the `tools` exemption are skipped. Before the amendment, a wildcard spelling such as
+  `~/.config/g?/hosts.yml` matched neither the S0 regexes nor a `denyPaths` base and was allowed
+  with no model call.
 - **Consumer migration.** `userRuleTargets` (feeds user `deny` *and* `allow`) stays scoped to known
   observing/mutating tools: an unlisted tool's shape-inferred fields never reach user rules, so a
   `deny`/`allow` regex can never key on an MCP tool's payload by coincidence. `denyPathCandidates`

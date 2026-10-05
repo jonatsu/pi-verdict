@@ -5444,6 +5444,50 @@ describe("end-to-end adjudication deadline (item 7, Phase 7)", () => {
 	});
 });
 
+describe("scope-tool glob paths", () => {
+	const globCall = { pat: "$K", lang: "yaml", path: "~/.config/g?/hosts.yml" };
+
+	test("a glob path never gets a user allow or a tools exemption, even when the regex matches it", async () => {
+		const h = session({ allow: ["^.*$"], tools: ["ast_grep"] });
+		h.responses = [{ text: "<verdict>deny</verdict> nope" }];
+		const r = await toolCall(h, "ast_grep", globCall);
+		expect(h.calls).toHaveLength(1); // reached the classifier instead of a rule allow
+		expect(r?.block).toBe(true);
+	});
+
+	test("the same call without a metacharacter still takes the user allow", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-glob-"));
+		try {
+			const h = session({ allow: ["^.*$"] }, { cwd });
+			expect(await toolCall(h, "ast_grep", { pat: "$K", lang: "yaml", path: "src" })).toBeUndefined();
+			expect(h.calls).toHaveLength(0);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a literal prefix inside an S0 directory is denied by the floor", async () => {
+		const h = session({});
+		const r = await toolCall(h, "glob", { pattern: "*", path: "~/.ssh/*.pub" });
+		expect(r?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a recursive glob grades as the cwd, so a declared base inside the cwd asks", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-glob-"));
+		try {
+			const h = session({ denyPaths: [path.join(cwd, "secrets")] }, { cwd });
+			h.confirmAnswer = false;
+			const r = await toolCall(h, "ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "json", paths: ["**/*.json"] });
+			expect(h.confirms).toBe(1);
+			expect(r?.block).toBe(true);
+			expect(h.calls).toHaveLength(0);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("type-invalid deny and denyPaths values degrade the policy", () => {
 	const reload = (cfg: object): { skipped: string[]; degraded: boolean } => {
 		fs.mkdirSync(path.join(TMP_AGENT, "config"), { recursive: true });
