@@ -2761,11 +2761,63 @@ function actionCallLine(name: string, args: Record<string, unknown>): { line: st
  *  ExtensionContext; tests need only these two members. */
 export type PipelineHost = Pick<ExtensionContext["sessionManager"], "getBranch" | "getSessionId">;
 
+/** Transcript redaction predicate (item 6b, Phase 5): true when this tool call's arguments
+ *  name a user-declared protected path — the caller then substitutes the whole line for the
+ *  fixed `<protected-path>` marker (see redactorFor). */
+export type RedactorFn = (args: Record<string, unknown>) => boolean;
+
+/** Builds the redaction predicate from env.cwd and the session's anchored denyPaths bases
+ *  (item 6b, Phase 5; Claude-review F10). Detection is deliberately conservative — two
+ *  independent checks, either one redacts: (1) the structured adapter extraction
+ *  (toolAccess → reads/writes, which covers a known tool's path/paths/patch text and an
+ *  unknown tool's extracted targets too, F10), tested against the same dual-form set a
+ *  denyPaths comparison uses (`denyPathForms`, anchored here once with `cwd`), and (2) the
+ *  raw JSON of the arguments containing any base's spelling — absolute, `~/`, `$HOME`/`${HOME}`
+ *  (the denyPaths tokeniser knows only `$HOME`, never `${HOME}` — F10 — so this raw check
+ *  covers what the tokeniser structurally cannot), or the home-relative tail (e.g. a
+ *  `~/.ssh/` declaration's `.ssh/` tail), in both its literal and `cwd`-resolved spellings so
+ *  a relative declaration still catches an absolute spelling of the same path. Over-redaction
+ *  is transcript-only and harmless; under-redaction is a leak — the conservative direction is
+ *  wholesale. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
+ *  privacy marker, not an injection framing (PC-review F9). Detected only literally:
+ *  obfuscated spellings (command substitution, base64, archiving — ADR-0002's documented
+ *  holes) are NOT redacted here; the classifier's existence hint stays the backstop for those
+ *  calls (recorded residual, ADR-0002 amendment — PC-review F5b). User-message lines are
+ *  deliberately never redacted — the user's own disclosure in their own message is theirs
+ *  (PC-review F5c). */
+function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
+	const spellings = new Set<string>();
+	const home = os.homedir();
+	for (const base of bases) {
+		for (const form of baseForms(base)) spellings.add(form);
+		// `~/` and `$HOME`/`${HOME}` spellings of the same base, plus the home-relative tail
+		// (e.g. `.ssh/`) when the base sits under the user's home directory.
+		const relativeToHome = home && (base === home || base.startsWith(home + path.sep)) ? base.slice(home.length) : null;
+		if (relativeToHome !== null && relativeToHome !== "") {
+			for (const form of [relativeToHome, `~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`]) {
+				spellings.add(form); // `{HOME}` + tail produces the literal ${HOME}… — F10's missed tokeniser form
+				for (const resolved of denyPathForms(form, cwd)) spellings.add(resolved); // literal + cwd-resolved, both ways
+			}
+		}
+		if (base.endsWith(path.sep)) spellings.add(base.slice(0, -path.sep)); // prefix form without a trailing slash
+	}
+	if (spellings.size === 0) return () => false;
+	return (args: Record<string, unknown>): boolean => {
+		const access = toolAccess("", args); // name-agnostic: direction/unknown both key on payload shape only
+		for (const target of [...access.reads, ...access.writes]) {
+			for (const form of baseForms(target)) if (spellings.has(form)) return true;
+		}
+		const raw = JSON.stringify(args);
+		for (const spelling of spellings) if (raw.includes(spelling)) return true;
+		return false;
+	};
+}
+
 /**
  * Collect minimal transcript material from the session branch: user-message lines and assistant tool-call lines.
  * Discard assistant narration/thinking and toolResult (injection surface and token bulk).
  */
-function collectTranscriptParts(host: PipelineHost): { userLines: string[]; toolLines: string[] } {
+function collectTranscriptParts(host: PipelineHost, redact: RedactorFn): { userLines: string[]; toolLines: string[] } {
 	const userLines: string[] = [];
 	const toolLines: string[] = [];
 	for (const entry of host.getBranch()) {
@@ -2779,10 +2831,19 @@ function collectTranscriptParts(host: PipelineHost): { userLines: string[]; tool
 							.filter((b) => b.type === "text")
 							.map((b) => b.text)
 							.join("\n");
+			// Deliberately NOT redacted (PC-review F5c): the user's own disclosure in their own
+			// message is theirs to give — only past tool calls are scrubbed.
 			if (text.trim()) userLines.push(`User: ${transcriptSafe(text)}`);
 		} else if (msg.role === "assistant") {
 			for (const block of msg.content) {
-				if (block.type === "toolCall") toolLines.push(toolCallLine(block.name, block.arguments as Record<string, unknown>));
+				if (block.type !== "toolCall") continue;
+				const args = block.arguments as Record<string, unknown>;
+				// Redact-then-truncate (PC-review F5a): the check and substitution happen on the
+				// structured arguments BEFORE toolCallLine/transcriptSafe cap anything — a
+				// protected path cut at the 600/400 boundary would otherwise evade every base
+				// form and leak past the redactor untouched.
+				if (redact(args)) toolLines.push("<protected-path>");
+				else toolLines.push(toolCallLine(block.name, args));
 			}
 		}
 	}
@@ -2790,8 +2851,8 @@ function collectTranscriptParts(host: PipelineHost): { userLines: string[]; tool
 }
 
 /** Compact transcript: most recent user messages + tool calls; action under review is fixed as the final line (positional convention, inspired by CC). */
-function buildTranscript(host: PipelineHost, actionLine: string): string {
-	const { userLines, toolLines } = collectTranscriptParts(host);
+function buildTranscript(host: PipelineHost, actionLine: string, redact: RedactorFn): string {
+	const { userLines, toolLines } = collectTranscriptParts(host, redact);
 	const lines = [...userLines.slice(-MAX_USER_MESSAGES), ...toolLines.slice(-MAX_TOOL_CALLS)];
 	lines.push(actionLine);
 	return lines.join("\n");
@@ -3049,8 +3110,9 @@ async function classifyWithModel(
 	denyPathsActive = false,
 	timeoutMs: number = CLASSIFIER_TIMEOUT_MS,
 	rules: readonly string[] = [],
+	redact: RedactorFn = () => false,
 ): Promise<ClassifierOutcome> {
-	const transcript = buildTranscript(host, actionLine);
+	const transcript = buildTranscript(host, actionLine, redact);
 	const userMessage = `<transcript>\n${transcript}\n</transcript>\nJudge the LAST action in the transcript above. Your entire response MUST begin with <verdict>.`;
 	const systemPrompt = CLASSIFIER_SYSTEM + (denyPathsActive ? DENY_PATHS_HINT : "") + userRulesHint(rules);
 	const attempts: Array<[number, number]> = [
@@ -3345,6 +3407,9 @@ export interface AdjudicateEnv {
 	getFallbackModel?: () => { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null;
 	/** Live-status hook: called right before each gray-zone model call; UI-free (the handler renders it). */
 	onPhase?: (phase: "classifier" | "fallback", modelId: string) => void;
+	/** Transcript redaction predicate (item 6b, Phase 5) — built once per call by adjudicate
+	 *  from cwd + the anchored denyPaths bases; omitted in tests that don't exercise it. */
+	redact?: RedactorFn;
 }
 
 /** #67: the confidence floor. Below it the first layer abstains and the call cascades —
@@ -3384,6 +3449,7 @@ async function runConfidenceCascade(
 	trigger: { kind: "demotion"; confidence: number } | { kind: "fail-closed" },
 	denyPathsActive: boolean,
 	actionLine: string,
+	redact: RedactorFn,
 ): Promise<CascadeResult> {
 	const rules = state.userRules;
 	const demotionAsk = (): CascadeResult["effective"] => ({
@@ -3428,6 +3494,7 @@ async function runConfidenceCascade(
 		denyPathsActive,
 		FALLBACK_TIMEOUT_MS,
 		state.userRules.classifierRules,
+		redact,
 	);
 	if (outcome.source !== "model") return failed(resolved.model.id, outcome.reason);
 	state.fallback.note(first?.verdict ?? null, outcome.verdict);
@@ -3606,11 +3673,24 @@ export async function adjudicate(
 	// Gray zone → classifier; no available model → fail-closed
 
 	const resolved = env.getModel();
+	// item 6b (Phase 5): one redactor per adjudication, built from cwd + the anchored
+	// denyPaths bases, passed to every model call that renders a transcript from this
+	// session's branch (first layer, cascade fallback, and — separately, since it has no
+	// adjudicate context — the EXPLAIN-GATE path, which builds its own from state).
+	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
 	if (!resolved) {
 		const reason = "no classifier model available (fail-closed)";
 		// #71: a fail-closed default deny is not a negative judgment. Record the applied
 		// fallback verdict when one exists; a headless ask is recorded as its degraded deny.
-		const cascade = await runConfidenceCascade(state, env, null, { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine);
+		const cascade = await runConfidenceCascade(
+			state,
+			env,
+			null,
+			{ kind: "fail-closed" },
+			state.userRules.denyPaths.length > 0,
+			actionLine,
+			redact,
+		);
 		const eff = cascade.effective;
 		const effAskHeadless = eff?.verdict === "ask" && !env.hasUI;
 		const fcRecord = buildRecord(
@@ -3660,6 +3740,7 @@ export async function adjudicate(
 		state.userRules.denyPaths.length > 0,
 		CLASSIFIER_TIMEOUT_MS,
 		state.userRules.classifierRules,
+		redact,
 	);
 
 	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
@@ -3674,6 +3755,7 @@ export async function adjudicate(
 					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
 					state.userRules.denyPaths.length > 0,
 					actionLine,
+					redact,
 				)
 			: {};
 	const effVerdict = cascade.effective?.verdict ?? outcome.verdict;
@@ -3848,6 +3930,11 @@ export interface ExplainGateArgs {
 	defaultPrompt: string | null;
 	/** the human's specific question; null or blank = use the default prompt */
 	question: string | null;
+	/** Transcript redaction predicate (item 6b, Phase 5): the EXPLAIN-GATE transcript also goes
+	 *  to a model provider, so it must be scrubbed exactly like the classifier's own — built by
+	 *  the caller (which owns the session state) from cwd + anchored denyPaths bases; omitted
+	 *  only by tests that don't exercise redaction. */
+	redact?: RedactorFn;
 }
 
 export type ExplainGateResult = { ok: true; text: string } | { ok: false; error: string };
@@ -3858,7 +3945,7 @@ export async function explainGate(a: ExplainGateArgs): Promise<ExplainGateResult
 	const task = question
 		? `Answer this specific question from the human about the held action: ${sanitize(question)}`
 		: (a.defaultPrompt ?? EXPLAIN_GATE_DEFAULT_PROMPT);
-	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine)}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
+	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine, a.redact ?? (() => false))}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
 	const r = await callClassifierOnce(
 		a.host,
 		a.signal,
@@ -5209,6 +5296,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			reasonLine,
 			defaultPrompt: state.userRules.explainGatePrompt,
 			question,
+			// item 6b (Phase 5): the EXPLAIN-GATE transcript is a model-provider payload exactly
+			// like the classifier's own — same cwd + anchored bases, same predicate.
+			redact: redactorFor(ctx.cwd, state.anchoredDenyPathBases(ctx.cwd)),
 		});
 	}
 

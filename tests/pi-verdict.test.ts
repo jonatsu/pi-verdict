@@ -4280,6 +4280,29 @@ describe("EXPLAIN-GATE role and decline explanation", () => {
 		expect(declineDetail("user declined", undefined)).toBe("user declined");
 		expect(declineDetail("user declined", "   ")).toBe("user declined");
 	});
+
+	test("the EXPLAIN-GATE prompt's transcript is redacted exactly like the classifier's (F10)", async () => {
+		const base = "/tmp/pv-explain-redact";
+		const h = session({ denyPaths: [base] });
+		// a past tool call naming the protected path, recorded on the branch exactly as the
+		// host would (see the forged-User test — the harness never populates this itself)
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `${base}/secret.txt` } }] },
+		});
+
+		// Now an interactive classifier ask whose transcript carries the earlier protected call
+		h.responses = [ASK, { text: "it runs your build script" }];
+		h.inputs = [""]; // empty question → default prompt, one EXPLAIN-GATE call
+		const rendered: string[] = [];
+		driveDialogs(h, [[DOWN, DOWN, DOWN, "\r"], ["\r"]], rendered);
+		await toolCall(h, "bash", { command: "cargo build" });
+		expect(h.calls).toHaveLength(2); // classifier ask + EXPLAIN-GATE
+		expect(String(h.calls[1].systemPrompt)).toContain("EXPLAIN-GATE");
+		const msg = String(h.calls[1].messages[0].content);
+		expect(msg).not.toContain(`${base}/secret.txt`); // the EXPLAIN-GATE transcript is scrubbed too
+		expect(msg).toContain("<protected-path>");
+	});
 });
 
 // ── subagent gate (omp ctx.agent.kind = "sub") ───────────
@@ -4967,5 +4990,48 @@ describe("action line integrity (item 6a, Phase 4)", () => {
 		const record = readAudit()[0];
 		expect(record.actionLine).toContain("z".repeat(1500));
 		expect(record.actionLine).not.toContain("…[truncated]…");
+	});
+});
+
+// ── transcript redaction (item 6b, Phase 5) ──────────────────────
+
+describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
+	const BASE = "/tmp/pv-redact-base"; // a declare-able path outside cwd (in-cwd would mechanical-allow)
+	const readTranscript = (h: Harness): string => h.calls[0].messages[0].content;
+	/** Pushes a past tool call onto the branch exactly as the host would record one (the
+	 *  harness itself never populates the branch from toolCall() — see the forged-User test). */
+	const pastCall = (h: Harness, name: string, args: Record<string, unknown>) =>
+		h.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name, arguments: args }] } });
+
+	test("a past tool call naming a protected path is redacted in the classifier transcript; the user's own message line is not", async () => {
+		const h = session({ denyPaths: [BASE] });
+		pastCall(h, "read", { path: `${BASE}/secret.txt` });
+
+		// the user deliberately disclosing the path in their own message survives untouched
+		// (PC-review F5c); the earlier tool call must not.
+		userMsg(h, `please look at ${BASE}/secret.txt next`);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", { command: "echo hi" });
+		expect(h.calls.length).toBe(1);
+
+		const t = readTranscript(h);
+		// the past tool call's line is replaced wholesale by the marker (PC-review F9's exact
+		// text, pinned here) — the base must not survive anywhere EXCEPT the user's own line:
+		expect(t).toContain("\n<protected-path>\n"); // the marker is a whole line, not a fragment
+		const toolLine = t.split("\n").find((l) => l.startsWith("read:") || l === "<protected-path>");
+		expect(toolLine).toBe("<protected-path>"); // the read line's position holds the marker
+		expect(t).not.toContain(`read: ${BASE}/secret.txt`); // the original form never survives
+		expect(t).toContain(`User: please look at ${BASE}/secret.txt next`); // user line survives (F5c)
+	});
+
+	test("the redactor does not fire for a tool call with no protected path (no over-redaction on ordinary history)", async () => {
+		const h = session({ denyPaths: [BASE] });
+		pastCall(h, "read", { path: "/tmp/pv-unrelated.txt" });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", { command: "echo hi" });
+		expect(h.calls.length).toBe(1);
+		const t = readTranscript(h);
+		expect(t).not.toContain("<protected-path>");
+		expect(t).toContain("/tmp/pv-unrelated.txt");
 	});
 });

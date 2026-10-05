@@ -201,3 +201,44 @@ regression stays pinned). User-rule path targets take the same tier for
 `..`-spellings, with asymmetric semantics: deny matches when **any** target
 matches, allow only when **every** target matches — an allow regex that
 matches only the lexical spelling must not allow the call.
+
+## Amendment (2026-10-05): transcript redaction of past tool calls (path-layer review item 6b, plan-review F10/F5)
+
+Past tool calls carried protected-path plaintext into every model payload built
+from the session branch: `collectTranscriptParts` sends each prior
+`toolCall`'s line to the classifier (and to the EXPLAIN-GATE role, whose
+transcript also goes to a model provider) unfiltered — a protected read the
+user *approved* leaked its path on every later verdict, against this ADR's
+zero-plaintext commitment. Both payloads are now scrubbed through one shared
+predicate (`redactorFor(cwd, anchoredBases)`, threaded through
+`buildTranscript` → `collectTranscriptParts` → every classifier/EXPLAIN-GATE
+caller — F10):
+
+- **Two checks, either one redacts**: the structured tool-access extraction
+  (known or unknown tool — `toolAccess`'s `reads`/`writes`, tested through the
+  same `denyPathForms` dual-form set a live `denyPaths` comparison uses) and the
+  raw JSON of the arguments containing any base's spelling (absolute, `~/`,
+  `$HOME`/`${HOME}` — the bash tokeniser knows only `$HOME`, never `${HOME}` —
+  or the home-relative tail such as `.ssh/`, in both literal and `cwd`-resolved
+  spellings so a relative declaration still catches an absolute spelling).
+- **Redact-then-truncate** (plan-review F5a): the check runs on the structured
+  arguments *before* `transcriptSafe` caps the line — a path cut at the 600/400
+  boundary would otherwise evade every base form. A hit replaces the whole line
+  with the fixed marker `<protected-path>`, a neutral privacy marker rather than
+  an injection framing (plan-review F9). Over-redaction is transcript-only and
+  explicitly accepted; under-redaction would be the leak, so the conservative
+  direction is wholesale.
+- **Recorded residual** (plan-review F5b): detection is literal and inherits
+  this ADR's own documented obfuscation holes — a protected path behind command
+  substitution, base64, or an archive is not redacted, because redaction sees
+  only what the extractor's token scan and the raw-JSON check already see. The
+  classifier's existence hint remains the backstop for exactly those calls
+  (which is why item 3 of this phase adds no new prompt text).
+- **User messages are deliberately not redacted** (plan-review F5c): a user
+  disclosing their own protected path in their own message is theirs to give;
+  only past tool calls — the machine-generated residue of an approved action —
+  are scrubbed.
+
+Audit records stay local + full-fidelity (the boundary note above is
+unchanged: they never leave the machine, so their `actionLine`/`transcript`
+fields keep the plaintext the classifier prompt now redacts).
