@@ -3361,6 +3361,103 @@ describe("project trust prompt", () => {
 		});
 	});
 
+	test("project override direction table: gateOmpDir/notifyAllows/classifierFallbackMode/subagentGate narrow only; footer is no longer overridable", async () => {
+		await withTempDir("pv-proj-direction-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			const projCfg = path.join(dir, ".pi", "pi-verdict.json");
+			const userCfgPath = path.join(TMP_AGENT, "config", "pi-verdict.json");
+			fs.mkdirSync(path.dirname(userCfgPath), { recursive: true });
+			fs.writeFileSync(
+				userCfgPath,
+				JSON.stringify({
+					gateOmpDir: true,
+					notifyAllows: true,
+					classifierFallbackMode: "shadow",
+					subagentGate: "normal",
+					footer: "compact",
+				}),
+			);
+			// every value below is the WIDENING direction for its key — all must be rejected
+			fs.writeFileSync(
+				projCfg,
+				JSON.stringify({
+					gateOmpDir: false,
+					notifyAllows: false,
+					classifierFallbackMode: "enforce",
+					subagentGate: "off",
+					footer: "off",
+				}),
+			);
+			const state = new SessionState();
+			// sessionTrustedRoot = dir trusts the project directly, bypassing the interactive prompt
+			const report = state.reloadRules(dir, dir);
+			expect(report.project?.applied).toBe(true);
+			expect(state.userRules.gateOmpDir).toBe(true);
+			expect(state.userRules.notifyAllows).toBe(true);
+			expect(state.userRules.classifierFallbackMode).toBe("shadow");
+			expect(state.userRules.subagentGate).toBe("normal");
+			expect(state.userRules.footer).toBe("compact");
+			expect(report.skipped.some((s) => s.includes("gateOmpDir") && s.includes("widen"))).toBe(true);
+			expect(report.skipped.some((s) => s.includes("notifyAllows") && s.includes("widen"))).toBe(true);
+			expect(report.skipped.some((s) => s.includes("classifierFallbackMode") && s.includes("widen"))).toBe(true);
+			expect(report.skipped.some((s) => s.includes("subagentGate") && s.includes("widen"))).toBe(true);
+			expect(report.skipped.some((s) => s.includes("footer") && s.includes("not overridable"))).toBe(true);
+
+			// "auto" is also rejected for subagentGate — only "normal" is ever accepted
+			fs.writeFileSync(projCfg, JSON.stringify({ subagentGate: "auto" }));
+			const report2 = state.reloadRules(dir, dir);
+			expect(state.userRules.subagentGate).toBe("normal");
+			expect(report2.skipped.some((s) => s.includes("subagentGate"))).toBe(true);
+
+			// the narrowing direction genuinely applies when the user's own value is looser
+			fs.writeFileSync(
+				userCfgPath,
+				JSON.stringify({ gateOmpDir: false, notifyAllows: false, classifierFallbackMode: "enforce", subagentGate: "normal" }),
+			);
+			fs.writeFileSync(projCfg, JSON.stringify({ gateOmpDir: true, notifyAllows: true, classifierFallbackMode: "shadow" }));
+			const report3 = state.reloadRules(dir, dir);
+			expect(state.userRules.gateOmpDir).toBe(true);
+			expect(state.userRules.notifyAllows).toBe(true);
+			expect(state.userRules.classifierFallbackMode).toBe("shadow");
+			expect(report3.skipped.some((s) => s.includes("would widen"))).toBe(false);
+		});
+	});
+
+	test("project override subagentAskTimeoutMs: applies only above the user's effective value, capped at 2^31-1ms for both", async () => {
+		await withTempDir("pv-proj-sat-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			const projCfg = path.join(dir, ".pi", "pi-verdict.json");
+			const userCfgPath = path.join(TMP_AGENT, "config", "pi-verdict.json");
+			fs.mkdirSync(path.dirname(userCfgPath), { recursive: true });
+			fs.writeFileSync(userCfgPath, JSON.stringify({ subagentAskTimeoutMs: 5000 }));
+			const state = new SessionState();
+			// a smaller project value would widen (less time with a human in the loop) — rejected
+			fs.writeFileSync(projCfg, JSON.stringify({ subagentAskTimeoutMs: 1000 }));
+			const r1 = state.reloadRules(dir, dir);
+			expect(state.userRules.subagentAskTimeoutMs).toBe(5000);
+			expect(r1.skipped.some((s) => s.includes("subagentAskTimeoutMs") && s.includes("widen"))).toBe(true);
+			// a strictly larger project value narrows (more time before auto-resolution) — applies
+			fs.writeFileSync(projCfg, JSON.stringify({ subagentAskTimeoutMs: 120_000 }));
+			const r2 = state.reloadRules(dir, dir);
+			expect(state.userRules.subagentAskTimeoutMs).toBe(120_000);
+			expect(r2.skipped.some((s) => s.includes("subagentAskTimeoutMs"))).toBe(false);
+			// the 2^31-1ms cap rejects an over-cap project value even though it is numerically
+			// larger — each reload re-derives the user's effective value fresh from disk (still
+			// 5000 here, unaffected by the previous reload's narrowed 120_000), so that is what
+			// survives
+			fs.writeFileSync(projCfg, JSON.stringify({ subagentAskTimeoutMs: 2_147_483_648 }));
+			const r3 = state.reloadRules(dir, dir);
+			expect(state.userRules.subagentAskTimeoutMs).toBe(5000);
+			expect(r3.skipped.some((s) => s.includes("subagentAskTimeoutMs") && s.includes("widen"))).toBe(true);
+			// the cap applies to a pure user value too, with no project involved
+			fs.rmSync(projCfg, { force: true });
+			fs.writeFileSync(userCfgPath, JSON.stringify({ subagentAskTimeoutMs: 2_147_483_648 }));
+			const r4 = state.reloadRules(dir, dir);
+			expect(state.userRules.subagentAskTimeoutMs).toBe(60_000);
+			expect(r4.skipped.some((s) => s.includes("subagentAskTimeoutMs"))).toBe(true);
+		});
+	});
+
 	test("malformed trust file: Trust applies for the session, file untouched, warns", async () => {
 		await withProject(async (h) => {
 			fs.mkdirSync(path.dirname(TRUST_FILE()), { recursive: true });

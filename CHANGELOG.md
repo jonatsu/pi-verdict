@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: project overrides on `gateOmpDir`, `notifyAllows`, `classifierFallbackMode` and `subagentGate` now apply only their single narrowing value (`true`, `true`, `"shadow"` and `"normal"` respectively) — a project value that would widen the gate is ignored, with a skipped-note, instead of overwriting the user's value verbatim; `subagentAskTimeoutMs` applies only when strictly greater than the user's effective value (default `60000`), and both the user's and a project's value are capped at `2^31-1`ms (a larger value overflows `AbortSignal.timeout`/`setTimeout` and would fire almost immediately, acting like `"auto"`); `footer` leaves the overridable set entirely — a project could otherwise hide the `subagent off` warning badge via `footer:"off"` ([ADR-0006](docs/adr/0006-fork-posture-and-override-hardening.md) direction-table amendment).
+- `docs/configuration.md`'s project-override list no longer claims `autoDeny`, `audit`, `classifierMinConfidence` and `classifierFallbackModel` are overridable — the code has never allowed it; the doc was stale.
+
 ## [0.17.0] - 2026-10-05
 
 Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.17.0`.

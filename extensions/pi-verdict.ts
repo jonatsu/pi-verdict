@@ -1074,26 +1074,64 @@ interface LoadedRules {
 	project: { path: string; trusted: boolean; applied: boolean } | null;
 }
 
-/** Keys a project override may change (ADR-0006, narrowed by R7). The gate's decision
- *  inputs stay user-only: the classifier and EXPLAIN-GATE model specs (an egress
- *  channel), the free-text `rules` (injected into the classifier prompt with "takes
- *  precedence" wording), toggleShortcut, and the authority/egress keys `autoDeny`,
- *  `audit`, `classifierMinConfidence` and `classifierFallbackModel`. The keys that do
- *  merge can only narrow the gate — a project may add denials and remove exemptions, it
- *  cannot widen allow/tools or disable the floor. The trust prompt names this. */
-const PROJECT_OVERRIDABLE_KEYS: Record<string, true> = {
-	allow: true,
-	deny: true,
-	denyPaths: true,
-	tools: true,
-	ignoreTools: true,
-	builtinDenyFloor: true,
-	gateOmpDir: true,
-	notifyAllows: true,
-	footer: true,
-	classifierFallbackMode: true,
-	subagentGate: true,
-	subagentAskTimeoutMs: true,
+const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
+/** subagentAskTimeoutMs feeds AbortSignal.timeout/setTimeout (below): a value above 2^31-1ms
+ *  overflows those Node/Bun timers, which then fire almost immediately — acting like "auto"
+ *  instead of waiting. The cap applies to the user's own value and to any project narrowing
+ *  alike (F12). */
+const SUBAGENT_ASK_TIMEOUT_MAX_MS = 2_147_483_647;
+const validSubagentAskTimeoutMs = (v: unknown): number | null =>
+	typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= SUBAGENT_ASK_TIMEOUT_MAX_MS ? v : null;
+const widenSkip = (key: string, v: unknown, pp: string): string =>
+	`${key}: ${JSON.stringify(v)} would widen the gate — project override ignored (${pp})`;
+
+/** Each overridable key's narrowing merge, given the user's own raw value and the project's
+ *  raw value (ADR-0006, narrowed by R7; direction table). This table IS the overridability
+ *  list — a key absent from it is not overridable per project at all (the loop below warns and
+ *  ignores it) — so a new key cannot be added to the merge without choosing a narrowing
+ *  direction. The gate's decision inputs stay user-only regardless: the classifier and
+ *  EXPLAIN-GATE model specs (an egress channel), the free-text `rules` (injected into the
+ *  classifier prompt with "takes precedence" wording), toggleShortcut, and the authority/
+ *  egress keys `autoDeny`, `audit`, `classifierMinConfidence` and `classifierFallbackModel`.
+ *  `footer` is user-only too: `footer:"off"` would hide the `subagent off` warning badge that
+ *  exists to expose a widened state, so a project must not be able to silence it. The trust
+ *  prompt names this set. */
+type ProjectOverrideNarrow = (userVal: unknown, projVal: unknown, skipped: string[], pp: string) => unknown;
+const PROJECT_OVERRIDE_DIRECTION: Record<string, ProjectOverrideNarrow> = {
+	deny: (userVal, projVal) => [...new Set([...stringList(userVal), ...stringList(projVal)])],
+	denyPaths: (userVal, projVal) => [...new Set([...stringList(userVal), ...stringList(projVal)])],
+	allow: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
+	tools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
+	ignoreTools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
+	builtinDenyFloor: (userVal, projVal) => (projVal === true ? true : userVal),
+	gateOmpDir: (userVal, projVal, skipped, pp) => {
+		if (projVal === true) return true;
+		skipped.push(widenSkip("gateOmpDir", projVal, pp));
+		return userVal;
+	},
+	notifyAllows: (userVal, projVal, skipped, pp) => {
+		if (projVal === true) return true;
+		skipped.push(widenSkip("notifyAllows", projVal, pp));
+		return userVal;
+	},
+	classifierFallbackMode: (userVal, projVal, skipped, pp) => {
+		if (projVal === "shadow") return "shadow";
+		skipped.push(widenSkip("classifierFallbackMode", projVal, pp));
+		return userVal;
+	},
+	subagentGate: (userVal, projVal, skipped, pp) => {
+		if (projVal === "normal") return "normal";
+		skipped.push(widenSkip("subagentGate", projVal, pp));
+		return userVal;
+	},
+	subagentAskTimeoutMs: (userVal, projVal, skipped, pp) => {
+		const userEff = validSubagentAskTimeoutMs(userVal) ?? 60_000;
+		const projEff = validSubagentAskTimeoutMs(projVal);
+		if (projEff !== null && projEff > userEff) return projEff;
+		skipped.push(widenSkip("subagentAskTimeoutMs", projVal, pp));
+		return userVal;
+	},
 };
 
 /** Every key the user config may carry; anything else warns (R9) — a typo in `deny`
@@ -1216,38 +1254,17 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 					// models are an egress channel and the free-text `rules` are injected into
 					// the classifier prompt with "takes precedence" wording, so a project must
 					// never steer either; toggleShortcut stays user-only too.
-					// R7 — narrowing only: a project may add denials and remove exemptions,
-					// never widen. deny/denyPaths union with the user's; allow/tools/ignoreTools
-					// intersect; builtinDenyFloor may only be set true.
-					const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+					// R7 — narrowing only, mechanically enforced: every key in
+					// PROJECT_OVERRIDE_DIRECTION applies its own narrowing merge; a key absent
+					// from the table is not overridable per project at all (handled below).
 					const merged = { ...raw } as Record<string, unknown>;
 					for (const [k, v] of Object.entries(projRaw as Record<string, unknown>)) {
-						if (!Object.hasOwn(PROJECT_OVERRIDABLE_KEYS, k)) {
+						const narrow = Object.hasOwn(PROJECT_OVERRIDE_DIRECTION, k) ? PROJECT_OVERRIDE_DIRECTION[k] : undefined;
+						if (!narrow) {
 							if (k !== "_hint") skipped.push(`${k}: not overridable per project — key ignored (${pp})`);
 							continue;
 						}
-						switch (k) {
-							case "deny":
-								merged.deny = [...new Set([...stringList(raw.deny), ...stringList(v)])];
-								break;
-							case "denyPaths":
-								merged.denyPaths = [...new Set([...stringList(raw.denyPaths), ...stringList(v)])];
-								break;
-							case "allow":
-								merged.allow = stringList(raw.allow).filter((x) => stringList(v).includes(x));
-								break;
-							case "tools":
-								merged.tools = stringList(raw.tools).filter((x) => stringList(v).includes(x));
-								break;
-							case "ignoreTools":
-								merged.ignoreTools = stringList(raw.ignoreTools).filter((x) => stringList(v).includes(x));
-								break;
-							case "builtinDenyFloor":
-								if (v === true) merged.builtinDenyFloor = true;
-								break;
-							default:
-								merged[k] = v;
-						}
+						merged[k] = narrow(merged[k], v, skipped, pp);
 					}
 					raw = merged as unknown as typeof raw;
 					project = { path: pp, trusted: true, applied: true };
@@ -1317,8 +1334,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		const sgOk = sgRaw === "off" || sgRaw === "normal" || sgRaw === "auto";
 		if (sgRaw !== undefined && !sgOk) skipped.push(`subagentGate: ${JSON.stringify(sgRaw)}`);
 		const satRaw = raw.subagentAskTimeoutMs;
-		const satOk = typeof satRaw === "number" && Number.isInteger(satRaw) && satRaw >= 1;
-		if (satRaw !== undefined && !satOk) skipped.push(`subagentAskTimeoutMs: ${JSON.stringify(satRaw)}`);
+		const satValid = validSubagentAskTimeoutMs(satRaw);
+		if (satRaw !== undefined && satValid === null) skipped.push(`subagentAskTimeoutMs: ${JSON.stringify(satRaw)}`);
 		return {
 			rules: {
 				allow: compile(raw.allow),
@@ -1339,7 +1356,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 				classifierFallbackMode: fbModeRaw === "shadow" ? "shadow" : "enforce",
 				footer: footerOk ? footerRaw : "full",
 				subagentGate: sgOk ? sgRaw : "normal",
-				subagentAskTimeoutMs: satOk ? satRaw : 60_000,
+				subagentAskTimeoutMs: satValid ?? 60_000,
 				autoDeny: raw.autoDeny !== false,
 				classifierRules,
 			},

@@ -108,3 +108,36 @@ allowlist is refined:
   exemptions, and cannot widen the gate.
 
 Pinned by the `narrows only` test in the `project trust prompt` suite.
+
+## Amendment (2026-10-05, tool-access-hardening round — direction table)
+
+Decision 5's allowlist narrowed only by *shape* (union/intersect/boolean-true), leaving five keys
+on a verbatim-copy default arm that could silently widen the gate: a project could set
+`gateOmpDir:false`, `notifyAllows:false`, `classifierFallbackMode:"enforce"`, `subagentGate:"off"`
+or `"auto"`, or a *smaller* `subagentAskTimeoutMs`, and the value applied unchanged. `footer` sat
+in the same arm, letting a project hide the `subagent off` warning badge via `footer:"off"` — the
+one badge that exists to expose the R7 fail-open deviation.
+
+- Every overridable key now carries its own narrowing merge function in one direction table; a
+  key absent from the table is not overridable at all. A new key cannot be added to the merge
+  without choosing a direction.
+- `gateOmpDir` and `notifyAllows`: a project may set only `true`.
+- `classifierFallbackMode`: a project may set only `"shadow"`.
+- `subagentGate`: a project may set only `"normal"` — the one value that always requires a human
+  in the loop; `"off"` and `"auto"` both skip it.
+- `subagentAskTimeoutMs`: a project value applies only when strictly greater than the user's
+  effective value (which defaults to `60000` when absent or invalid). Both the user's own value
+  and a project's are additionally capped at `2^31-1`ms: a larger value overflows the
+  `AbortSignal.timeout`/`setTimeout` timers that consume it, which then fire almost immediately —
+  acting like `"auto"` instead of waiting.
+- `footer` leaves the overridable set entirely (user-only, alongside `autoDeny`, `audit`,
+  `classifierMinConfidence` and `classifierFallbackModel`).
+
+A rejected widening attempt is recorded in the skip channel by name, same as an invalid value; the
+user's own value survives unchanged. `docs/configuration.md`'s overridable-key list is corrected
+alongside this amendment: it had drifted to additionally claim `autoDeny`, `audit`,
+`classifierMinConfidence` and `classifierFallbackModel` as overridable, which the code has never
+allowed.
+
+Pinned by the `project override direction table` and `project override subagentAskTimeoutMs`
+tests in the `project trust prompt` suite.
