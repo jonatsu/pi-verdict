@@ -25,6 +25,7 @@ import autoMode, {
 	displaySafe,
 	EXPLAIN_GATE_DEFAULT_PROMPT,
 	gitPushForce,
+	mentionsSpelling,
 	redactorFor,
 	renderFooter,
 	renderJevBar,
@@ -5598,6 +5599,31 @@ describe("type-invalid deny and denyPaths values degrade the policy", () => {
 				fs.rmSync(trustFile, { force: true });
 			}
 		});
+	});
+});
+
+describe("redactor platform spellings", () => {
+	const darwin = { caseInsensitive: true, win32: false };
+	const posix = { caseInsensitive: false, win32: false };
+	const windows = { caseInsensitive: true, win32: true };
+
+	test("a case-insensitive platform redacts a differently cased spelling of a declared base", () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pv-redact-case-"));
+		try {
+			const bases = [path.join(cwd, "Secrets")];
+			expect(redactorFor(cwd, bases, darwin)({ path: "SECRETS/n.txt" })).toBe(true);
+			expect(redactorFor(cwd, bases, darwin)({ command: "cat SECRETS/n.txt" })).toBe(true);
+			expect(redactorFor(cwd, bases, darwin)({ note: path.join(cwd, "SECRETS") })).toBe(true);
+			expect(redactorFor(cwd, bases, posix)({ path: "SECRETS/n.txt" })).toBe(false); // a distinct name on a case-sensitive fs
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a Windows backslash spelling matches a base in the raw string check", () => {
+		expect(mentionsSpelling(["C:\\Proj\\Secrets\\a.txt"], ["C:\\proj\\secrets"], windows)).toBe(true);
+		expect(mentionsSpelling(["C:/proj/secrets/a.txt"], ["C:\\proj\\secrets"], windows)).toBe(true);
+		expect(mentionsSpelling(["C:\\Proj\\Secrets\\a.txt"], ["C:\\proj\\secrets"], posix)).toBe(false);
 	});
 });
 

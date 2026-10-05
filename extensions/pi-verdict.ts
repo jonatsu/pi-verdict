@@ -2270,7 +2270,7 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 		// "/"-only, so unify separators first (drive letter is skipped by the absolute-path branch;
 		// a mis-read shell escape only yields extra candidates — false positives ask, the safe direction)
 		const cmd = String(input.command ?? "");
-		return bashPathTokens(path.sep === "\\" ? cmd.replace(/\\/g, "/") : cmd);
+		return bashPathTokens(commandForPathTokens(cmd, path.sep === "\\"));
 	}
 	const access = toolAccess(toolName, input);
 	if (access.direction === "mutating") return access.gradedWrites;
@@ -2950,14 +2950,16 @@ const PROTECTED_PATH_MARKER = "<protected-path>";
  *  calls (recorded residual, ADR-0002 amendment — PC-review F5b). User-message lines are
  *  deliberately never redacted — the user's own disclosure in their own message is theirs
  *  (PC-review F5c). */
-export function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
+export function redactorFor(cwd: string, bases: readonly string[], platform: RedactionPlatform = HOST_REDACTION_PLATFORM): RedactorFn {
+	const fold = (s: string): string => (platform.caseInsensitive ? s.toLowerCase() : s);
 	const spellings = new Set<string>();
 	const home = os.homedir();
 	for (const base of bases) {
 		for (const form of baseForms(base)) spellings.add(form);
 		// `~/` and `$HOME`/`${HOME}` spellings of the same base, plus the home-relative tail
 		// (e.g. `.ssh/`) when the base sits under the user's home directory.
-		const relativeToHome = home && (base === home || base.startsWith(home + path.sep)) ? base.slice(home.length) : null;
+		const relativeToHome =
+			home && (fold(base) === fold(home) || fold(base).startsWith(fold(home + path.sep))) ? base.slice(home.length) : null;
 		if (relativeToHome !== null && relativeToHome !== "") {
 			for (const form of [relativeToHome, `~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`]) {
 				spellings.add(form); // `{HOME}` + tail produces the literal ${HOME}… — F10's missed tokeniser form
@@ -2970,7 +2972,7 @@ export function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
 		// The cwd-relative spelling of an in-cwd base — a past call may spell the
 		// same path relatively ("secrets/a.txt"), which neither the absolute form nor its
 		// raw-JSON substring can catch.
-		const relToCwd = base.startsWith(cwd + path.sep) ? path.relative(cwd, base) : null;
+		const relToCwd = fold(base).startsWith(fold(cwd + path.sep)) ? path.relative(cwd, base) : null;
 		if (relToCwd) spellings.add(relToCwd);
 	}
 	if (spellings.size === 0) return () => false;
@@ -2981,8 +2983,10 @@ export function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
 	// alias/kernel spelling a denyPaths hit would catch is redacted here too.
 	const hits = (text: string): boolean => {
 		for (const form of denyPathForms(text, cwd)) {
+			const folded = fold(form);
 			for (const spelling of spellings) {
-				if (form === spelling || form.startsWith(spelling.endsWith(path.sep) ? spelling : spelling + path.sep)) return true;
+				const base = fold(spelling);
+				if (folded === base || folded.startsWith(base.endsWith(path.sep) ? base : base + path.sep)) return true;
 			}
 		}
 		return false;
@@ -2990,11 +2994,43 @@ export function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
 	return (args: Record<string, unknown>): boolean => {
 		const access = toolAccess("", args); // name-agnostic: direction/unknown both key on payload shape only
 		for (const target of [...access.reads, ...access.writes]) if (hits(target)) return true;
-		if (access.command !== null) for (const token of bashPathTokens(access.command)) if (hits(token)) return true;
-		const raw = JSON.stringify(args);
-		for (const spelling of spellings) if (raw.includes(spelling)) return true;
-		return false;
+		if (access.command !== null)
+			for (const token of bashPathTokens(commandForPathTokens(access.command, platform.win32))) if (hits(token)) return true;
+		// Over the string values themselves: the JSON text doubles every backslash, so a Windows spelling
+		// would never match there. The JSON check stays for nesting deeper than inputStrings reads.
+		if (mentionsSpelling(inputStrings(args), spellings, platform)) return true;
+		return mentionsSpelling([JSON.stringify(args)], spellings, platform);
 	};
+}
+
+/** What the platform changes about path comparison: Windows and macOS compare names without
+ *  case, and Windows spells separators with a backslash. A parameter so each branch is testable
+ *  on any host. */
+export interface RedactionPlatform {
+	caseInsensitive: boolean;
+	win32: boolean;
+}
+const HOST_REDACTION_PLATFORM: RedactionPlatform = { caseInsensitive: CASE_INSENSITIVE_FS, win32: path.sep === "\\" };
+
+/** `bashPathTokens` knows only "/" separators; unify a Windows command's backslashes first, as
+ *  denyPathCandidates does. A mis-read shell escape only adds candidates, which asks. */
+function commandForPathTokens(command: string, win32: boolean): string {
+	return win32 ? command.replace(/\\/g, "/") : command;
+}
+
+/** Does any text contain any spelling, comparing case-insensitively and across both separator
+ *  styles where the platform does? Over-matching is the safe direction for redaction. */
+export function mentionsSpelling(texts: readonly string[], spellings: Iterable<string>, platform: RedactionPlatform): boolean {
+	const normalize = (s: string): string => {
+		const separated = platform.win32 ? s.replace(/\\/g, "/") : s;
+		return platform.caseInsensitive ? separated.toLowerCase() : separated;
+	};
+	const haystacks = texts.map(normalize);
+	for (const spelling of spellings) {
+		const needle = normalize(spelling);
+		if (haystacks.some((h) => h.includes(needle))) return true;
+	}
+	return false;
 }
 
 /**
