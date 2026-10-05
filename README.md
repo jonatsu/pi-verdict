@@ -191,6 +191,7 @@ tool_call
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
   │     │   before user allow; classifier sees an existence hint only
+  │     ├─ an action whose counted text exceeds 8192 chars → ask before user allow
   │     ├─ a mutating call naming no target at all → opaque ask (ADR-0009)
   │     ├─ eval's code text: deny/denyPaths/.omp apply to the whole text, user
   │     │   allow never does; the bash floor covers a py cell's !/%%bash lines only

@@ -104,6 +104,10 @@ The three possible verdict values: if the rule layer or classifier determines an
 
 Handling of `ask` when no UI is available (non-interactive modes: `pi -p` / json / rpc): always treat it as deny. This follows from fail-closed behavior in unattended scenarios.
 
+### ask provenance
+
+Where an ask came from — the Phase 0 seam every ask producer rides: `RuleResult.askSource` (`"protected-path"` for the `denyPaths`/`gateOmpDir` asks, `"rule"` for the opaque/over-cap asks, `"degraded-policy"` for withheld model allows under ADR-0010) maps to `Verdict.source` and `AuditRecord.source` inside `adjudicate`; an unset `askSource` maps to `"protected-path"`, preserving today's label for anything the seam does not yet know about. Presentation, notifications and the audit corpus key on this source rather than on verdict text — the layer map that names each value is `docs/layers.md`.
+
 ### fail-closed
 
 Default behavior for any exceptional path (classifier error, timeout, unparseable output): block, never silently allow.

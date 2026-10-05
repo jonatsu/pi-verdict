@@ -59,6 +59,27 @@ bun run release-check       # package.json version == annotated tag v<version> (
 
 `lint`/`format` scripts exist (`mise exec -- biome …`) and `biome.json` is the config; CI runs `biome ci .`, so probe/ and tools/ must pass the same strict rules (no `any`). Run `bun run typecheck`, `bun test`, and `bun run probe` after any change to `extensions/`, `probe/`, or `tools/`. For headless smoke-testing of a build, see "Smoke-testing" below.
 
+## Coding Standards (YOU MUST)
+
+Load the `coding-standards` skill before writing or changing code — `extensions/`, `tests/`, `probe/`, `tools/` — and
+load its `references/comments.md` before writing or rewriting a comment, and `references/testing-standards.md`
+when writing or restructuring tests. Its defaults govern wherever this file and the language rules leave a choice
+undecided; established repository patterns still win over a default.
+
+Two rules from that skill this repository has broken before:
+
+- **A comment explains why, not what.** If a better name removes the need, rename instead of commenting. Delete a
+  comment that restates the line beneath it rather than rewording it. No markdown emphasis, no commented-out
+  code, no process narration ("round 2", "a later review found…") — record the resulting choice and why it
+  holds. The section banners described below are the one sanctioned divider.
+- **A reference must resolve inside the repository.** In source comments and test titles, cite a tracked
+  artifact: an issue (`#NN`), an ADR (`ADR-000N`), a plan item or finding id (`item 6b`, `Phase 5`, `F13`,
+  `R2-14`), or a test name. Never cite a finding tag from an untracked review report (the `.scratch/` round tags
+  `S-F5`, `R-F1`, `C3`): that report is gitignored, so the tag is unresolvable once the round closes.
+  `CHANGELOG.md` and `docs/adr/` keep their existing convention of plan-resolvable finding ids.
+
+`biome ci .` enforces the mechanical half of the skill; the review gates enforce the rest.
+
 ## Code Conventions & Common Patterns
 
 - ESM, `node:`-prefixed imports, tab indentation, TypeScript `strict`. Relative imports carry the `.ts` extension.

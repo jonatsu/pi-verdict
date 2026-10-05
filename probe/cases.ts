@@ -587,6 +587,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 			ref: "R2-4",
 			expected: { layer: "rule-ask" },
 		},
+		{
+			label: "a tools-listed write still faces the denyPaths ask (exemption after deny-side)",
+			family: "tool-access",
+			tool: "write",
+			input: { path: `${fx.work}/secret-sub/deep.txt`, content: "x" },
+			config: { denyPaths: [`${fx.work}/secret-sub`], tools: ["write"] },
+			ref: "ADR-0009",
+			expected: { layer: "protected-path" },
+		},
 	);
 
 	// ---- policy-degraded (ADR-0010: broken policy fail-closed) ------------------------------

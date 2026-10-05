@@ -527,6 +527,12 @@ function classifyBash(command: string, floorOn: boolean): RuleResult {
 	return { verdict: "gray", reason: "no built-in allowlist" };
 }
 
+/** Direct shell APIs in py cell text: omp injects `__omp_shell` into the cell
+ *  namespace, and subprocess/os.system stay importable — a model can shell out without a `!`
+ *  line. A tripwire, not a parser: the whole line is pushed and the danger rules (regexes over
+ *  text) do the matching. */
+const PY_SHELL_API = /(^|[^\w.])(__omp_shell\s*\(|subprocess\.(?:Popen|run|call|check_call|check_output)\s*\(|os\.system\s*\()/;
+
 /** Extracts the shell-executing lines of an omp `eval {language:"py"}` cell (item 4, F13):
  *  the bash floor applies to these, never to the whole code text. Self-contained per
  *  constraint 3 (own constants/parser, no host import) and verified 2026-10-05 against the
@@ -534,10 +540,13 @@ function classifyBash(command: string, floorOn: boolean): RuleResult {
  *  `_LINE_MAGICS`/`_CELL_MAGICS` registries) — **not** the plan draft's `%sh`/`%%sh`: that
  *  version has no such magic, line or cell (`_LINE_MAGICS` has no "sh" entry; `_CELL_MAGICS`
  *  registers only "bash" as shell-executing — `capture`/`timeit`/`writefile` parse their body
- *  as plain Python with no re-transform, so they cannot nest a nested `!`/`%%bash`). Two forms:
+ *  as plain Python with no re-transform, so they cannot nest a nested `!`/`%%bash`). Three forms:
  *  a line starting with `!` (optionally `name = !cmd`) is a one-line shell-out, the text after
  *  `!` the command; a `%%bash` line is a cell magic — every line from the next one to the end
- *  of the cell is bash script text verbatim (cell magics consume the remainder of the cell).
+ *  of the cell is bash script text verbatim (cell magics consume the remainder of the cell); a
+ *  direct shell-API call (`__omp_shell(`, `subprocess.*`, `os.system(`), whole
+ *  line pushed. js cells get no equivalent extraction — recorded residual (ADR-0009 Phase 3
+ *  amendment): their code text still feeds user `deny`/`denyPaths`/`.omp` and the classifier.
  *  A plain line scan, not the real tokenizer (which is string/comment-aware via Python's own
  *  `tokenize` module) — a `!`/`%%bash` spelling inside a string literal or comment is a false
  *  positive here, the safe direction (more scrutiny, not less); this is a tripwire over a
@@ -561,6 +570,7 @@ function pyEvalShellLines(code: string): string[] {
 		const assign = /^[ \t]*[A-Za-z_][A-Za-z_0-9.[\], ]*?\s*=\s*(.+)$/.exec(lines[i]);
 		const rhs = assign?.[1].trim();
 		if (rhs?.startsWith("!")) out.push(rhs.slice(1).trim());
+		else if (PY_SHELL_API.test(stripped)) out.push(stripped);
 	}
 	return out;
 }
@@ -1089,10 +1099,11 @@ const SIDE_EFFECTING_TOOL_NAMES: ReadonlySet<string> = new Set(["learn", "memory
  *  A schema exposing none of these will stay gray/classifier-only forever; one exposing a
  *  matching field name under an unrecognized JSON-Schema type is a field the adapter cannot
  *  read (it silently treats the field as absent). */
-const COVERAGE_SIGNAL_FIELDS = ["path", "paths", "input", "_input", "code", "command", "content"] as const;
+const COVERAGE_SIGNAL_FIELDS = ["path", "_path", "paths", "input", "_input", "code", "command", "content"] as const;
 /** Expected top-level JSON-Schema `type` keyword per signal field — `paths` is the only array. */
 const COVERAGE_SIGNAL_FIELD_TYPE: Record<(typeof COVERAGE_SIGNAL_FIELDS)[number], string> = {
 	path: "string",
+	_path: "string",
 	paths: "array",
 	input: "string",
 	_input: "string",
@@ -1166,36 +1177,31 @@ const widenSkip = (key: string, v: unknown, pp: string): string =>
  *  exists to expose a widened state, so a project must not be able to silence it. The trust
  *  prompt names this set. */
 type ProjectOverrideNarrow = (userVal: unknown, projVal: unknown, skipped: string[], pp: string) => unknown;
+/** The shared shape of the scalar direction-table arms: an identical project
+ *  value is a no-op with no note, an accepted value applies, anything else is a
+ *  widening the skip channel names (plan Phase 1 step 2). */
+const narrowScalar = (key: string, userVal: unknown, projVal: unknown, accept: unknown, skipped: string[], pp: string): unknown => {
+	if (projVal === userVal) return userVal;
+	if (projVal === accept) return projVal;
+	skipped.push(widenSkip(key, projVal, pp));
+	return userVal;
+};
 const PROJECT_OVERRIDE_DIRECTION: Record<string, ProjectOverrideNarrow> = {
 	deny: (userVal, projVal) => [...new Set([...stringList(userVal), ...stringList(projVal)])],
 	denyPaths: (userVal, projVal) => [...new Set([...stringList(userVal), ...stringList(projVal)])],
 	allow: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
 	tools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
 	ignoreTools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
-	builtinDenyFloor: (userVal, projVal) => (projVal === true ? true : userVal),
-	gateOmpDir: (userVal, projVal, skipped, pp) => {
-		if (projVal === true) return true;
-		skipped.push(widenSkip("gateOmpDir", projVal, pp));
-		return userVal;
-	},
-	notifyAllows: (userVal, projVal, skipped, pp) => {
-		if (projVal === true) return true;
-		skipped.push(widenSkip("notifyAllows", projVal, pp));
-		return userVal;
-	},
-	classifierFallbackMode: (userVal, projVal, skipped, pp) => {
-		if (projVal === "shadow") return "shadow";
-		skipped.push(widenSkip("classifierFallbackMode", projVal, pp));
-		return userVal;
-	},
-	subagentGate: (userVal, projVal, skipped, pp) => {
-		if (projVal === "normal") return "normal";
-		skipped.push(widenSkip("subagentGate", projVal, pp));
-		return userVal;
-	},
+	builtinDenyFloor: (userVal, projVal, skipped, pp) => narrowScalar("builtinDenyFloor", userVal, projVal, true, skipped, pp),
+	gateOmpDir: (userVal, projVal, skipped, pp) => narrowScalar("gateOmpDir", userVal, projVal, true, skipped, pp),
+	notifyAllows: (userVal, projVal, skipped, pp) => narrowScalar("notifyAllows", userVal, projVal, true, skipped, pp),
+	classifierFallbackMode: (userVal, projVal, skipped, pp) =>
+		narrowScalar("classifierFallbackMode", userVal, projVal, "shadow", skipped, pp),
+	subagentGate: (userVal, projVal, skipped, pp) => narrowScalar("subagentGate", userVal, projVal, "normal", skipped, pp),
 	subagentAskTimeoutMs: (userVal, projVal, skipped, pp) => {
 		const userEff = validSubagentAskTimeoutMs(userVal) ?? 60_000;
 		const projEff = validSubagentAskTimeoutMs(projVal);
+		if (projEff === userEff) return userVal; // an equal effective value changes nothing — no note
 		if (projEff !== null && projEff > userEff) return projEff;
 		skipped.push(widenSkip("subagentAskTimeoutMs", projVal, pp));
 		return userVal;
@@ -2758,21 +2764,32 @@ function boundedExcerpt(text: string, maxChars: number): string {
  *  that never counts toward the cap; a gray tool's raw JSON arguments are bounded separately
  *  too (GRAY_ARGS_CHARS), also uncounted — neither can ever trigger `overCap`. */
 function actionCallLine(name: string, args: Record<string, unknown>): { line: string; overCap: boolean } {
+	// The cap counts RAW lengths — the floor reads the raw prefix (classifyBash
+	// slices the raw command at BASH_MAX_MATCH_LEN), so zero-width padding must not shrink a
+	// counted action below the horizon the floor never read. Display stays sanitized.
 	if (typeof args.command === "string") {
-		const counted = `${name}: ${escapeLineBreaks(stripZeroWidth(args.command))}`;
-		return { line: counted, overCap: counted.length > ACTION_LINE_MAX_CHARS };
+		return {
+			line: `${name}: ${escapeLineBreaks(stripZeroWidth(args.command))}`,
+			overCap: `${name}: ${args.command}`.length > ACTION_LINE_MAX_CHARS,
+		};
 	}
 	const access = toolAccess(name, args);
 	if (access.kind === "code" && access.command !== null) {
-		const counted = `${name}: ${escapeLineBreaks(stripZeroWidth(access.command))}`;
-		return { line: counted, overCap: counted.length > ACTION_LINE_MAX_CHARS };
+		return {
+			line: `${name}: ${escapeLineBreaks(stripZeroWidth(access.command))}`,
+			overCap: `${name}: ${access.command}`.length > ACTION_LINE_MAX_CHARS,
+		};
 	}
 	const targets = access.direction === "mutating" ? access.writes : access.direction === "observing" ? access.reads : [];
-	let counted: string | null = null;
-	if (targets.length > 1) counted = `${name}: ${escapeLineBreaks(stripZeroWidth(`${targets.length} targets: ${targets.join(", ")}`))}`;
-	else if (typeof args.path === "string") counted = `${name}: ${escapeLineBreaks(stripZeroWidth(args.path))}`;
-	if (counted !== null) {
-		if (counted.length > ACTION_LINE_MAX_CHARS) return { line: counted, overCap: true };
+	let raw: string | null = null;
+	if (targets.length > 1) raw = `${name}: ${targets.length} targets: ${targets.join(", ")}`;
+	// A single extracted target (paths[]/patch text, no path field) counts too —
+	// previously it fell to the gray-JSON branch where overCap is structurally false.
+	else if (targets.length === 1) raw = `${name}: ${targets[0]}`;
+	else if (typeof args.path === "string") raw = `${name}: ${args.path}`;
+	if (raw !== null) {
+		if (raw.length > ACTION_LINE_MAX_CHARS) return { line: escapeLineBreaks(stripZeroWidth(raw)), overCap: true };
+		const counted = escapeLineBreaks(stripZeroWidth(raw));
 		if (access.direction === "mutating") {
 			const content =
 				typeof args.content === "string"
@@ -2798,6 +2815,11 @@ export type PipelineHost = Pick<ExtensionContext["sessionManager"], "getBranch" 
  *  name a user-declared protected path — the caller then substitutes the whole line for the
  *  fixed `<protected-path>` marker (see redactorFor). */
 export type RedactorFn = (args: Record<string, unknown>) => boolean;
+
+/** The one fixed marker a redacted payload line becomes (plan item 6b) — a neutral
+ *  privacy marker, never an injection framing. Named once so every substitution
+ *  site in the pipeline and the presentation layer shares it. */
+const PROTECTED_PATH_MARKER = "<protected-path>";
 
 /** Builds the redaction predicate from env.cwd and the session's anchored denyPaths bases
  *  (item 6b, Phase 5; Claude-review F10). Detection is deliberately conservative — two
@@ -2833,13 +2855,30 @@ function redactorFor(cwd: string, bases: readonly string[]): RedactorFn {
 			}
 		}
 		if (base.endsWith(path.sep)) spellings.add(base.slice(0, -path.sep)); // prefix form without a trailing slash
+		// The cwd-relative spelling of an in-cwd base — a past call may spell the
+		// same path relatively ("secrets/a.txt"), which neither the absolute form nor its
+		// raw-JSON substring can catch.
+		const relToCwd = base.startsWith(cwd + path.sep) ? path.relative(cwd, base) : null;
+		if (relToCwd) spellings.add(relToCwd);
 	}
 	if (spellings.size === 0) return () => false;
+	// The structured half mirrors a real denyPaths hit: the candidate runs
+	// through denyPathForms (cwd-resolved + kernel forms, same as hitDenyPaths) and matches a
+	// spelling exactly or beneath it (single-directional: the leak direction; over-redaction is
+	// the accepted side). Command/code payloads tokenize through bashPathTokens first, so an
+	// alias/kernel spelling a denyPaths hit would catch is redacted here too.
+	const hits = (text: string): boolean => {
+		for (const form of denyPathForms(text, cwd)) {
+			for (const spelling of spellings) {
+				if (form === spelling || form.startsWith(spelling.endsWith(path.sep) ? spelling : spelling + path.sep)) return true;
+			}
+		}
+		return false;
+	};
 	return (args: Record<string, unknown>): boolean => {
 		const access = toolAccess("", args); // name-agnostic: direction/unknown both key on payload shape only
-		for (const target of [...access.reads, ...access.writes]) {
-			for (const form of baseForms(target)) if (spellings.has(form)) return true;
-		}
+		for (const target of [...access.reads, ...access.writes]) if (hits(target)) return true;
+		if (access.command !== null) for (const token of bashPathTokens(access.command)) if (hits(token)) return true;
 		const raw = JSON.stringify(args);
 		for (const spelling of spellings) if (raw.includes(spelling)) return true;
 		return false;
@@ -2875,7 +2914,7 @@ function collectTranscriptParts(host: PipelineHost, redact: RedactorFn): { userL
 				// structured arguments BEFORE toolCallLine/transcriptSafe cap anything — a
 				// protected path cut at the 600/400 boundary would otherwise evade every base
 				// form and leak past the redactor untouched.
-				if (redact(args)) toolLines.push("<protected-path>");
+				if (redact(args)) toolLines.push(PROTECTED_PATH_MARKER);
 				else toolLines.push(toolCallLine(block.name, args));
 			}
 		}
@@ -3631,6 +3670,9 @@ export async function resolveAskWithoutHuman(
 		rules.denyPaths.length > 0,
 		FALLBACK_TIMEOUT_MS,
 		rules.classifierRules,
+		// The second-model prompt is a model payload like any other —
+		// without this it shipped past tool calls unredacted, defeating Phase 5 (ADR-0002).
+		env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd)),
 	);
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";
@@ -3664,8 +3706,7 @@ const AUTO_DENY_OFF_SUFFIX = " (autoDeny is off: this would have been denied —
 
 /** item 6c (ADR-0010): shared naming for a withheld model-originated allow — all three
  *  conversion sites (gray first layer, fail-closed cascade, subagent second model) build
- *  their reason from this prefix (clean-code C1: it lived in three inline copies, two of
- *  them byte-identical). */
+ *  their reason from this prefix. */
 const WITHHELD_ALLOW_PREFIX = "policy degraded: allow withheld (ADR-0010) — ";
 
 /** item 6c (ADR-0010): the one predicate the conversion sites share — the policy is broken
@@ -3757,6 +3798,11 @@ export async function adjudicate(
 	// session's branch (first layer, cascade fallback, and — separately, since it has no
 	// adjudicate context — the EXPLAIN-GATE path, which builds its own from state).
 	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
+	// The action under review is a model payload too — when it names a protected
+	// path (e.g. a ${HOME} spelling the denyPaths tokeniser cannot extract, so no ask fired),
+	// the classifier/cascade prompts get the fixed marker; the local audit record keeps the
+	// raw text (ADR-0002 boundary: audit never leaves the machine).
+	const modelActionLine = redact(call.input) ? PROTECTED_PATH_MARKER : actionLine;
 	if (!resolved) {
 		const reason = "no classifier model available (fail-closed)";
 		// #71: a fail-closed default deny is not a negative judgment. Record the applied
@@ -3767,7 +3813,7 @@ export async function adjudicate(
 			null,
 			{ kind: "fail-closed" },
 			state.userRules.denyPaths.length > 0,
-			actionLine,
+			modelActionLine,
 			redact,
 		);
 		const eff = cascade.effective;
@@ -3832,7 +3878,7 @@ export async function adjudicate(
 		env.signal,
 		env.complete,
 		resolved.model,
-		actionLine,
+		modelActionLine,
 		resolved.thinking,
 		state.userRules.denyPaths.length > 0,
 		CLASSIFIER_TIMEOUT_MS,
@@ -3851,7 +3897,7 @@ export async function adjudicate(
 					demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null,
 					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
 					state.userRules.denyPaths.length > 0,
-					actionLine,
+					modelActionLine,
 					redact,
 				)
 			: {};
@@ -4757,6 +4803,13 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	// Session state: reset list belongs to SessionState.reset
 	const state = new SessionState(undefined, agentDirPath());
 
+	/** One construction point for this session's redactor: the presentation and
+	 *  handler sites build their per-call predicate through this helper instead of repeating
+	 *  the redactorFor + anchored-bases idiom. (adjudicate and resolveAskWithoutHuman live
+	 *  outside this closure and use `env.redact ?? …` — the handler publishes the session
+	 *  redactor through AdjudicateEnv.redact below.) */
+	const sessionRedactor = (cwd: string): RedactorFn => redactorFor(cwd, state.anchoredDenyPathBases(cwd));
+
 	/** item 6c (Phase 6; ADR-0010): every block reason names the degraded-policy state while
 	 *  it holds — a silent degradation would contradict the session-start warning's role as
 	 *  the primary signal. Wraps the module-level blockedReason so its message contract
@@ -4781,25 +4834,31 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		const note = (msg: string, level: "info" | "warning" | "error"): void =>
 			ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
 		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
+		// Notifications carry no protected-path plaintext (the invariant the
+		// protected-path branch below states out loud) — an action whose text names a base
+		// becomes the fixed marker; block REASONS and the local dialog surfaces are unchanged
+		// (the EXPLAIN payload is gated separately, in explainAsk).
+		const displayAction = sessionRedactor(opts.ctx.cwd)(call.input) ? PROTECTED_PATH_MARKER : action;
 		if (v.verdict === "allow") {
 			// #60: classifier allows surface via notifyAllows OR debug, with one
 			// notification either way; mechanical passes stay debug-only, while the audit
 			// log carries completeness.
 			if (debug) {
-				if (v.source === "rule") note(`🛡️ allow (rule): ${action}`, "info");
+				if (v.source === "rule") note(`🛡️ allow (rule): ${displayAction}`, "info");
 				else if (v.source === "protected-path") note("🛡️ allow (protected-path confirm)", "info");
-				else note(`🛡️ allow (classifier): ${v.reason}\n  ${action}`, "info");
+				else note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
 			} else if (state.userRules.notifyAllows && v.source === "classifier") {
-				note(`🛡️ allow (classifier): ${v.reason}\n  ${action}`, "info");
+				note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
 			}
 			return undefined;
 		}
 		if (v.verdict === "deny") {
 			if (v.source === "degraded-policy") {
 				// item 6c (Phase 6): the ask this denial came from exists because the user's own
-				// policy failed to load — name it, action line included (no protected path here:
-				// the source is a model verdict, never a matched path).
-				note(`🛡️ Auto Mode blocked (policy degraded, allow withheld): ${v.reason}\n  ${action}`, "warning");
+				// policy failed to load — name it; the action line rides displayAction (the
+				// marker when it names a base — the same notification invariant as every
+				// branch here).
+				note(`🛡️ Auto Mode blocked (policy degraded, allow withheld): ${v.reason}\n  ${displayAction}`, "warning");
 				return { block: true, reason: blockReason("degraded-policy", v.reason) };
 			}
 			if (v.source === "protected-path") {
@@ -4808,14 +4867,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				return { block: true, reason: blockReason("protected-path", `ask degraded to block in non-interactive mode: ${v.reason}`) };
 			}
 			if (v.source === "fail-closed") {
-				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
+				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
 				return { block: true, reason: blockReason("fail-closed", v.reason) };
 			}
 			if (v.source === "rule") {
-				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
+				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
 				return { block: true, reason: blockReason("rule", v.reason) };
 			}
-			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${action}`, "warning");
+			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
 			return { block: true, reason: blockReason("classifier", v.reason) };
 		}
 		// ask → human confirmation; non-interactive calls were degraded inside the pipeline, so reaching here means UI is available
@@ -5437,20 +5496,27 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	): Promise<ExplainGateResult> {
 		const role = resolveExplainGate(ctx);
 		if (!role) return { ok: false, error: "no model available" };
+		// The EXPLAIN prompt carries the held action — when it names a protected
+		// path the model gets the fixed marker; the local dialog that already showed this
+		// action to the human is unaffected (it renders the raw text separately).
+		const redactFn = sessionRedactor(ctx.cwd); // one construction shared by both payloads
+		const redacted = redactFn(call.input);
 		return explainGate({
 			host: ctx.sessionManager,
 			signal: ctx.signal,
 			complete: completeForClassifier(ctx.modelRegistry, deps),
 			model: role.model,
 			thinking: role.thinking,
-			actionLine: action,
-			actionDetail: approveCodeMarkdown(call.toolName, call.input, () => undefined)?.markdown ?? displaySafe(action),
+			actionLine: redacted ? PROTECTED_PATH_MARKER : action,
+			actionDetail: redacted
+				? PROTECTED_PATH_MARKER
+				: (approveCodeMarkdown(call.toolName, call.input, () => undefined)?.markdown ?? displaySafe(action)),
 			reasonLine,
 			defaultPrompt: state.userRules.explainGatePrompt,
 			question,
 			// item 6b (Phase 5): the EXPLAIN-GATE transcript is a model-provider payload exactly
 			// like the classifier's own — same cwd + anchored bases, same predicate.
-			redact: redactorFor(ctx.cwd, state.anchoredDenyPathBases(ctx.cwd)),
+			redact: redactFn,
 		});
 	}
 
@@ -5471,6 +5537,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		const input = event.input as Record<string, unknown>;
 		const call = { toolName: event.toolName, input };
 		const action = describeAction(event.toolName, input);
+		// The subagent notification sites below embed the action too — same
+		// no-protected-plaintext invariant as presentVerdict's notifications. Built once here
+		// and reused for the env redactor below.
+		const redactFn = sessionRedactor(ctx.cwd);
+		const displayAction = redactFn(input) ? PROTECTED_PATH_MARKER : action;
 
 		// Live status (root session + UI only): one widget row above the editor while a model call runs.
 		// Text is phase + tool name + model id only; never command or path text (ADR-0002).
@@ -5493,6 +5564,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// Pipeline (zero UI) → presentation keyed on source alone.
 		const env: AdjudicateEnv = {
 			cwd: ctx.cwd,
+			// The DI seam adjudicate/resolveAskWithoutHuman already read —
+			// published once per call from the handler's session redactor.
+			redact: redactFn,
 			// a subagent's asks are resolved by the bridge (root UI / second model), never degraded in the pipeline
 			hasUI: sub ? true : !!ctx.hasUI,
 			getModel: () => resolveClassifier(ctx),
@@ -5553,16 +5627,17 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 		// Subagent ask resolved with no human answer: second model (only an explicit allow permits)
 		const finishWithoutHuman = async (resolution: "timeout" | "auto"): Promise<{ block: true; reason: string } | undefined> => {
-			const res = await resolveAskWithoutHuman(state, env, verdict, action);
+			const res = await resolveAskWithoutHuman(state, env, verdict, displayAction);
 			finalize({ subagent: { ...sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 			const out = (ui ?? ctx.ui).notify.bind(ui ?? ctx.ui);
 			if (res.verdict === "allow") {
-				if (debug || state.userRules.notifyAllows) out(`🛡️ [${label}] allow (second model, no human): ${res.reason}\n  ${action}`, "info");
+				if (debug || state.userRules.notifyAllows)
+					out(`🛡️ [${label}] allow (second model, no human): ${res.reason}\n  ${displayAction}`, "info");
 				return undefined;
 			}
 			// no path plaintext in notifications (ADR-0002): protected-path asks omit the action line
 			out(
-				`🛡️ [${label}] Auto Mode blocked (subagent ask, no human): ${res.reason}${verdict.source === "protected-path" ? "" : `\n  ${action}`}`,
+				`🛡️ [${label}] Auto Mode blocked (subagent ask, no human): ${res.reason}${verdict.source === "protected-path" ? "" : `\n  ${displayAction}`}`,
 				"warning",
 			);
 			return { block: true, reason: blockReason("subagent-auto", res.reason) };

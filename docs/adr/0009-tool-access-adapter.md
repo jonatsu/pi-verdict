@@ -207,7 +207,14 @@ before the classifier:
   inside a string literal or comment is a false positive here, the accepted safe direction (ADR-0001
   caveat; ADR-0007 precedent — a raw-text tripwire decides every hit, never a sandbox proof).
   Backslash line-continuation folding is not reproduced; a continued `!`-line is read as separate
-  lines instead, which only widens what counts as a candidate.
+  lines instead, which only widens what counts as a candidate. The extraction also covers a third
+  form — a **direct shell-API line** (`__omp_shell(`,
+  `subprocess.Popen/run/call/check_call/check_output(`, `os.system(`), pushed whole: omp injects
+  `__omp_shell` into the cell namespace (`runner.py:1777`), so a model can shell out without a
+  `!` line, and the danger rules are regexes over text so the whole line is enough.
+  **Recorded residual:** js cells get no equivalent extraction — `language: "js"` code
+  reaches no built-in floor at all; their code text still feeds user `deny`, `denyPaths`
+  tokenization and the `.omp` word check, and the classifier remains the backstop.
 
 Pinned by the `eval semantics` test describe (user deny on code text, the F4 starter-allow
 non-admission, the F13 `!`/`%%bash` floor hits with a js-language negative control, denyPaths/

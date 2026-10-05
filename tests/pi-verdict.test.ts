@@ -27,6 +27,7 @@ import autoMode, {
 	renderFooter,
 	renderJevBar,
 	resolveAgentDir,
+	resolveAskWithoutHuman,
 	SessionState,
 	setTmpdirBasesForTests,
 	setXdgConfigRootsForTests,
@@ -3461,6 +3462,30 @@ describe("project trust prompt", () => {
 		});
 	});
 
+	test("project override notes a builtinDenyFloor widening and stays silent on identical values", async () => {
+		await withTempDir("pv-proj-floor-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			const projCfg = path.join(dir, ".pi", "pi-verdict.json");
+			const userCfgPath = path.join(TMP_AGENT, "config", "pi-verdict.json");
+			fs.mkdirSync(path.dirname(userCfgPath), { recursive: true });
+
+			// A project builtinDenyFloor:false is a widening — the user's value survives AND the
+			// skip channel names the key (plan Phase 1 step 2).
+			fs.writeFileSync(userCfgPath, JSON.stringify({ builtinDenyFloor: true }));
+			fs.writeFileSync(projCfg, JSON.stringify({ builtinDenyFloor: false }));
+			const state = new SessionState();
+			const report = state.reloadRules(dir, dir);
+			expect(state.userRules.builtinDenyFloor).toBe(true);
+			expect(report.skipped.some((s) => s.includes("builtinDenyFloor") && s.includes("widen"))).toBe(true);
+
+			// An identical project value changes nothing — no "would widen" false positive.
+			fs.writeFileSync(userCfgPath, JSON.stringify({ gateOmpDir: false, notifyAllows: false }));
+			fs.writeFileSync(projCfg, JSON.stringify({ gateOmpDir: false, notifyAllows: false }));
+			const report2 = state.reloadRules(dir, dir);
+			expect(report2.skipped.some((s) => s.includes("widen"))).toBe(false);
+		});
+	});
+
 	test("project override subagentAskTimeoutMs: applies only above the user's effective value, capped at 2^31-1ms for both", async () => {
 		await withTempDir("pv-proj-sat-", async (dir) => {
 			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
@@ -3493,6 +3518,13 @@ describe("project trust prompt", () => {
 			const r4 = state.reloadRules(dir, dir);
 			expect(state.userRules.subagentAskTimeoutMs).toBe(60_000);
 			expect(r4.skipped.some((s) => s.includes("subagentAskTimeoutMs"))).toBe(true);
+			// A non-default value on both sides: the equality the guard sees is its own, not the
+			// fallback default's.
+			fs.writeFileSync(userCfgPath, JSON.stringify({ subagentAskTimeoutMs: 12_345 }));
+			fs.writeFileSync(projCfg, JSON.stringify({ subagentAskTimeoutMs: 12_345 }));
+			const r5 = state.reloadRules(dir, dir);
+			expect(state.userRules.subagentAskTimeoutMs).toBe(12_345);
+			expect(r5.skipped.some((s) => s.includes("subagentAskTimeoutMs"))).toBe(false);
 		});
 	});
 
@@ -4563,6 +4595,20 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		});
 	});
 
+	test("auto: the second-model prompt carries the marker when the held action names a protected path", async () => {
+		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb", denyPaths: ["~/.ssh/"] }, async (_root, sub) => {
+			sub.responses = [ASK, ALLOW];
+			// The ${HOME} spelling defeats the denyPaths tokeniser, so no deterministic ask
+			// fires: the classifier asks, auto mode consults the second model, and the held
+			// action line that model receives must already be the marker.
+			expect(await toolCall(sub, "bash", { command: `cat \${HOME}/.ssh/id_rsa` })).toBeUndefined();
+			expect(sub.calls.length).toBe(2);
+			const prompt = String(sub.calls[1]?.messages?.[0]?.content ?? "");
+			expect(prompt).toContain("<protected-path>");
+			expect(prompt).not.toContain("/.ssh/");
+		});
+	});
+
 	test("off: the gate is inert in subagents (the root stays gated)", async () => {
 		await withBridge({ subagentGate: "off" }, async (root, sub) => {
 			expect(await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined();
@@ -5035,6 +5081,83 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		expect(t).not.toContain("<protected-path>");
 		expect(t).toContain("/tmp/pv-unrelated.txt");
 	});
+
+	test("a cwd-relative declaration catches a relative target spelling", async () => {
+		// The declaration "secrets" anchors to <cwd>/secrets, so a past call spelling the path
+		// relatively ("secrets/a.txt") must still redact — the exact-membership structured check
+		// and the absolute-only raw-JSON substring both missed it.
+		const h = session({ denyPaths: ["secrets"] });
+		pastCall(h, "read", { path: "secrets/a.txt" });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", { command: "echo hi" });
+		expect(h.calls.length).toBe(1);
+		const t = readTranscript(h);
+		expect(t).toContain("\n<protected-path>\n");
+		expect(t).not.toContain("secrets/a.txt");
+	});
+
+	test("redact-then-truncate: a path straddling the 600/400 cut still redacts the whole line", async () => {
+		const h = session({ denyPaths: [BASE] });
+		// "read: " (6) + 590 filler puts the base across transcriptSafe's 600-char head cut —
+		// if a future refactor truncated the LINE before redacting, the prefix would survive
+		// and the base would be split beyond recognition.
+		pastCall(h, "read", { path: "x".repeat(590) + `${BASE}/file.txt` });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", { command: "echo hi" });
+		const t = readTranscript(h);
+		expect(t).toContain("\n<protected-path>\n");
+		expect(t).not.toContain("read: " + "x".repeat(50)); // the truncated line's prefix never survives
+	});
+
+	test(`a \${HOME}-spelled protected path never reaches the classifier prompt or a notification`, async () => {
+		// The denyPaths bash tokeniser knows $HOME but not ${HOME}, so NO deterministic ask
+		// fires — the call reaches the classifier, where the action line and (on block) the
+		// notification must both carry the marker instead of the path.
+		const h = session({ denyPaths: ["~/.ssh/"] });
+		h.responses = [{ text: "<verdict>deny</verdict> mock" }];
+		const r = await toolCall(h, "bash", { command: `cat \${HOME}/.ssh/id_rsa` });
+		expect(h.calls.length).toBe(1); // proves the tokeniser hole: no ask fired
+		const t = String(h.calls[0].messages[0].content);
+		expect(t).not.toContain("/.ssh/id_rsa");
+		expect(t).toContain("<protected-path>");
+		expect(r?.block).toBe(true);
+		const blocked = h.notifies.find(([m, l]) => l === "warning" && m.includes("Auto Mode blocked"));
+		expect(blocked?.[0]).toContain("<protected-path>");
+		expect(blocked?.[0]).not.toContain("/.ssh/id_rsa");
+	});
+
+	test("the subagent second-model prompt is redacted like every other model payload", async () => {
+		setConfig({ denyPaths: ["/tmp/pv-second-model"], classifierFallbackModel: "mock/fb" });
+		const state = new SessionState(undefined, TMP_AGENT);
+		const env = adjudicateEnv({ fallback: { model: { id: "fb-model" }, thinking: "off" } });
+		env.host = {
+			getBranch: () => [
+				{
+					type: "message",
+					message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: "/tmp/pv-second-model/x.txt" } }] },
+				},
+			],
+			getSessionId: () => "s1",
+		};
+		const captured: any[] = [];
+		env.complete = (async (_m: any, req: any) => {
+			captured.push(req);
+			return { content: [{ type: "text", text: "<verdict>allow</verdict> fine" }], stopReason: "stop" };
+		}) as any;
+		const ask = {
+			verdict: "ask" as const,
+			reason: "needs a human",
+			source: "classifier" as const,
+			degraded: false,
+			autoResolve: "consult" as const,
+		};
+		const res = await resolveAskWithoutHuman(state, env, ask, "bash: echo hi");
+		expect(res.verdict).toBe("allow"); // not degraded — state.policyDegraded is false here
+		expect(captured.length).toBe(1);
+		const prompt = String(captured[0]?.messages?.[0]?.content ?? "");
+		expect(prompt).toContain("<protected-path>");
+		expect(prompt).not.toContain("/tmp/pv-second-model/x.txt");
+	});
 });
 
 // ── policyDegraded (item 6c, Phase 6) ──────────────────────
@@ -5153,5 +5276,67 @@ describe("policyDegraded footer badge (item 6c, Phase 6)", () => {
 	test("the risk badge renders only while the state holds", () => {
 		expect(renderFooter({ ...base, policyDegraded: true }, theme, "compact")).toContain("policy degraded");
 		expect(renderFooter(base, theme, "compact")).not.toContain("policy degraded");
+	});
+});
+
+// ── action-line cap, layer 0 coverage, exemption ordering (item 6a, Phase 4) ────
+
+describe("action-line cap, layer 0 coverage, and exemption ordering (item 6a, Phase 4)", () => {
+	test("zero-width padding cannot hide an over-cap command from the cap", async () => {
+		const h = session({});
+		h.ctx.hasUI = false;
+		// raw length ≈ 9008 (what the floor reads), stripped length ≈ 7 — before the fix the
+		// cap counted the stripped text and the padded tail never asked.
+		const padded = "echo hi" + "\u200b".repeat(9000);
+		const r = await toolCall(h, "bash", { command: padded });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("too long");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("a single-element paths[] target counts toward the action cap", async () => {
+		const h = session({});
+		h.ctx.hasUI = false;
+		const r = await toolCall(h, "ast_edit", { ops: [{ pat: "x", out: "y" }], paths: ["/tmp/" + "p".repeat(8190)] });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("too long");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("layer 0: an apply-patch Update File naming the gate's own policy file is denied", async () => {
+		const h = session({});
+		const patch =
+			"*** Begin Patch\n*** Update File: " + path.join(TMP_AGENT, "config", "pi-verdict.json") + "\n@@\n-old\n+new\n*** End Patch";
+		const r = await toolCall(h, "edit", { input: patch });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("self-protection");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("layer 0: an eval cell whose shell-out names the verdicts dir is denied", async () => {
+		const h = session({});
+		const r = await toolCall(h, "eval", { language: "py", code: "!cat " + path.join(TMP_AGENT, "verdicts", "s1.jsonl") });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("self-protection");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("a tools-listed write still faces the denyPaths ask (exemption applies after the deny side)", async () => {
+		const h = session({ tools: ["write"], denyPaths: ["/tmp/pv-tools-exempt"] });
+		h.ctx.hasUI = false;
+		const r = await toolCall(h, "write", { path: "/tmp/pv-tools-exempt/f.txt", content: "x" });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("denyPaths");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("the eval floor trips on a direct shell-API line in a py cell", async () => {
+		const h = session({});
+		h.ctx.hasUI = false; // the floor must decide, never the classifier
+		const code = 'import os\nos.system("' + "rm " + '-rf /tmp/x")';
+		const r = await toolCall(h, "eval", { language: "py", code });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("recursive delete");
+		expect(h.calls.length).toBe(0);
 	});
 });
