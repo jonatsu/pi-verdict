@@ -2996,6 +2996,14 @@ function classifyByRules(
 		base = { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 	}
 	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
+	// A target in one of the host's internal URL schemes is served by a handler (a remote host, a
+	// vault), not by the project file its text resolves to, so no rule may vouch for it.
+	const internalUrl =
+		(access.direction === "observing" || toolName === "ast_edit") &&
+		[...access.gradedReads, ...access.gradedWrites].some(isHostInternalUrl);
+	if (internalUrl && base.verdict === "allow") {
+		base = { verdict: "gray", reason: "target is an internal URL, not a project path" };
+	}
 	// A glob target names files the prefix grade cannot see, so the floor's allow is not a
 	// verdict for it; the deny-side layers below still run on the prefix. `glob` alone only lists
 	// names, so it keeps the allow while everything it can reach stays inside the project.
@@ -3069,7 +3077,7 @@ function classifyByRules(
 	// on that basis is the fail-open direction this closes.
 	// An opaque call's path/paths are model-supplied while its real target is unknown, so no
 	// rule can vouch for it (the same call is denied without an allow rule configured).
-	if (targets.length > 0 && !policyDegraded && !access.globbed && !access.opaque && !relocatable) {
+	if (targets.length > 0 && !policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl) {
 		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
@@ -3084,7 +3092,15 @@ function classifyByRules(
 	// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
 	// is non-code tools; a user who listed eval here loses the exemption (BREAKING). Suspended
 	// with user allow while policyDegraded (ADR-0010).
-	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded && !access.globbed && !access.opaque && !relocatable)
+	if (
+		user.tools.includes(toolName) &&
+		access.kind !== "code" &&
+		!policyDegraded &&
+		!access.globbed &&
+		!access.opaque &&
+		!relocatable &&
+		!internalUrl
+	)
 		return { verdict: "allow", reason: "user tools allow rule" };
 
 	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at

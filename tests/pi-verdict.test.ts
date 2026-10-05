@@ -5962,7 +5962,6 @@ describe("host path spelling (ADR-0009)", () => {
 				for (const unregistered of ["a://..\\..\\.config\\age\\keys.txt", "file2://..\\..\\.config\\age\\keys.txt"]) {
 					expect((await toolCall(h, "grep", { pattern: "x", path: unregistered }))?.block).toBe(true);
 				}
-				expect(await toolCall(h, "grep", { pattern: "x", path: "local://notes\\a.md" })).toBeUndefined();
 				expect(h.calls).toHaveLength(0);
 			},
 			home,
@@ -6052,6 +6051,28 @@ describe("host path spelling (ADR-0009)", () => {
 				const h = session({}, { cwd });
 				expect(await toolCall(h, "read", { path: "a.png?q=what" })).toBeUndefined();
 				expect(h.calls).toHaveLength(0);
+			},
+			home,
+		);
+	});
+
+	test("a target in a registered internal scheme is never a rule allow, even under a user allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({ allow: ["^.*$"], tools: ["read", "grep", "ast_edit"] }, { cwd });
+				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				for (const [tool, input] of [
+					["read", { path: "ssh://prod/etc/shadow" }],
+					["read", { path: "@vault://x" }],
+					["grep", { pattern: "x", path: "local://notes\\a.md" }],
+					["glob", { path: "skill://**" }],
+					["ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "ts", paths: ["a.ts;vault://x.ts"] }],
+				] as const) {
+					h.calls.length = 0;
+					expect((await toolCall(h, tool, input))?.block).toBe(true);
+					expect(h.calls).toHaveLength(1);
+				}
 			},
 			home,
 		);

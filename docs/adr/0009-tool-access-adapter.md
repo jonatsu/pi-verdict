@@ -335,6 +335,12 @@ reaches a credential file two directories up. The same list decides which `@` sh
 `expandHostPath` accepts. Hosts that register more schemes through an extension (omp's RPC host URIs)
 are not listed; their URLs are graded converted, the safe direction.
 
+*Internal URL targets.* A `read`, `grep`, `glob`, `ast_grep` or `ast_edit` target (in any graded
+form) whose scheme omp registers is served by that scheme's handler, never by the project file its
+text resolves to under the cwd. The floor's allow is withheld, and neither a user `allow` rule nor a
+`tools` entry admits the call, so the classifier decides. This is **BREAKING** for `local://` reads.
+The floor, `denyPaths` and the `.omp` gate still run first.
+
 *Glob listings.* The glob amendment above withholds the floor's allow from every glob target because
 neither grade can say what the glob matches. For `glob` alone that is too strict: it returns file
 names and never contents, so what a wrong guess exposes is a name. A `glob` call keeps the floor's
