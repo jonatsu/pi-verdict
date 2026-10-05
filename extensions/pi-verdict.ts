@@ -2052,7 +2052,13 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
  *  spelling still matches a floor rule on its tail (`**` + `/*.pem`), the prefix covers the
  *  directory the glob walks. */
 function withLiteralPrefixes(targets: string[]): string[] {
-	return [...new Set(targets.flatMap((t) => [t, globLiteralPrefix(t)]))];
+	return [...new Set(targets.flatMap((t) => [t, hostSeparators(t), globLiteralPrefix(hostSeparators(t))]))];
+}
+
+/** omp's search tools turn every backslash in a path into a slash on every platform, so
+ *  a path written with backslashes after a tilde opens the slash spelling even on POSIX. Internal URLs are left alone. */
+function hostSeparators(target: string): string {
+	return /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target : target.replace(/\\/g, "/");
 }
 
 function withGradedTargets(toolName: string, a: Omit<ToolAccess, "gradedReads" | "gradedWrites" | "globbed">): ToolAccess {

@@ -634,6 +634,20 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "grep with a backslash-separated path to an S0 file is denied like the slash spelling",
+			family: "tool-access",
+			tool: "grep",
+			input: { pattern: ".", path: "~\\.ssh\\id_rsa" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "ast_edit with a backslash-separated path into .git/hooks is denied like the slash spelling",
+			family: "tool-access",
+			tool: "ast_edit",
+			input: { ops: [{ pat: "a", out: "b" }], lang: "sh", paths: [".git\\hooks\\pre-commit"] },
+			expected: { layer: "rule", reasonIncludes: ".git" },
+		},
+		{
 			label: "grep with a recursive glob ending in a credential extension is denied by the floor",
 			family: "tool-access",
 			tool: "grep",
