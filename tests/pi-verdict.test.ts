@@ -802,19 +802,24 @@ describe("user rules (deny > allow > gray)", () => {
 		expect(h.calls.length).toBe(0);
 	});
 	// #25 (F7): danger-regex matching is capped — self-DoS length commands cannot stall adjudication
-	test("bash commands longer than the match cap are truncated before rule matching", async () => {
+	test("bash commands longer than the match cap: within-cap danger denies, beyond-cap asks (item 6a)", async () => {
 		const head = "a".repeat(BASH_MAX_MATCH_LEN);
 		// danger within the capped prefix → rule-layer deny, zero model calls
 		const h = session({});
 		const r1 = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x && " + head });
 		expect(r1?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
-		// danger beyond the cap loses rule matching (truncation) → gray → classifier
+		// danger beyond the cap: the floor's own reading horizon never sees it (unchanged,
+		// #25), but the whole action is itself over ACTION_LINE_MAX_CHARS → a deterministic
+		// over-cap ask (item 6a, Phase 4), never a mechanical pass-through to the classifier —
+		// F8's ordering gap this phase closes. Headless degrades the ask to deny.
 		const h2 = session({});
+		h2.ctx.hasUI = false;
 		h2.responses = [{ text: "<verdict>deny</verdict> mock" }];
 		const r2 = await toolCall(h2, "bash", { command: head + " ; rm " + "-rf /tmp/x" });
-		expect(h2.calls.length).toBe(1);
+		expect(h2.calls.length).toBe(0);
 		expect(r2?.block).toBe(true);
+		expect(r2?.reason).toContain("too long");
 	});
 	test("builtinDenyFloor: false disables the whole built-in deny floor (risk accepted by user)", async () => {
 		const h = session({ builtinDenyFloor: false });
@@ -1171,14 +1176,18 @@ describe("transcript line injection (#22)", () => {
 		expect(readTranscript(h)).not.toMatch(/\nUser: /);
 	});
 
-	test("path branch goes through sanitize: zero-width chars stripped, overlong entries truncated", async () => {
+	test("path branch goes through sanitize: zero-width chars stripped; no longer truncated under the action cap (item 6a)", async () => {
 		const h = session({});
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "read", { path: "/etc/sudoers\u200b" + "x".repeat(1200) });
 		expect(h.calls.length).toBe(1);
 		const t = readTranscript(h);
 		expect(t).not.toContain("\u200b");
-		expect(t).toContain("…[truncated]…");
+		// Phase 4 (item 6a): the action under review is exempt from transcriptSafe's
+		// MAX_ENTRY_CHARS truncation — this ~1213-char path is well under the 8192 action
+		// cap, so it survives whole (a historical entry at this length would still truncate).
+		expect(t).not.toContain("…[truncated]…");
+		expect(t).toContain("x".repeat(1200));
 	});
 
 	test("lone \\r and Unicode line separators (U+2028/U+2029/U+0085) are escaped too", async () => {
@@ -1896,7 +1905,12 @@ describe("bash path-token extraction (#32: linear tokenizer, regex as oracle)", 
 		const verdict = await adjudicate(state, { toolName: "bash", input: { command } }, adjudicateEnv({ failModel: true }));
 		const elapsed = performance.now() - start;
 		expect(elapsed, `#32 configured-chain performance took ${elapsed.toFixed(1)}ms`).toBeLessThan(250);
-		expect(verdict).toMatchObject({ verdict: "deny", source: "fail-closed" });
+		// Item 6a (Phase 4): a 200k-char command is far over the action cap, so the over-cap
+		// ask now fires before adjudicate ever reaches env.getModel()/the fail-closed path —
+		// the #32 tokenizer (denyPaths candidate extraction, which runs first) still has to
+		// stay fast for this, which the elapsed-time assertion above still covers.
+		expect(verdict).toMatchObject({ verdict: "ask", source: "rule" });
+		expect(verdict.reason).toContain("too long");
 	});
 
 	test("tokenization matches the regex oracle across edge cases and deterministic fuzz input", () => {
@@ -4870,5 +4884,88 @@ describe("session_start coverage report and side-effecting tools warning (item 4
 		const h = session({ tools: ["read"] });
 		await h.handlers.session_start({}, h.ctx);
 		expect(h.notifies.some(([msg]: [string, string]) => msg.includes("side-effecting"))).toBe(false);
+	});
+});
+
+// ── action line integrity (item 6a, Phase 4) ──────────────────────
+
+describe("action line integrity (item 6a, Phase 4)", () => {
+	const readTranscript = (h: Harness): string => h.calls[0].messages[0].content;
+
+	test("an over-cap bash command with no danger pattern still asks, never mechanical-allows (F8)", async () => {
+		const h = session({ allow: ["^ls\\b"] });
+		h.ctx.hasUI = false;
+		const longCmd = "ls " + "x".repeat(9000); // matches the allow rule; total far over the cap
+		const r = await toolCall(h, "bash", { command: longCmd });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("too long");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("an over-cap eval code cell also asks, not just bash", async () => {
+		const h = session({});
+		h.ctx.hasUI = false;
+		const longCode = "x = 1\n" + "# comment\n".repeat(900); // ~9000 chars, no danger pattern
+		const r = await toolCall(h, "eval", { language: "py", code: longCode });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("too long");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("a write action's transcript includes a bounded content excerpt with a visible marker", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "write", { path: "/tmp/notes.txt", content: "hello world content for the excerpt" });
+		expect(h.calls.length).toBe(1);
+		const t = readTranscript(h);
+		expect(t).toMatch(/\[excerpt: \d+ of \d+ chars\]/);
+		expect(t).toContain("hello world content for the excerpt");
+	});
+
+	test("a write excerpt truncates at its own cap while the marker reports the real total", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const bigContent = "A".repeat(5000); // over the excerpt window
+		await toolCall(h, "write", { path: "/tmp/big.txt", content: bigContent });
+		expect(h.calls.length).toBe(1);
+		const t = readTranscript(h);
+		const m = t.match(/\[excerpt: (\d+) of (\d+) chars\]/);
+		expect(m).not.toBeNull();
+		if (m) {
+			expect(Number(m[2])).toBe(5000);
+			expect(Number(m[1])).toBeLessThan(5000);
+		}
+	});
+
+	test("an edit action's transcript excerpts the patch text too", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "edit", { input: "[/tmp/a.ts#1a2b]\nPUT 1.=1:\n+a very specific replacement body\n" });
+		expect(h.calls.length).toBe(1);
+		const t = readTranscript(h);
+		expect(t).toMatch(/\[excerpt: \d+ of \d+ chars\]/);
+		expect(t).toContain("a very specific replacement body");
+	});
+
+	test("a gray (unrecognised-shape) tool's JSON arguments are bounded separately and never over-cap", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const bigValue = "y".repeat(9000); // over both GRAY_ARGS_CHARS and the action cap
+		const r = await toolCall(h, "frobnicate", { blob: bigValue });
+		expect(r).toBeUndefined(); // reaches the classifier — gray JSON never triggers over-cap
+		expect(h.calls.length).toBe(1);
+		const t = readTranscript(h);
+		expect(t).toMatch(/\[excerpt: \d+ of \d+ chars\]/);
+	});
+
+	test("the audit record's actionLine is uncapped up to the action cap (never elided)", async () => {
+		clearAudit();
+		const h = session({ audit: true, denyPaths: ["/tmp/audit-action-cap-test"] });
+		h.ctx.hasUI = false;
+		const longPath = "/tmp/audit-action-cap-test/" + "z".repeat(1500); // over MAX_ENTRY_CHARS, under the action cap
+		await toolCall(h, "read", { path: longPath });
+		const record = readAudit()[0];
+		expect(record.actionLine).toContain("z".repeat(1500));
+		expect(record.actionLine).not.toContain("…[truncated]…");
 	});
 });
