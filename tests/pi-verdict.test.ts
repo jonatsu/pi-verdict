@@ -4609,6 +4609,18 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		});
 	});
 
+	test("auto: the second model sees the whole action, not the 1000-character notification form", async () => {
+		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb" }, async (_root, sub) => {
+			sub.responses = [ASK, ALLOW];
+			const command = `cargo build -- ${"a".repeat(1200)} MIDDLE-PAYLOAD ${"b".repeat(1200)}`;
+			expect(await toolCall(sub, "bash", { command })).toBeUndefined();
+			expect(sub.calls.length).toBe(2);
+			const prompt = String(sub.calls[1]?.messages?.[0]?.content ?? "");
+			expect(prompt).toContain("MIDDLE-PAYLOAD");
+			expect(prompt).not.toContain("[truncated]");
+		});
+	});
+
 	test("off: the gate is inert in subagents (the root stays gated)", async () => {
 		await withBridge({ subagentGate: "off" }, async (root, sub) => {
 			expect(await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined();

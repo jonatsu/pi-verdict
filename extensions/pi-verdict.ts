@@ -5814,7 +5814,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 		// Subagent ask resolved with no human answer: second model (only an explicit allow permits)
 		const finishWithoutHuman = async (resolution: "timeout" | "auto"): Promise<{ block: true; reason: string } | undefined> => {
-			const res = await resolveAskWithoutHuman(state, env, verdict, displayAction);
+			// The second model judges the same uncapped action line the first classifier saw;
+			// displayAction is cut to 1000 chars for notifications and would hide a payload in the middle.
+			const modelAction = redactFn(input) ? PROTECTED_PATH_MARKER : actionCallLine(event.toolName, input).line;
+			const res = await resolveAskWithoutHuman(state, env, verdict, modelAction);
 			finalize({ subagent: { ...sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 			const out = (ui ?? ctx.ui).notify.bind(ui ?? ctx.ui);
 			if (res.verdict === "allow") {
