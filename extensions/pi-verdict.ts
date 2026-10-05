@@ -1764,6 +1764,114 @@ function classifyReads(targets: string[], cwd: string, floorOn: boolean): RuleRe
 }
 
 // ============================================================================
+// Host path spelling: the forms a path can take before the host opens it
+//
+// omp rewrites a path argument before it opens the file, so the spelling the model wrote is not
+// always the path that is read. Every file or scope target is therefore graded in its raw form and
+// in each form the host can resolve it to, and the worst grade wins. This is the one place that
+// knows the host's rewrites; the floor, denyPaths, gateOmpDir, self-protection, user rules and the
+// transcript redactor all read their targets through `hostPathForms` (ADR-0009 amendment).
+// ============================================================================
+
+/** URL schemes that omp's InternalUrlRouter registers (18.6.1). Only these are URLs to the host;
+ *  any other `scheme://` text is an ordinary relative path. */
+const HOST_INTERNAL_SCHEMES: ReadonlySet<string> = new Set([
+	"skill",
+	"rule",
+	"memory",
+	"agent",
+	"history",
+	"artifact",
+	"local",
+	"proc",
+	"cfg",
+	"ssh",
+	"security",
+	"vault",
+	"issue",
+	"pr",
+	"mcp",
+	"omp",
+	"xd",
+	"attachment",
+	"conflict",
+]);
+
+function isHostInternalUrl(target: string): boolean {
+	const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(target);
+	return match !== null && HOST_INTERNAL_SCHEMES.has(match[1].toLowerCase());
+}
+
+/** `@` is a shorthand only before the shapes the host recognizes; `@my-file.txt` stays literal. */
+function stripHostAtPrefix(target: string): string {
+	if (!target.startsWith("@")) return target;
+	const rest = target.slice(1);
+	const shorthand = rest.startsWith("/") || rest === "~" || rest.startsWith("~/") || path.win32.isAbsolute(rest) || isHostInternalUrl(rest);
+	return shorthand ? rest : target;
+}
+
+const HOST_UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+function hostFileUrlToPath(target: string): string {
+	if (!target.toLowerCase().startsWith("file://")) return target;
+	try {
+		return fileURLToPath(target);
+	} catch {
+		return target;
+	}
+}
+
+/** Strips the Win32 extended-length prefixes (`\\?\C:\x`, `\\?\UNC\server\share`) on every platform,
+ *  because an extra form only widens what is graded. */
+function stripExtendedLengthPrefix(target: string): string {
+	const unc = /^\\\\[?][?]?\\UNC[\\/]([^\\/]+)[\\/](.+)$/i.exec(target);
+	if (unc) return `\\\\${unc[1]}\\${unc[2]}`;
+	const drive = /^\\\\[?][?]?\\([A-Za-z]:[\\/].*)$/.exec(target);
+	return drive ? drive[1] : target;
+}
+
+function expandHostTilde(target: string, home: string): string {
+	if (target === "~") return home;
+	if (target.startsWith("~/") || target.startsWith("~\\")) return home + target.slice(1);
+	// `~name` is `$HOME/name`: the host joins the remainder onto the home directory.
+	if (target.startsWith("~")) return path.join(home, target.slice(1));
+	return target;
+}
+
+/** The path the host opens for a model-written path argument; mirrors omp's expandPath (18.6.1).
+ *  A stray leading `:` goes first, then the `@` shorthand, unicode spaces, a `file://` URL, a Win32
+ *  extended-length prefix and the tilde. */
+export function expandHostPath(target: string, home: string = os.homedir()): string {
+	const colonless = /^:(?=[/\\~]|\.\.?[/\\]|[A-Za-z]:)/.test(target) ? target.slice(1) : target;
+	const spaced = stripHostAtPrefix(colonless).replace(HOST_UNICODE_SPACES, " ");
+	return expandHostTilde(stripExtendedLengthPrefix(hostFileUrlToPath(spaced)), home);
+}
+
+/** Longest target the host spellings are derived for: a longer one is an over-cap action that is
+ *  asked about before any allow, so deriving forms for it would only cost time. */
+const HOST_PATH_FORMS_MAX_CHARS = BASH_MAX_MATCH_LEN;
+
+/** Every spelling of one target that the gate must grade: the raw text and the host's expansion of
+ *  it. Deduplicated; an ordinary path yields itself alone. */
+export function hostPathForms(target: string): string[] {
+	if (target.length > HOST_PATH_FORMS_MAX_CHARS) return [target];
+	const forms = new Set([target, expandHostPath(target)]);
+	for (const form of [...forms]) {
+		const alias = wslDriveAlias(form);
+		if (alias !== null) forms.add(alias);
+	}
+	return [...forms];
+}
+
+/** Under WSL omp opens a Windows drive path through the drive's mount (`C:\x` is `/mnt/c/x`), as
+ *  its normalizeWindowsDriveAliasPath does (18.6.1); null elsewhere, where the text stays what it says. */
+function wslDriveAlias(target: string): string | null {
+	const wsl = process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+	const match = wsl ? /^([A-Za-z]):[\\/](.*)$/.exec(path.win32.normalize(target.trim())) : null;
+	return match === null ? null : path.posix.join("/mnt", match[1].toLowerCase(), ...match[2].split("\\").filter(Boolean));
+}
+
+// ============================================================================
 // Tool-access adapter (ADR-0009): one host-agnostic model of what a tool call
 // touches — built from the call's own payload alone (universal-plugin
 // constraint 2). Closes item 1 (a multi-header omp `edit` graded on
@@ -2072,27 +2180,26 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
 	});
 }
 
-/** Each target as spelled plus its literal prefix, so the worst grade of the two wins: the raw
- *  spelling still matches a floor rule on its tail (`**` + `/*.pem`), the prefix covers the
- *  directory the glob walks. */
-function withLiteralPrefixes(targets: string[]): string[] {
-	return [...new Set(targets.flatMap((t) => [t, hostSeparators(t), globLiteralPrefix(hostSeparators(t))]))];
-}
-
 /** omp's search tools turn every backslash in a path into a slash on every platform, so
  *  a path written with backslashes after a tilde opens the slash spelling even on POSIX. Internal URLs are left alone. */
 function hostSeparators(target: string): string {
 	return /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target : target.replace(/\\/g, "/");
 }
 
+/** Every form of each target that the floor and the path layers grade (see hostPathForms). A
+ *  glob-capable tool's forms also contribute their literal prefix, so the worst grade of the spelling
+ *  and of the directory the glob walks wins: the spelling still matches a floor rule on its tail
+ *  (`**` + `/*.pem`), the prefix covers the directory. */
+function gradedForms(toolName: string, targets: string[]): string[] {
+	const forms = targets.flatMap(hostPathForms);
+	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return [...new Set(forms)];
+	return [...new Set(forms.flatMap((f) => [f, hostSeparators(f), globLiteralPrefix(hostSeparators(f))]))];
+}
+
 function withGradedTargets(toolName: string, a: Omit<ToolAccess, "gradedReads" | "gradedWrites" | "globbed">): ToolAccess {
-	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return { ...a, gradedReads: a.reads, gradedWrites: a.writes, globbed: false };
-	return {
-		...a,
-		gradedReads: withLiteralPrefixes(a.reads),
-		gradedWrites: withLiteralPrefixes(a.writes),
-		globbed: [...a.reads, ...a.writes].some((t) => GLOB_METACHARACTER.test(t)),
-	};
+	const globbed =
+		GLOB_PATH_TOOL_NAMES.has(toolName) && [...a.reads, ...a.writes].flatMap(hostPathForms).some((t) => GLOB_METACHARACTER.test(t));
+	return { ...a, gradedReads: gradedForms(toolName, a.reads), gradedWrites: gradedForms(toolName, a.writes), globbed };
 }
 
 /** Dialog-only suffix (ADR-0002: local plaintext, never a block reason) naming a multi-target
@@ -2130,7 +2237,7 @@ function userRuleTargets(toolName: string, input: Record<string, unknown>, cwd: 
 	if (isCommandTool(toolName)) return [String(input.command ?? "")];
 	const access = toolAccess(toolName, input);
 	if (access.direction === "unknown") return [];
-	const raw = access.direction === "mutating" ? access.writes : access.reads.length > 0 ? access.reads : [cwd];
+	const raw = access.direction === "mutating" ? access.gradedWrites : access.gradedReads.length > 0 ? access.gradedReads : [cwd];
 	return expandTargetForms(raw, cwd);
 }
 
@@ -2312,7 +2419,7 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 	// same path-token scan bash commands use — an eval cell is free-form text, not a shell
 	// command line, but a path mention in it is exactly as real a signal.
 	const codeTokens = access.kind === "code" && access.command !== null ? bashPathTokens(access.command) : [];
-	return [...access.reads, ...access.writes, ...codeTokens];
+	return [...access.gradedReads, ...access.gradedWrites, ...codeTokens];
 }
 
 /** Does the call touch a user-declared protected path? `bases` are the denyPaths
@@ -2600,7 +2707,7 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 	const strings = inputStrings(input);
 	const access = toolAccess(toolName, input);
 	if (direction === "read") {
-		for (const s of [...strings, ...access.reads]) {
+		for (const s of [...strings, ...access.gradedReads]) {
 			if (isProtectedReadPath(s, cwd, prot)) {
 				return {
 					verdict: "deny",
@@ -2615,7 +2722,7 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 	// The adapter's own writes/reads are tested too (Claude-review F7, today's gap): an
 	// apply-patch `*** Update File: <agentDir>/config/pi-verdict.json` is a single raw input
 	// string the blind scan above treats as one opaque path, not a patch to parse.
-	for (const s of [...strings, ...access.writes, ...access.reads]) {
+	for (const s of [...strings, ...access.gradedWrites, ...access.gradedReads]) {
 		if (isProtectedWritePath(s, cwd, prot)) {
 			return {
 				verdict: "deny",
@@ -3047,7 +3154,7 @@ export function redactorFor(
 	};
 	return (args: Record<string, unknown>): boolean => {
 		const access = toolAccess("", args); // name-agnostic: direction/unknown both key on payload shape only
-		for (const target of [...access.reads, ...access.writes]) if (hits(target)) return true;
+		for (const target of [...access.gradedReads, ...access.gradedWrites]) if (hits(target)) return true;
 		if (access.command !== null)
 			for (const token of bashPathTokens(commandForPathTokens(access.command, platform.win32))) if (hits(token)) return true;
 		// Over the string values themselves: the JSON text doubles every backslash, so a Windows spelling

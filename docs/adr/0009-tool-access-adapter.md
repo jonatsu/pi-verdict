@@ -264,3 +264,31 @@ Two schema-driven, one-time `session_start` diagnostics, neither of which affect
 
 Pinned by the `session_start coverage report and side-effecting tools warning` test describe,
 including the debug-off and capability-absent silent branches.
+
+## Host path spelling amendment: raw and expanded forms
+
+The adapter yields the paths a call names as the model wrote them, but omp rewrites a path argument
+before it opens the file. A spelling that omp resolves to a credential or system file therefore
+graded as a harmless in-project path and was a rule allow with no model call and no human: `read`
+of `@~/.config/age/keys.txt`, `read` of a `file://` URL naming an XDG credential file, `write` of
+`@/etc/cron.d/x`.
+
+**Decision:** one pure function, `hostPathForms`, derives every spelling of a target that the gate
+must grade, and every layer that reads a file or scope target reads those forms (`gradedReads` and
+`gradedWrites` on `ToolAccess`). `expandHostPath` mirrors omp's `expandPath` (18.6.1): a stray
+leading `:` before a path shape, the `@` shorthand only before `/`, `~`, `~/`, a Windows absolute
+path or a registered internal scheme (so `@my-file.txt` stays literal), unicode spaces turned into
+spaces, a `file://` URL turned into its path with percent escapes decoded, a Windows extended-length
+prefix removed, and the tilde expanded (`~name` is `$HOME/name`). Verified against the omp 18.6.1
+source (`tools/path-utils.ts`).
+
+The grading rule is the same everywhere: a target is graded in its raw form and in each expanded
+form, and the worst grade wins. That covers the built-in floor (S0-S5), `denyPaths`, `gateOmpDir`,
+self-protection and the transcript redactor. A user `deny` regex matches when any form matches; a
+user `allow` regex admits the call only when every form is admitted, so an allow for the project
+cannot carry a spelling that expands outside it. Under WSL (`WSL_DISTRO_NAME` or `WSL_INTEROP` set, as the host checks) a Windows drive path also
+contributes its mount form, because the host opens `C:\x` as `/mnt/c/x` (`normalizeWindowsDriveAliasPath`,
+18.6.1). The forms exist for grading only: dialog details,
+transcript action lines and the action cap still show and count the targets as the model wrote them.
+A target longer than the action budget gets no derived forms, because it is asked about before any
+allow.

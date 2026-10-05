@@ -24,7 +24,9 @@ import autoMode, {
 	declineDetail,
 	displaySafe,
 	EXPLAIN_GATE_DEFAULT_PROMPT,
+	expandHostPath,
 	gitPushForce,
+	hostPathForms,
 	mentionsSpelling,
 	redactorFor,
 	renderFooter,
@@ -5664,5 +5666,140 @@ describe("redactor spellings", () => {
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("host path spelling (ADR-0009)", () => {
+	const home = os.homedir();
+
+	test("expandHostPath resolves the spellings the host resolves", () => {
+		expect(expandHostPath("@~/x", "/h")).toBe("/h/x");
+		expect(expandHostPath("@/etc/x", "/h")).toBe("/etc/x");
+		expect(expandHostPath("@~", "/h")).toBe("/h");
+		expect(expandHostPath(":~/x", "/h")).toBe("/h/x");
+		expect(expandHostPath(":../x", "/h")).toBe("../x");
+		expect(expandHostPath("~.ssh/id_rsa", "/h")).toBe("/h/.ssh/id_rsa");
+		expect(expandHostPath("file:///etc/x", "/h")).toBe("/etc/x");
+		expect(expandHostPath("file:///etc/%73hadow", "/h")).toBe("/etc/shadow");
+		expect(expandHostPath("~/a\u00A0b\u2003c", "/h")).toBe("/h/a b c");
+		expect(expandHostPath("\\\\?\\C:\\x\\y", "/h")).toBe("C:\\x\\y");
+	});
+
+	test("expandHostPath leaves ordinary spellings alone", () => {
+		for (const p of ["src/a.ts", "README.md", "@my-file.txt", "@scope/pkg", "a:b", ":x", "./x", "/abs/x"]) {
+			expect(expandHostPath(p, "/h")).toBe(p);
+		}
+	});
+
+	test("hostPathForms returns the raw spelling and its expansion once each", () => {
+		expect(hostPathForms("src/a.ts")).toEqual(["src/a.ts"]);
+		expect(hostPathForms("@~/x")).toEqual(["@~/x", `${home}/x`]);
+	});
+
+	test("a spelling the host expands to a credential or system path is denied by the floor", async () => {
+		const h = session({});
+		for (const [tool, input] of [
+			["read", { path: "@~/.config/age/keys.txt" }],
+			["read", { path: ":~/.config/age/keys.txt" }],
+			["read", { path: `file://${home}/.aws/credentials` }],
+			["read", { path: "~.ssh/id_rsa" }],
+			["write", { path: "@/etc/cron.d/x", content: "x" }],
+		] as const) {
+			const r = await toolCall(h, tool, input);
+			expect(r?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a protected path reached through the @ shorthand or a file URL asks", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const secret = path.join(cwd, "secret-sub");
+				const h = session({ denyPaths: [secret] }, { cwd });
+				h.confirmAnswer = false;
+				for (const spelling of [`@${secret}/a.txt`, `file://${cwd}/%73ecret-sub/a.txt`]) {
+					h.confirms = 0;
+					const r = await toolCall(h, "read", { path: spelling });
+					expect(h.confirms).toBe(1);
+					expect(r?.block).toBe(true);
+				}
+			},
+			home,
+		);
+	});
+
+	test("the redactor recognizes a protected path behind a file URL escape", () => {
+		const redact = redactorFor("/work", ["/work/secret-sub"]);
+		expect(redact({ path: "file:///work/%73ecret-sub/a.txt" })).toBe(true);
+		expect(redact({ path: "src/a.ts" })).toBe(false);
+	});
+
+	test("a user deny matches any form and a user allow needs every form", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const hd = session({ deny: ["^/stash/"] }, { cwd });
+				expect((await toolCall(hd, "read", { path: "@/stash/x" }))?.block).toBe(true);
+				expect(hd.calls).toHaveLength(0);
+
+				const ha = session({ allow: [`^${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`] }, { cwd });
+				ha.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				fs.writeFileSync(path.join(cwd, "a.txt"), "x");
+				expect(await toolCall(ha, "read", { path: "a.txt" })).toBeUndefined();
+				expect(ha.calls).toHaveLength(0);
+				// `@/tmp/x` expands outside the project: the in-project allow must not carry it.
+				const r = await toolCall(ha, "write", { path: "@/tmp/x", content: "x" });
+				expect(ha.calls).toHaveLength(1);
+				expect(r?.block).toBe(true);
+			},
+			home,
+		);
+	});
+
+	describe("WSL drive aliases", () => {
+		const saved = { distro: process.env.WSL_DISTRO_NAME, interop: process.env.WSL_INTEROP };
+		const restore = (key: "WSL_DISTRO_NAME" | "WSL_INTEROP", value: string | undefined): void => {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		};
+		afterEach(() => {
+			restore("WSL_DISTRO_NAME", saved.distro);
+			restore("WSL_INTEROP", saved.interop);
+		});
+		const onLinux = process.platform === "linux" ? test : test.skip;
+
+		onLinux("a Windows drive path is also graded as its mount under WSL", async () => {
+			delete process.env.WSL_INTEROP;
+			process.env.WSL_DISTRO_NAME = "Test-Distro";
+			expect(hostPathForms("C:\\Users\\u\\.ssh\\id_x")).toContain("/mnt/c/Users/u/.ssh/id_x");
+			expect(hostPathForms("d:/a/b")).toContain("/mnt/d/a/b");
+			expect(hostPathForms("C:relative")).toEqual(["C:relative"]);
+			const h = session({});
+			expect((await toolCall(h, "read", { path: "C:\\Users\\u\\.ssh\\id_x" }))?.block).toBe(true);
+			expect(h.calls).toHaveLength(0);
+		});
+
+		onLinux("a Windows drive path stays what it says outside WSL", () => {
+			delete process.env.WSL_DISTRO_NAME;
+			delete process.env.WSL_INTEROP;
+			expect(hostPathForms("C:\\Users\\u\\.ssh\\id_x")).toEqual(["C:\\Users\\u\\.ssh\\id_x"]);
+		});
+	});
+
+	test("ordinary spellings keep their verdict", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.mkdirSync(path.join(cwd, "src"));
+				fs.writeFileSync(path.join(cwd, "src", "a.ts"), "x");
+				fs.writeFileSync(path.join(cwd, "@my-file.txt"), "x");
+				const h = session({}, { cwd });
+				for (const p of ["src/a.ts", "@my-file.txt"]) expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				expect(await toolCall(h, "write", { path: "src/b.ts", content: "x" })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+			},
+			home,
+		);
 	});
 });

@@ -39,6 +39,7 @@ export interface Case {
 		| "user-rules"
 		| "user-allow"
 		| "tool-access"
+		| "host-path"
 		| "policy-degraded";
 	tool: string;
 	input: Record<string, unknown>;
@@ -729,6 +730,78 @@ export function buildCases(fx: FixtureTree): Case[] {
 			tool: "ast_edit",
 			input: { ops: [{ pat: "a", out: "b" }], lang: "ts", paths: ["src/*.ts"] },
 			expected: { layer: "classifier" },
+		},
+		// ---- host-path: spellings the host rewrites before it opens the file ------------------
+		{
+			label: "read with the @ shorthand before a home credential path is denied like the plain spelling",
+			family: "host-path",
+			tool: "read",
+			input: { path: "@~/.config/age/keys.txt" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "read of a file:// URL naming an XDG credential file is denied like the plain path",
+			family: "host-path",
+			tool: "read",
+			input: { path: `file://${fx.xdg}/sops/age/keys.txt` },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "read with a stray leading colon before a credential path is denied like the plain spelling",
+			family: "host-path",
+			tool: "read",
+			input: { path: ":~/.config/age/keys.txt" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "read of ~name spelling that the host joins onto the home directory is denied",
+			family: "host-path",
+			tool: "read",
+			input: { path: "~.ssh/id_rsa" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "write with the @ shorthand before a system path is denied like the plain spelling",
+			family: "host-path",
+			tool: "write",
+			input: { path: "@/etc/cron.d/x", content: "x" },
+			expected: { layer: "rule", reasonIncludes: "system directory" },
+		},
+		{
+			label: "read with the @ shorthand before a declared protected path asks",
+			family: "host-path",
+			tool: "read",
+			input: { path: `@${fx.work}/secret-sub/a.txt` },
+			config: { denyPaths: [`${fx.work}/secret-sub`] },
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "read of an existing relative project file is still a rule allow",
+			family: "host-path",
+			tool: "read",
+			input: { path: "src/a.ts" },
+			expected: { layer: "allow" },
+		},
+		{
+			label: "read of README.md is still a rule allow",
+			family: "host-path",
+			tool: "read",
+			input: { path: "README.md" },
+			expected: { layer: "allow" },
+		},
+		{
+			label: "read of a file whose name starts with a literal @ is still a rule allow",
+			family: "host-path",
+			tool: "read",
+			input: { path: "@my-file.txt" },
+			expected: { layer: "allow" },
+		},
+		{
+			label: "write of a new in-project file is still a rule allow",
+			family: "host-path",
+			tool: "write",
+			input: { path: "src/new.ts", content: "x" },
+			expected: { layer: "allow" },
 		},
 		{
 			label: "a tools-listed write still faces the denyPaths ask (exemption after deny-side)",

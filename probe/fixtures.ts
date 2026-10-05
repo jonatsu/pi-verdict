@@ -61,6 +61,11 @@ export function buildFixtures(agentDir: string): FixtureTree {
 	const work = path.join(root, "work");
 	mkdirp(work);
 
+	// Ordinary project files: a relative path that exists must keep the verdict it always had.
+	writeFile(path.join(work, "README.md"), "readme\n");
+	writeFile(path.join(work, "src", "a.ts"), "export {};\n");
+	writeFile(path.join(work, "@my-file.txt"), "literal\n");
+
 	// Plain files/dirs the path-tier cases name.
 	writeFile(path.join(root, "repo", ".config", "age", "data"), "repo-config-age\n");
 	writeFile(path.join(root, "foo.config", "age", "data"), "foo-config-age\n");
