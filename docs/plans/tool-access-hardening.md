@@ -484,9 +484,10 @@ its docs sync, and regenerated `docs/coverage.md`; CONTEXT.md's glossary gains e
 (`tool-access adapter`, `opaque call`, ask provenance, `policyDegraded`) in the commit that
 introduces it.
 
-## Interaction with the allow-operands plan
+## Interaction with the call-model plan
 
-`docs/plans/allow-operands-and-floor-gaps.md` (a sibling round, independent of this one) amends
+`docs/plans/call-model-and-rule-hardening.md` (formerly `allow-operands-and-floor-gaps.md`; a sibling round,
+independent of this one for its items 1-8 and 11) amends
 ADR-0008 and changes the same user allow loop: `allowAdmits(command)` becomes
 `allowAdmits(command, cwd)` with operand grading. Whichever round lands second rebases onto the
 other — there is no logical conflict (operand grading is orthogonal to this plan's target

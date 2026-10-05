@@ -1,7 +1,8 @@
 # Call model, rule hardening and measurement — plan
 
-**Status.** Items 1-8 were approved by the user on 2026-10-05 and are not yet executed. Item 1's shell-expansion
-amendment (1a) and items 9-12 were proposed on 2026-10-05 and await approval; see "Decisions". The plan is
+**Status.** Approved by the user on 2026-10-05, not yet executed: items 1-8, item 1's shell-expansion amendment
+(1a), and items 9-12 in the delivery order below. Item 9's ADR is reviewed by the user before any of its code is
+written; see "Decisions". The plan is
 independent of `docs/plans/tool-access-hardening.md` for items 1-8 and 11, and builds on it for items 9, 10 and 12;
 see "Interaction with the tool-access plan".
 
@@ -125,7 +126,7 @@ The admission is refused when any operand grades other than `allow`, which means
 `ssh-keygen -f`. The evaluation rejects that, and this item does not do it. A refused allow only reaches the
 classifier, so the change can never turn an allow into a deny on its own.
 
-**1a. Shell expansion in operands (amendment proposed 2026-10-05; awaiting approval).** The shell expands an operand
+**1a. Shell expansion in operands (amendment approved 2026-10-05).** The shell expands an operand
 before the command sees it, and the word view does not (see the measurements in "Context"). Grading the literal word
 therefore misses the file the command actually reads. Before grading, normalise each operand the way bash does where
 the result is exact, and refuse the admission where it is not:
@@ -140,6 +141,21 @@ the result is exact, and refuse the admission where it is not:
 - **One exception, for globs.** A glob with no `/` that does not start with `.` (`ls *.ts`) matches only non-hidden
   entries of the cwd's top level. Admit it, and grade it as the cwd itself, so `cat *` inside `~/.ssh` is still
   refused.
+- **A `HOME` reassignment guard.** Once any earlier bash call in the session assigns `HOME` (`HOME=…`,
+  `export HOME=…`, `declare`/`typeset` of `HOME`), refuse the admission of every home-relative operand for the rest
+  of the session. Scan the session branch and the current command's earlier segments; a match anywhere in the text
+  is enough, since over-matching only costs a classifier call.
+
+**Why the gate expands no other variable.** The gate cannot know a variable's value, because the bash tool's shell
+does not share the gate's environment. omp runs every bash call of an agent session in one persistent shell
+(`exec/bash-executor.ts:185`, `:270`), so an `export KEYFILE=~/.ssh/id_rsa` in one call is still set in the next. The
+shell also starts from a snapshot of the user's shell startup files (`getOrCreateSnapshot`, `:534`), and omp folds
+the project's direnv `.envrc` into each command (`applyDirenvPreflight`, `:139-178`). The agent can write `.envrc`
+as an ordinary in-project allow. Expanding from the gate's own `process.env` would therefore turn an unknown value
+into a wrong one, and admit the call; refusing costs only a classifier call. Refusal also keeps secrets out of the
+transcript: with variables expanded, `echo $AWS_SECRET_ACCESS_KEY` would be fast-path allowed (item 7) and print
+the secret. The same persistence is why the `HOME` guard exists: after `export HOME=~/.ssh`, `cat ~/id_rsa` reads the
+key while the gate grades the real home directory.
 
 Item 9 later moves this normalisation into the shared path resolver. Item 1 needs it now, because without it the
 item closes `cat ~/.config/age/keys.txt` and leaves `cat $HOME/.config/age/keys.txt` open.
@@ -154,6 +170,8 @@ literals built by concatenation:
 - Item 1a, under `allow: ["^cat\\b"]`, each reaches the classifier: `cat $HOME/.config/age/keys.txt`,
   `cat ${HOME}/.config/age/keys.txt`, `cat "$HOME"/.ssh/id_rsa`, `cat ~/.s*/id_rsa`, `cat ~/.{ssh,x}/id_rsa`,
   `cat $KEYFILE` and `cat ~root/.bashrc`.
+- The `HOME` guard: after an earlier `export HOME=/tmp/x` call in the session branch, `cat ~/notes.txt` reaches the
+  classifier under `allow: ["^cat\\b"]`. The same command in a branch without the assignment stays `allow/rule`.
 - Controls that stay `allow/rule` with zero calls: `cat README.md`, `git status`, `git log --oneline`, `ls -la`, and
   `ls *.ts` under `allow: ["^ls\\b"]`.
 - `allowAdmits` unit pins for an attached value (`--file=~/.ssh/id_rsa`) and for the operand cap.
@@ -276,7 +294,7 @@ can be admitted soundly. So adopt a fast path **behind the same guard**, never b
   command, a secret operand or an operand the gate cannot expand (item 1a).
 - **Ordering with the over-cap ask.** Once the tool-access plan's Phase 4 lands, its "too long to judge" ask runs
   before every allow path, built-in or user. An over-cap command is never fast-path-allowed (tool-access plan,
-  "Interaction with the allow-operands plan").
+  "Interaction with the call-model plan").
 - **Config.** A new key, `fastPath` (boolean). **It defaults to `true`; this is the recommendation, agreed with the
   user on 2026-10-05.** The list is read-only and sits behind the same guard as user allows, so it is sound for
   everyone, and the speed gain matters most to users who never write an allow rule. A user turns it off with
@@ -378,7 +396,8 @@ plan's adapter (`toolAccess`, its Phase 2) unifies what a *file* call touches, b
 string.
 
 **Change.** Extend the tool-access adapter into a *call model*: one reading of each call, built once per
-`adjudicate` and passed to every layer. The design below is provisional; the ADR settles it.
+`adjudicate` and passed to every layer. The design below is provisional; the ADR settles it. **Write the ADR first,
+and have the user review it before migration step 1** (user decision, 2026-10-05).
 
 - **Shell reading.** For `kind: "command"`, the adapter adds one shell reading built on `shellWords`: the simple
   commands in order, each with its command word, operands, redirect targets and their modes, and one `sound` flag
@@ -442,10 +461,27 @@ later reaches the classifier as a command line, and the transcript shows only `w
 `package.json` or a `Makefile`, then runs `npm test` or `make`. Item 7 keeps those runners off the fast path for this
 reason. A user `allow` such as `^npm (test|run)\b` or `^bash scripts/` still admits them with no review.
 
-**Change (provisional).**
+**Change (provisional, except the written set's sources, which the user approved on 2026-10-05).**
 
-- **The written set.** Record the paths that this session's allowed calls wrote. Sources are the call model's
-  `writes` for `write`, `edit` and `ast_edit`, and redirect targets from bash. Over-recording is safe.
+- **The written set.** It records the paths this session wrote, and for each one the write payload: the `write`
+  content or the patch text. Sources are the call model's `writes` for `write`, `edit` and `ast_edit`, and redirect
+  targets from bash. Over-recording is safe.
+  - **Primary source: an in-memory set on `SessionState`**, filled when the gate adjudicates a write-shaped call.
+    A call counts as written from that moment, even if it is later blocked or fails.
+  - **Seed: the session branch.** At `session_start`, refill the set from the `toolCall` blocks in
+    `getBranch()`, so a resumed session keeps its history. omp's `getBranch()` walks the whole path, and compaction
+    only appends an entry and leaves tool-call arguments intact (`session/session-manager.ts:3387`, `:3572`;
+    `pi-agent-core/src/compaction/shake.ts:306`).
+  - **Why the branch alone is not enough.** omp gates every tool call of an assistant message before it saves
+    that message (`pi-agent-core/src/agent-loop.ts:2216`, `prepareToolCallDispatch`, runs before the `message_end`
+    push at `:2248`). A `write` followed by `bash` in one message is therefore not in the branch when the bash
+    call is gated. pi 0.84.3 saves the message first (`dist/core/agent-session.js:371-384`), so this is an omp gap.
+    The branch also drops writes when the user moves to another conversation branch, while the files stay on disk
+    (omp `navigateTree`, `agent-session.ts:11307`; pi `session-manager.js:1034-1040`).
+  - **Excerpts for a same-batch write come from the recorded payload, not from disk.** Both hosts gate every call
+    of a batch before running any of them (omp `agent-loop.ts:3036-3039`; pi `dist/agent-loop.js:322-365`), so
+    when the bash call is gated the file holds its old content or does not exist. A file written in an earlier
+    batch is read from disk.
 - **Execution detection.** The call model's `executes` list names a file the command runs:
   - a command word that resolves to a file;
   - the first non-option operand of an interpreter (`bash`, `sh`, `zsh`, `python`, `python3`, `node`, `bun`, `deno`,
@@ -466,15 +502,19 @@ reason. A user `allow` such as `^npm (test|run)\b` or `^bash scripts/` still adm
 **Limits, stated in the ADR and the CHANGELOG.** This narrows the laundering path and does not close it. The written
 set does not cover:
 
-- files that a subagent wrote, because omp binds a fresh extension instance per child session;
-- files written in an earlier session;
+- files that a subagent wrote, because omp runs each subagent in its own session with a fresh extension instance
+  (`task/executor.ts:495-503`, `:4060-4066`);
+- files written in another session, as opposed to the resumed current one;
 - code fetched at run time;
 - execution the table does not model, such as a test runner discovering `test_*.py` or a module importing another.
 
 **Tests and probe.** Under `allow: ["^bash scripts/"]`, after `write scripts/x.sh`, `bash scripts/x.sh` reaches the
 classifier. Its transcript contains the excerpt marker, checked through `h.calls`. The same holds for `package.json`
 with `npm test` under `allow: ["^npm test\\b"]`. Controls: running a file not written this session keeps today's
-verdict. A written file that is only read (`cat scripts/x.sh`) is unaffected.
+verdict. A written file that is only read (`cat scripts/x.sh`) is unaffected. A same-batch case: with the `write`
+gated but not yet run and absent from the branch, the following `bash scripts/x.sh` still reaches the classifier,
+and its excerpt comes from the recorded payload. A resumed session whose branch holds the earlier `write` seeds the
+set at `session_start`.
 
 **Dependency.** Item 9's `executes` and `writes`, and the tool-access plan's Phases 4-5.
 
@@ -562,8 +602,8 @@ This settles the tool-access plan's open loader question.
 
 ## Interaction with the tool-access plan
 
-`docs/plans/tool-access-hardening.md` is being executed in parallel. Its "Interaction with the allow-operands plan"
-section names this file by its old path, `docs/plans/allow-operands-and-floor-gaps.md`.
+`docs/plans/tool-access-hardening.md` is being executed in parallel. Its "Interaction with the call-model plan"
+section covers this plan from its side.
 
 - **Items 1-8 and 11** are independent of it. Its Phase 2 reworks `userRuleTargets` and the user allow loop, and item
   1 changes the same loop's `allowAdmits` call. Whichever lands second rebases onto the other; there is no logical
@@ -592,8 +632,8 @@ probe parity and no CHANGELOG entry, unless the step's text names a visible chan
 6. `feat(rules): built-in fast path for read-only inspection commands (item 7)`, with its new ADR. It lands after
    commit 1.
 7. `feat(classifier): name weakened transport security (item 8)`.
-8. Item 9, in five commits (`refactor(gate): …` for steps 1, 2, 4 and 5; `fix(paths): …` for step 3), after the
-   tool-access plan's Phase 2.
+8. Item 9: first its ADR (`docs(adr): …`), reviewed by the user; then five commits (`refactor(gate): …` for steps 1,
+   2, 4 and 5; `fix(paths): …` for step 3), after the tool-access plan's Phase 2.
 9. `feat(gate): follow session-written code into its execution (item 10)`, after item 9 and the tool-access plan's
    Phases 4-5.
 10. Item 12, in M-sized `refactor(layout): …` commits, after item 9. The first commit pins the directory-level
@@ -616,18 +656,17 @@ Approved by the user on 2026-10-05:
 5. Item 7's rejected entries: the package-script runners, the test runners and the linters. **Approved:** keep them
    out of the built-in list. A user who wants them can add them to their own `allow` list.
 
-Open, each with a recommended default:
+Approved by the user later on 2026-10-05, after the merge:
 
-6. **Item 1a, shell expansion in operands.** Recommended: adopt it in commit 1. Without it, item 1 closes the `~`
-   spelling of a secret and leaves `$HOME`, `${HOME}`, globs, braces and variables open.
-7. **Items 9-12 into scope.** Recommended: adopt all four, in the delivery order above. Item 9 is the backbone. Item
-   10 depends on it. Item 11 is cheap and independent. Item 12 only pays off after item 9.
-8. **Item 11's rule-verdict records.** Recommended: compact records with no input. Full records would make every
-   rule-allowed call replayable, but they would multiply the log volume and store plaintext for calls no model
-   needed to see.
-9. **Item 10's source for the written set.** Recommended: derive it from the session branch (`getBranch`), the same
-   source the transcript uses, so it survives a restart without new state. Before relying on it, verify what the
-   branch keeps after compaction. If compaction drops entries, add a `SessionState` set as the primary source.
-10. **Item 12's layout.** Recommended: `extensions/pi-verdict/index.ts` with sibling modules. A `lib/` directory
-    outside `extensions/` also works on both hosts, but it splits the shipped code across two trees in `files` and
-    in provenance.
+6. **Item 1a, in commit 1.** Expand only `~`, `$HOME` and `${HOME}`; refuse every other variable, `~user`, braces
+   and globs, except a top-level non-hidden glob. Add the `HOME` reassignment guard. **Approved.**
+7. **Items 9-12 into scope**, in the delivery order above. Item 11 outright. Items 9 and 10 as the direction, with
+   item 9's ADR reviewed by the user before any of its code. Item 12 last. **Approved.**
+8. **Item 11's rule-verdict records: compact, with no input.** **Approved.** Full records would let the replay
+   re-judge rule-allowed calls, but they would multiply the log volume. If that check turns out to matter, add an
+   opt-in full-record level later.
+9. **Item 10's written set: an in-memory set as the primary source, seeded from the session branch at
+   `session_start`; excerpts for same-batch writes come from the recorded payload.** **Approved**, on the host
+   research recorded in item 10.
+10. **Item 12's layout: `extensions/pi-verdict/index.ts` with sibling modules.** **Approved.** A `lib/` directory
+    would split the shipped code across two trees in `files`, provenance and self-protection.
