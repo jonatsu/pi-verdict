@@ -424,6 +424,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 		},
 	);
 
+	cases.push({
+		label: "a braced home variable spelling only the redactor matches asks instead of reaching the classifier",
+		family: "deny-paths",
+		tool: "bash",
+		input: { command: `cat $\{HOME}/.ssh/id_rsa` },
+		config: { denyPaths: ["~/.ssh/"] },
+		expected: { layer: "protected-path" },
+	});
+
 	// ---- user-rules (item 10) ---------------------------------------------------------
 	cases.push(
 		{

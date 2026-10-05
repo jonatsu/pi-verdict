@@ -4597,17 +4597,15 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		});
 	});
 
-	test("auto: the second-model prompt carries the marker when the held action names a protected path", async () => {
+	test("auto: a call naming a protected path through a spelling the tokeniser misses is held without any model call", async () => {
 		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb", denyPaths: ["~/.ssh/"] }, async (_root, sub) => {
 			sub.responses = [ASK, ALLOW];
-			// The ${HOME} spelling defeats the denyPaths tokeniser, so no deterministic ask
-			// fires: the classifier asks, auto mode consults the second model, and the held
-			// action line that model receives must already be the marker.
-			expect(await toolCall(sub, "bash", { command: `cat \${HOME}/.ssh/id_rsa` })).toBeUndefined();
-			expect(sub.calls.length).toBe(2);
-			const prompt = String(sub.calls[1]?.messages?.[0]?.content ?? "");
-			expect(prompt).toContain("<protected-path>");
-			expect(prompt).not.toContain("/.ssh/");
+			// The ${HOME} spelling defeats the denyPaths tokeniser; the redactor still sees it, so the
+			// gate holds the call itself and no model, classifier or second, receives the action.
+			const r = await toolCall(sub, "bash", { command: `cat \${HOME}/.ssh/id_rsa` });
+			expect(r?.block).toBe(true);
+			expect(sub.calls.length).toBe(0);
+			expect(r?.reason).not.toContain("/.ssh/");
 		});
 	});
 
@@ -5111,21 +5109,18 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		expect(t).not.toContain("read: " + "x".repeat(50)); // the truncated line's prefix never survives
 	});
 
-	test(`a \${HOME}-spelled protected path never reaches the classifier prompt or a notification`, async () => {
-		// The denyPaths bash tokeniser knows $HOME but not ${HOME}, so NO deterministic ask
-		// fires — the call reaches the classifier, where the action line and (on block) the
-		// notification must both carry the marker instead of the path.
+	test(`a \${HOME}-spelled protected path asks without a model call and never reaches a notification`, async () => {
+		// The denyPaths bash tokeniser knows $HOME but not ${HOME}; the redactor still matches the
+		// call, so the gate asks deterministically instead of sending a marker to the classifier.
 		const h = session({ denyPaths: ["~/.ssh/"] });
-		h.responses = [{ text: "<verdict>deny</verdict> mock" }];
+		h.responses = [{ text: "<verdict>allow</verdict> mock" }];
+		h.confirmAnswer = false;
 		const r = await toolCall(h, "bash", { command: `cat \${HOME}/.ssh/id_rsa` });
-		expect(h.calls.length).toBe(1); // proves the tokeniser hole: no ask fired
-		const t = String(h.calls[0].messages[0].content);
-		expect(t).not.toContain("/.ssh/id_rsa");
-		expect(t).toContain("<protected-path>");
+		expect(h.calls.length).toBe(0);
+		expect(h.confirms).toBe(1);
 		expect(r?.block).toBe(true);
-		const blocked = h.notifies.find(([m, l]) => l === "warning" && m.includes("Auto Mode blocked"));
-		expect(blocked?.[0]).toContain("<protected-path>");
-		expect(blocked?.[0]).not.toContain("/.ssh/id_rsa");
+		expect(r?.reason).not.toContain("/.ssh/id_rsa");
+		expect(h.notifies.some(([m]) => m.includes("/.ssh/id_rsa"))).toBe(false);
 	});
 
 	test("the subagent second-model prompt is redacted like every other model payload", async () => {

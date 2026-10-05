@@ -15,7 +15,7 @@ whose `source` names the deciding layer.
 | 1 | Built-in deny floor | bash danger rules (regex `pattern` or `check`) and path-sensitivity grades S0–S5, graded over every tool-access adapter target; for a `language:"py"` eval cell, the extracted shell-out lines only | `rule` |
 | 2 | User `deny` rules | any user deny regex matching a known tool's adapter target (for a code call, the whole code text) | `rule` |
 | 3 | Forced `.omp` gate | `gateOmpDir` asks on a `.omp` access (any tool's adapter target, including an unlisted tool's) | `protected-path` |
-| 4 | `denyPaths` | a declared protected path match (any tool's adapter target, including an unlisted tool's) | `protected-path` |
+| 4 | `denyPaths` | a declared protected path match (any tool's adapter target, including an unlisted tool's); also a call no earlier layer decided that the transcript redactor matches, such as a `${HOME}` spelling the tokeniser misses (ADR-0002 amendment) | `protected-path` |
 | 5 | Over-cap action ask | an action whose counted text exceeds the 8192-char budget (item 6a) — asked **before** user `allow` so no rule can allow an unread tail | `rule` |
 | 6 | User `allow` rules / `tools` exemption | a user allow regex matching every known-tool target, or an exact `tools` name match (never for `kind:"code"`, and never for an opaque call or a call whose scope-tool path holds a glob metacharacter) | `rule` |
 | 7 | Opaque ask | a known mutating call (write/edit/ast_edit, ADR-0009) whose payload names no extractable target: no target at all, or patch text that does not parse (a `path`/`paths` beside it does not rescue the call) | `rule` |

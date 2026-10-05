@@ -239,6 +239,12 @@ caller — F10):
   only what the extractor's token scan and the raw-JSON check already see. The
   classifier's existence hint remains the backstop for exactly those calls
   (which is why item 3 of this phase adds no new prompt text).
+- **The call under review asks instead of being classified blind** (amendment): when the
+  predicate matches the call itself and no earlier layer decided, `adjudicate` returns a
+  deterministic protected-path ask (headless: deny) and makes no model call. The gate already
+  knows the call names a protected path, such as a `${HOME}` spelling the tokeniser misses, and a
+  model that sees only the marker in place of the action cannot judge it. The ask carries no
+  `detail`, because no declared base was matched.
 - **User messages are deliberately not redacted** (plan-review F5c): a user
   disclosing their own protected path in their own message is theirs to give;
   only past tool calls — the machine-generated residue of an approved action —

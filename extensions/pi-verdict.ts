@@ -3892,7 +3892,7 @@ export async function adjudicate(
 	call: { toolName: string; input: Record<string, unknown> },
 	env: AdjudicateEnv,
 ): Promise<Verdict> {
-	const rule = classifyByRules(
+	let rule = classifyByRules(
 		call.toolName,
 		call.input,
 		env.cwd,
@@ -3906,6 +3906,21 @@ export async function adjudicate(
 		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI)
 			return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
 		return { verdict: "deny", reason: rule.reason ?? "", source: "rule", degraded: false };
+	}
+
+	// One redactor per adjudication, built from cwd + the anchored denyPaths bases, passed to every
+	// model call that renders a transcript from this session's branch (first layer, cascade
+	// fallback, and the EXPLAIN-GATE path, which builds its own from state).
+	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
+	// The redactor also catches spellings the denyPaths tokeniser cannot extract, such as \`\${HOME}\`.
+	// A model that sees only a marker in place of such a call cannot judge it, and the gate already
+	// knows the call names a protected path, so it asks without a model call.
+	if (rule.verdict === "gray" && redact(call.input)) {
+		rule = {
+			verdict: "ask",
+			reason: "call names a user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
+			askSource: "protected-path",
+		};
 	}
 
 	// #62: the audit surface widens to protected-path asks (their user answers grade the
@@ -3970,16 +3985,6 @@ export async function adjudicate(
 	// fail-closed path shares the same deadline with the normal path.
 	const deadlineAt = Date.now() + (env.adjudicationBudgetMs ?? ADJUDICATION_BUDGET_MS);
 	const resolved = env.getModel();
-	// item 6b (Phase 5): one redactor per adjudication, built from cwd + the anchored
-	// denyPaths bases, passed to every model call that renders a transcript from this
-	// session's branch (first layer, cascade fallback, and — separately, since it has no
-	// adjudicate context — the EXPLAIN-GATE path, which builds its own from state).
-	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
-	// The action under review is a model payload too — when it names a protected
-	// path (e.g. a ${HOME} spelling the denyPaths tokeniser cannot extract, so no ask fired),
-	// the classifier/cascade prompts get the fixed marker; the local audit record keeps the
-	// raw text (ADR-0002 boundary: audit never leaves the machine).
-	const modelActionLine = redact(call.input) ? PROTECTED_PATH_MARKER : actionLine;
 	if (!resolved) {
 		const reason = "no classifier model available (fail-closed)";
 		// #71: a fail-closed default deny is not a negative judgment. Record the applied
@@ -3990,7 +3995,7 @@ export async function adjudicate(
 			null,
 			{ kind: "fail-closed" },
 			state.userRules.denyPaths.length > 0,
-			modelActionLine,
+			actionLine,
 			redact,
 			deadlineAt,
 		);
@@ -4058,7 +4063,7 @@ export async function adjudicate(
 		env.signal,
 		env.complete,
 		resolved.model,
-		modelActionLine,
+		actionLine,
 		resolved.thinking,
 		state.userRules.denyPaths.length > 0,
 		CLASSIFIER_TIMEOUT_MS,
@@ -4078,7 +4083,7 @@ export async function adjudicate(
 					demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null,
 					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
 					state.userRules.denyPaths.length > 0,
-					modelActionLine,
+					actionLine,
 					redact,
 					deadlineAt,
 				)
