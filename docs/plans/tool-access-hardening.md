@@ -601,8 +601,11 @@ R2-14 (`content` in the report's field list).
 1. ~~Does omp apply its own approval per written file?~~ — answered from source (Phase 2 step 8): one
    approval per call, strictest across targets; default `tools.approvalMode: "yolo"` auto-approves a
    multi-file edit. The smoke test confirms the gate-side verdict end to end.
-2. jev decisions input limits (both transports) — from vendor documentation first; live probe calls
-   only with the user's explicit go-ahead (Phase 4 step 1, decision 9).
+2. ~~jev decisions input limits (both transports)~~ — answered from vendor documentation during Phase 4
+   step 1: the official request budget is 64k tokens, of which `state` + the longest question get 32k, and
+   the 8192-char action cap (~2k tokens) fits with headroom, so no `min(8192, limit)` reduction was
+   needed. Recorded at `extensions/pi-verdict.ts` (`ACTION_LINE_MAX_CHARS`) and
+   `research/jev-classifier-model.md`; live probe calls were not made.
 3. ~~`getAllTools()` availability~~ — answered: present on both hosts (`omp types.ts:1611`, pi
    `types.d.ts:980`), `getAllTools(): ToolInfo[]`.
 4. ~~Exact tool-input shapes~~ — answered; the fixture table cites the sources inline (Phase 2). The
@@ -612,4 +615,81 @@ R2-14 (`content` in the report's field list).
 
 ## Round outcome (appended at execution close)
 
-Not yet written — the plan is a draft pending user approval.
+Status: **all nine planned commits landed, plus one fix-forward commit** inserted for the round-wide
+backfill review. Every seam ran the user-mandated gate sequence — independent reviewer (plus a
+security reviewer for the backfill) before the commit → findings applied → clean-code reviewer →
+scoped re-verification by both lanes → commit. The tag-keyed dispositions live in
+`.scratch/reviews/` (gitignored, session-scoped); this record names findings by content.
+
+### Commits (plan numbering in parentheses)
+
+| # | Hash | Phase |
+|---|---|---|
+| 1 | `01260f9` | Phase 0 — ask-source seam (`RuleResult.askSource` → `Verdict.source`, no behavior change) |
+| 2 | `94a692d` | Phase 1 — project overrides narrow by direction (item 3) |
+| 3 | `73fde79` | Phase 2 — tool-access adapter (item 1, ADR-0009) |
+| 4 | `8c8c1f0` | Phase 3 — eval semantics + session-start coverage report (item 4) |
+| 5 | `f3b47a5` | Phase 4 — transcript action-line integrity (item 6a) |
+| 6 | `1220951` | Phase 5 — transcript redaction (item 6b, ADR-0002 amendment) |
+| 7 | `32d329e` | Phase 6 — policyDegraded (item 6c, ADR-0010) |
+| 8 | `218d7e2` | **extra commit** — fix-forward for the backfill review of commits 1–6 (21 findings) |
+| 9 | `7c5dbe9` | Phase 7 (plan commit 8) — end-to-end adjudication deadline (item 7) |
+| 10 | `0f0ab53` | Phase 8 (plan commit 9) — docs + supply-chain sync (item 8) |
+
+Numbering deviation: the backfill fix-forward took the plan's commit-8 slot, so Phases 7 and 8 landed
+as commits 9 and 10. The delivery list's "exactly these nine commits" was extended by the
+user-mandated review protocol, which required a commit for the fixes the round's reviews produced.
+
+### Deviations recorded during execution
+
+- **Phase 5's approve-then-inspect test scenario** became a fixture-pushed branch entry: the harness
+  never populates the branch from `toolCall()`. Disclosed in commit 6.
+- **Commits 3–6's failing-before proofs used `git stash`** on the shared tree, against F19's
+  temp-copy mandate. Commit messages are immutable; every proof from commit 8 onward used the
+  temp-copy method (`.scratch/proof/` = `git show HEAD:extensions/pi-verdict.ts` + the current test
+  file), and each proof was re-run that way.
+- **Live-install observation**: the round's review saw the user's live install hit omp's 30 s
+  `toolCallTimeoutMs` bound twice (`Extension … timed out`). That was Phase 7's problem; the 27 s
+  adjudication budget addresses it, and it is worth re-observing after the next copy-over.
+- **Comment hygiene (maintainer review, mid-round)**: every review-round tag was stripped from source
+  comments, test titles and a probe case ref, because the reports are gitignored; tracked refs
+  (issue/ADR/plan item) were kept. `AGENTS.md` gained a "Coding Standards (YOU MUST)" section making
+  the `coding-standards` skill mandatory before code work and stating the resolvability rule.
+
+### What the gates caught (examples)
+
+- Phase 6's clean-code pass exposed a **latent bug in the probe's `assertLayer`** degraded-policy
+  mapping (runs A/C have no model, so they fail close and can never produce that source; only run B
+  can) — fixed with a `degradedConfig` probe opt-in and two cases.
+- Phase 7's review found the **temperature-rejection re-fire restarting the per-attempt clock**: one
+  attempt could spend 2× its cap and blow the deadline this phase exists to enforce. Fixed by hoisting
+  the timeout signal out of `fire()`, with a regression test proven failing-before (553 ms against its
+  450 ms bound, ~300 ms with the fix).
+- Phase 7's review also found **ADR-0004's ≈30 s sequential-latency figure** had become false; it
+  gained a dated amendment.
+- The backfill's security lane found the **subagent second-model prompt unredacted** (high), and the
+  scoped re-review found its residual at the handler call site; both fixed and pinned end-to-end.
+- Phase 8's clean-code pass found the `## Installed Copies` heading still calling a live,
+  config-exempt constraint "historical", and the `/verdict` editor still marking `gateOmpDir`'s On
+  option as the default; both corrected.
+
+### Verification (final state, all ten commits applied)
+
+`bun run typecheck` clean; `mise exec -- biome ci .` clean; `bun test` **448 pass / 1 skip / 0 fail**;
+`bun run probe` **93 pass / 0 fail / 0 open**; `docs/coverage.md` regenerated and fresh;
+`bun install --frozen-lockfile` a no-op. The round moved the suite from **398 to 448 tests (+50)** and the
+probe from **79 to 93 cases (+14)** — commit 1's recorded baselines; the backfill and Phase 7 alone account
+for 431 → 448 and 92 → 93.
+
+### Residual and open items
+
+- **User-side**: create the `v0.17.0` GitHub Release from your own terminal (the deny floor blocks
+  `gh release`). `publish.yml` now targets `@jonatsu` and authenticates with its own `GITHUB_TOKEN`
+  (`packages: write`), so there is nothing to set up (`TODO.md`).
+- The five budget tests use the real clock (50–300 ms, ~350 ms total); the one test that needs genuine
+  provider latency carries the repo rule's required justification comment.
+- ADR-0009's pinning sentence paraphrases the direct shell-API test's title and its describe group rather
+  than quoting them (accepted, cosmetic).
+- `package.json`'s fork attribution continues to name upstream `@frapetti-dev` (description and
+  author) — provenance, not a registry scope; a deliberate non-change, so the CHANGELOG says only that
+  the fork's own *scope* now matches everywhere.
