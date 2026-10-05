@@ -5106,7 +5106,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				minConfidence: state.userRules.classifierMinConfidence,
 				fallbackMessage: `${action}\n\n${label}: ${v.reason}\n\nAllow execution?`,
 			},
-			{ signal: opts.signal, explain: (question) => explainAsk(opts.ctx, call, action, reasonLine, question) },
+			{ signal: opts.signal, explain: (question) => explainAsk(opts.ctx, call, action, label, v.reason, question) },
 		);
 		if (d === "aborted") return "aborted";
 		return d.allow ? undefined : { block: true, reason: blockReason("user-declined", declineDetail("user declined", d.reason)) };
@@ -5678,7 +5678,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		ctx: ExtensionContext,
 		call: { toolName: string; input: Record<string, unknown> },
 		action: string,
-		reasonLine: string,
+		reasonLabel: string,
+		reason: string,
 		question: string | null,
 	): Promise<ExplainGateResult> {
 		const role = resolveExplainGate(ctx);
@@ -5698,7 +5699,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			actionDetail: redacted
 				? PROTECTED_PATH_MARKER
 				: (approveCodeMarkdown(call.toolName, call.input, () => undefined)?.markdown ?? displaySafe(action)),
-			reasonLine,
+			// A floor reason names the path it matched, so it gets the same marker as the action.
+			reasonLine: `${reasonLabel}: ${redacted ? PROTECTED_PATH_MARKER : reason}`,
 			defaultPrompt: state.userRules.explainGatePrompt,
 			question,
 			// item 6b (Phase 5): the EXPLAIN-GATE transcript is a model-provider payload exactly

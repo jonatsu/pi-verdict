@@ -4338,6 +4338,21 @@ describe("EXPLAIN-GATE role and decline explanation", () => {
 		expect(msg).not.toContain(`${base}/secret.txt`); // the EXPLAIN-GATE transcript is scrubbed too
 		expect(msg).toContain("<protected-path>");
 	});
+
+	test("the EXPLAIN-GATE prompt does not carry a floor reason that names a protected path", async () => {
+		const target = path.join(os.homedir(), ".ssh", "id_rsa");
+		const h = session({ denyPaths: ["~/.ssh/"], autoDeny: false }); // a floor deny becomes an ask
+		h.responses = [{ text: "it reads a private key" }];
+		h.inputs = [""];
+		const rendered: string[] = [];
+		driveDialogs(h, [[DOWN, DOWN, DOWN, "\r"], ["\r"]], rendered);
+		await toolCall(h, "read", { path: target });
+		expect(h.calls).toHaveLength(1); // the EXPLAIN-GATE call; the rule ask made no classifier call
+		expect(String(h.calls[0].systemPrompt)).toContain("EXPLAIN-GATE");
+		const msg = String(h.calls[0].messages[0].content);
+		expect(msg).not.toContain(".ssh");
+		expect(msg).toContain("<protected-path>");
+	});
 });
 
 // ── subagent gate (omp ctx.agent.kind = "sub") ───────────
