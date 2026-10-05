@@ -4693,3 +4693,40 @@ describe("live classifier status widget", () => {
 		}
 	});
 });
+
+// ── Tool-access adapter (ADR-0009) ──────────────────────
+
+describe("tool-access adapter (ADR-0009)", () => {
+	test("an unlisted tool's shape-inferred path/command never matches a user allow or deny regex (R2-2)", async () => {
+		const allowed = session({ allow: ["^/tmp/target\\.txt$"] });
+		allowed.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r1 = await toolCall(allowed, "frobnicate", { path: "/tmp/target.txt" });
+		expect(r1).toBeUndefined(); // reaches the classifier (gray), never a rule allow
+		expect(allowed.calls.length).toBe(1);
+
+		const denied = session({ deny: ["^/tmp/target\\.txt$"] });
+		denied.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		// a user deny regex also cannot key on an unknown tool's shape-inferred field —
+		// userRuleTargets stays empty for direction:"unknown" (same scope as allow above)
+		const r2 = await toolCall(denied, "frobnicate", { path: "/tmp/target.txt" });
+		expect(r2).toBeUndefined();
+		expect(denied.calls.length).toBe(1);
+	});
+
+	test("the opaque ask carries askSource rule end to end", async () => {
+		setConfig({});
+		const state = new SessionState();
+		const v = await adjudicate(state, { toolName: "edit", input: { input: "prose with no header" } }, adjudicateEnv());
+		expect(v).toMatchObject({ verdict: "ask", source: "rule", degraded: false });
+	});
+
+	test("a multi-header edit names every target in the ask detail (audit record)", async () => {
+		clearAudit();
+		const h = session({ audit: true, denyPaths: ["/tmp/secret-rule-test"] });
+		h.ctx.hasUI = false;
+		await toolCall(h, "edit", {
+			input: "[/proj/a.ts#1a2b]\nPUT 1.=1:\n+x\n[/tmp/secret-rule-test/b.ts#3c4d]\nPUT 1.=1:\n+y\n",
+		});
+		expect(readAudit()[0].detail).toContain("2 targets");
+	});
+});

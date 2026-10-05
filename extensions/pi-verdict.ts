@@ -749,7 +749,7 @@ interface UserRules {
 	deny: RegExp[];
 	/** User-declared protected paths (ADR-0002): plain paths, tool-owned normalization; hit → ask */
 	denyPaths: string[];
-	/** [tools allowlist] exact tool-name allowlist for the MCP/custom family (toolKind() === null, e.g. "ask", "propose_commit", "propose_changelog") — a case-sensitive exact match on the tool's registered name bypasses the classifier and returns allow directly. Does not touch the built-in floor or denyPaths (none of those cover this family either). Empty = unchanged default (always classifier). Config key: "tools". */
+	/** [tools allowlist] exact tool-name allowlist for the MCP/custom family (adapter direction "unknown", e.g. "ask", "propose_commit", "propose_changelog") — a case-sensitive exact match on the tool's registered name bypasses the classifier and returns allow directly. Does not touch the built-in floor or denyPaths (none of those cover this family either). Empty = unchanged default (always classifier). Config key: "tools". */
 	tools: string[];
 	/** Built-in deny floor switch (danger regexes + path-sensitivity deny), true by default; when off, relies on user rules and the classifier. */
 	builtinDenyFloor: boolean;
@@ -1019,9 +1019,9 @@ function recordTrust(root: string, decision: "trusted" | "untrusted", configPath
 /**
  * Starter `tools` allowlist written into the first-run config template (a pre-filled
  * user declaration, like the denyPaths starter list — existing configs are never
- * rewritten). Only tools with no path/command shape (toolKind() === null) can be
- * listed. Selection criterion: no filesystem/process/network side effect of their own,
- * or an effect already gated elsewhere.
+ * rewritten). Only tools outside the tool-access adapter's observing/mutating sets
+ * (adapter direction "unknown") can be listed. Selection criterion: no filesystem/process/
+ * network side effect of their own, or an effect already gated elsewhere.
  *  - ask:        prompts the user; the user is the gate
  *  - todo:       session task list (UI/session metadata only)
  *  - wait:       blocks on already-started background jobs
@@ -1031,10 +1031,11 @@ function recordTrust(root: string, decision: "trusted" | "untrusted", configPath
  *                entry id, no file or git restore (R8: verified in omp's checkpoint tool)
  *  - recall, reflect:    read from the configured memory backend
  * Deliberately NOT listed: task (spawns a subagent — exempting it would be a fail-open
- * relative to the subagent gate; gate its calls instead), glob/ast_grep/lsp (path-scoped
- * reads that this tool-name family skips denyPaths for), web_search (query text leaves
- * the machine), retain/learn/memory_edit/manage_skill (persist content into future
- * prompts), eval/github/debug/ida/security_scan/ast_edit (execute code or mutate state).
+ * relative to the subagent gate; gate its calls instead), glob/ast_grep (path-scoped reads
+ * the tool-access adapter grades like grep/find; exempting them would bypass denyPaths), lsp
+ * (no declared path shape yet, but may gain one), web_search (query text leaves the machine),
+ * retain/learn/memory_edit/manage_skill (persist content into future prompts),
+ * eval/github/debug/ida/security_scan/ast_edit (execute code or mutate state).
  */
 const DEFAULT_ALLOWED_TOOLS = ["ask", "todo", "wait", "yield", "think", "checkpoint", "rewind", "recall", "reflect"];
 
@@ -1581,53 +1582,279 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 	return { verdict: "gray", reason: `write outside project directory (CWD): ${rawPath}` };
 }
 
-/** Tool family shared by the three toolName dispatches below (user-rule target,
- *  built-in grading, denyPaths extraction): "command" tools carry a command string,
- *  "file" tools carry a path argument; null = outside both families (MCP/custom →
- *  classifier only, unless exact-matched by user.tools — see classifyByRules). Adding a file tool means extending this one map. */
-function toolKind(toolName: string): "command" | "file" | null {
-	switch (toolName) {
-		case "bash":
-		case "powershell":
-			return "command";
-		case "read":
-		case "write":
-		case "edit":
-		case "grep":
-		case "find":
-		case "ls":
-			return "file";
-		default:
-			return null;
+/** Grades every mutating target through classifyPath's existing write tiers
+ *  (S0/S1/S3/S2, kernelWalk per target, the unresolved-write fail-closed
+ *  branch per target): deny on the first tier hit (first target wins); the
+ *  in-cwd allowance fires only when at least one target exists and EVERY
+ *  target sits in-cwd; any remaining S2/outside-cwd target grades gray.
+ *  Single-target inputs behave bit-for-bit as today — classifyPath itself is
+ *  unchanged and does all the grading; this only combines N results. */
+function classifyWrites(targets: string[], cwd: string, floorOn: boolean): RuleResult {
+	const results = targets.map((t) => classifyPath(t, cwd, true, floorOn));
+	const deny = results.find((r) => r.verdict === "deny");
+	if (deny) return deny;
+	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow" };
+	const gray = results.find((r) => r.verdict === "gray");
+	return gray ?? { verdict: "gray", reason: `write outside project directory (CWD): ${targets.join(", ")}` };
+}
+
+/** Read-side analog of classifyWrites: the worst outcome wins (deny beats gray
+ *  beats allow) so a list-split part cannot silently evade the floor either
+ *  (Claude-review F6 — over-extraction is the safe direction on both sides). */
+function classifyReads(targets: string[], cwd: string, floorOn: boolean): RuleResult {
+	if (targets.length === 0) return { verdict: "allow" };
+	const results = targets.map((t) => classifyPath(t, cwd, false, floorOn));
+	const deny = results.find((r) => r.verdict === "deny");
+	if (deny) return deny;
+	const gray = results.find((r) => r.verdict === "gray");
+	return gray ?? { verdict: "allow" };
+}
+
+// ============================================================================
+// Tool-access adapter (ADR-0009): one host-agnostic model of what a tool call
+// touches — built from the call's own payload alone (universal-plugin
+// constraint 2). Closes item 1 (a multi-header omp `edit` graded on
+// `input.path` alone, which omp leaves unset above one header) by generalizing
+// every file-tool consumer (user rules, denyPaths, the built-in floor,
+// self-protection) from "one path" to "every target the payload names".
+// ============================================================================
+
+/** Known observing (read-only) and mutating (write) tool names; "everything
+ *  else" is `direction: "unknown"` — not "unrecognized by the gate" but "not a
+ *  known file-access tool" (bash/powershell grade through the separate command
+ *  channel unchanged; eval/task/MCP tools fall here too). Adding a file tool
+ *  means adding its name to one of these two sets. */
+const OBSERVING_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "grep", "find", "ls", "glob", "ast_grep"]);
+const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set(["write", "edit", "ast_edit"]);
+/** Scope tools: `path`/`paths` accept a directory/glob and the search covers a
+ *  SUBTREE — an omitted path means the workspace root/cwd (#48), and the
+ *  denyPaths compare is bidirectional (hitDenyPaths/hitOmpDir). */
+const SCOPE_TOOL_NAMES: ReadonlySet<string> = new Set(["grep", "find", "ls", "glob", "ast_grep", "ast_edit"]);
+
+function isCommandTool(toolName: string): boolean {
+	return toolName === "bash" || toolName === "powershell";
+}
+
+type ToolDirection = "observing" | "mutating" | "unknown";
+type ToolAccessKind = "command" | "file" | "code" | null;
+
+/** One pure, host-agnostic model of what a tool call touches. A function of the
+ *  call's own payload only (constraint 2) — the one permitted exception is a
+ *  version-targeted branch citing a specific documented host fact, never the
+ *  development host's own state. `command` carries either the command text
+ *  (`kind:"command"`) or the code text (`kind:"code"`) — a call is never both. */
+interface ToolAccess {
+	direction: ToolDirection;
+	kind: ToolAccessKind;
+	reads: string[];
+	writes: string[];
+	command: string | null;
+	/** A known mutating call (write/edit/ast_edit) whose payload names no target at
+	 *  all — deterministic ask (headless → deny). Never true for an unknown tool:
+	 *  the opaque ask exists to catch a file write whose target can't be found,
+	 *  which a tool naming no file at all is not (narrowed 2026-10-05). */
+	opaque: boolean;
+	scope: boolean;
+}
+
+/** Hashline header tag: `#` + exactly 4 hex digits, anchored at the end of the
+ *  trimmed header body (verified against the installed omp 18.6.1 source —
+ *  `extensibility/tool-event-input.ts`'s `extractHashlinePaths`/
+ *  `normalizeHashlineHeaderPath` — and `edit/plan-mode-guard.d.ts`'s
+ *  `unwrapHashlineHeaderPath` doc comment, which independently confirms the
+ *  `[path]`/`[path#XXXX]` bracket shape the plan's original 18.5.1 citations
+ *  inferred; self-contained per constraint 3 — no host import). */
+const HASHLINE_TAG_RE = /#[0-9a-fA-F]{4}$/;
+
+/** Strip a trailing hashline tag, then one layer of matching quotes, from a
+ *  trimmed header body. `null` for an empty body (mirrors omp's
+ *  `normalizeHashlineHeaderPath`). */
+function stripHashlineTagAndQuotes(trimmedBody: string): string | null {
+	if (!trimmedBody) return null;
+	const tag = HASHLINE_TAG_RE.exec(trimmedBody);
+	const raw = tag ? trimmedBody.slice(0, tag.index) : trimmedBody;
+	if (raw.length < 2) return raw.length > 0 ? raw : null;
+	const first = raw[0];
+	const last = raw[raw.length - 1];
+	if ((first === '"' || first === "'") && first === last) return raw.slice(1, -1);
+	return raw;
+}
+
+/** Unwrap a hashline-wrapped `[path#TAG]` value (`write` may carry one) to the
+ *  inner path; anything outside the strict bracket shape returns unchanged —
+ *  same contract as omp's `unwrapHashlineHeaderPath`. */
+function unwrapHashlineHeaderPath(value: string): string {
+	if (!value.startsWith("[") || !value.endsWith("]")) return value;
+	return stripHashlineTagAndQuotes(value.slice(1, -1).trim()) ?? value;
+}
+
+/** Parses hashline file headers (`[PATH]`/`[PATH#TAG]`, legacy `¶PATH`) and `MV
+ *  DEST` op lines (hashline mode) plus apply-patch `*** Add/Update/Delete
+ *  File:`/`*** Move to:` lines (apply_patch mode) from the SAME patch text — a
+ *  payload is never pre-classified by mode name, so this recognizes whichever
+ *  grammar the text actually carries. An unrecognized ("sloppy") payload yields
+ *  no targets, which is what keeps it opaque. The move destination is a write
+ *  and the source stays a target too (the move deletes it there). */
+function parseHashlineTargets(text: string): string[] {
+	const targets: string[] = [];
+	const stripped = text.startsWith("\uFEFF") ? text.slice(1) : text;
+	for (const raw of stripped.split("\n")) {
+		const line = raw.replace(/\r$/, "");
+		if (line.startsWith("[") && line.endsWith("]")) {
+			const body = stripHashlineTagAndQuotes(line.slice(1, -1).trim());
+			if (body) targets.push(body);
+			continue;
+		}
+		const legacy = line.trimStart();
+		if (legacy.startsWith("¶")) {
+			let i = 0;
+			while (i < legacy.length && legacy[i] === "¶") i++;
+			const body = stripHashlineTagAndQuotes(legacy.slice(i).trim());
+			if (body) targets.push(body);
+			continue;
+		}
+		const mv = /^MV\s+(.+)$/.exec(line.trim());
+		if (mv?.[1].trim()) {
+			targets.push(mv[1].trim());
+			continue;
+		}
+		for (const prefix of ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "]) {
+			if (line.startsWith(prefix) && line.slice(prefix.length).trim()) {
+				targets.push(line.slice(prefix.length).trim());
+				break;
+			}
+		}
 	}
+	return targets;
 }
 
-/** Scope tools (grep/find/ls): pi's schema makes `path` optional (default:
- *  current directory) and the search covers a directory SUBTREE — an omitted or
- *  empty path means the cwd is the effective target (#48). */
-function isScopeTool(toolName: string): boolean {
-	return toolName === "grep" || toolName === "find" || toolName === "ls";
+function readStringField(input: Record<string, unknown>, key: string): string | null {
+	const v = input[key];
+	return typeof v === "string" && v.length > 0 ? v : null;
+}
+function readStringArrayField(input: Record<string, unknown>, key: string): string[] {
+	const v = input[key];
+	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
+}
+/** Patch-mode `edits[].rename` values are also targets: the structured `patch`
+ *  edit mode (`{path, edits:[{op?, diff?, rename?}]}`) can rename a file as part
+ *  of one section's edit. */
+function readPatchRenameTargets(input: Record<string, unknown>): string[] {
+	if (!Array.isArray(input.edits)) return [];
+	const out: string[] = [];
+	for (const e of input.edits) {
+		if (e && typeof e === "object" && !Array.isArray(e)) {
+			const rename = (e as Record<string, unknown>).rename;
+			if (typeof rename === "string" && rename) out.push(rename);
+		}
+	}
+	return out;
 }
 
-/** User-rule match targets: bash/powershell = the full command string; path tools = the parsed
- *  absolute path plus — item 10, plan-review F11 — the kernel-true spelling when the raw spelling
- *  contains `..` (omp opens an absolute input verbatim, so `subLink/../secret` reaches a different
- *  file than `path.resolve` names). Deduped; scope tools with an omitted path resolve to the cwd
- *  (#48) — user rules match the effective target, never an empty list that skips the rule block.
- *  Semantics: deny = ANY target matches; allow = EVERY target matches (F11) — an allow regex that
- *  matches only the lexical spelling must not allow the call. */
+/** omp splits a `;`/`,`/whitespace-delimited path list and opens each part
+ *  separately while the gate graded only the whole string as one path
+ *  (Claude-review F6, a pre-existing bypass) — over-extraction (the whole
+ *  string plus every part) is the safe direction on both sides. */
+function splitObservingPathList(p: string): string[] {
+	const parts = p.split(/[;,\s]+/).filter((s) => s.length > 0);
+	return parts.length > 1 ? [p, ...parts] : [p];
+}
+
+/** code/command shape inference for a tool outside the known observing/mutating
+ *  sets (constraint 2: payload shape, not the tool name). A shape-inferred
+ *  `command` (e.g. `debug`'s DAP request) never enters `classifyBash` — every
+ *  consumer of `kind`/`command` stays scoped to known tool names. */
+function inferUnknownShape(input: Record<string, unknown>): { kind: ToolAccessKind; command: string | null } {
+	const code = readStringField(input, "code");
+	if (code !== null) return { kind: "code", command: code };
+	const command = readStringField(input, "command");
+	if (command !== null) return { kind: "command", command };
+	return { kind: null, command: null };
+}
+
+/** `toolAccess(toolName, input): ToolAccess` — see the file banner above. */
+function toolAccess(toolName: string, input: Record<string, unknown>): ToolAccess {
+	const scope = SCOPE_TOOL_NAMES.has(toolName);
+	const rawPath = readStringField(input, "path") ?? readStringField(input, "_path");
+	const unwrapped = rawPath !== null ? unwrapHashlineHeaderPath(rawPath) : null;
+	const pathsField = readStringArrayField(input, "paths");
+	const patchText = readStringField(input, "input") ?? readStringField(input, "_input");
+
+	if (OBSERVING_TOOL_NAMES.has(toolName)) {
+		const reads = new Set<string>();
+		if (unwrapped !== null) for (const p of splitObservingPathList(unwrapped)) reads.add(p);
+		for (const p of pathsField) reads.add(p);
+		return { direction: "observing", kind: "file", reads: [...reads], writes: [], command: null, opaque: false, scope };
+	}
+	if (MUTATING_TOOL_NAMES.has(toolName)) {
+		const writes = new Set<string>();
+		if (unwrapped !== null) writes.add(unwrapped);
+		for (const p of pathsField) writes.add(p);
+		for (const t of readPatchRenameTargets(input)) writes.add(t);
+		// A host-derived or model-supplied path/paths is added to the target set above (for
+		// deny-side grading) but never makes a call non-opaque: when patch text is present,
+		// opaqueness is grammar-driven — only what the grammar itself recognizes counts, so a
+		// sloppy/unrecognized payload stays opaque even if path/paths also names something
+		// (a spoofed paths value must not rescue an unparseable patch). When no patch text
+		// exists at all (replace/patch-mode edit, write), path/paths/rename ARE authoritative.
+		let opaque: boolean;
+		if (patchText !== null) {
+			const parsed = parseHashlineTargets(patchText);
+			for (const t of parsed) writes.add(t);
+			opaque = parsed.length === 0;
+		} else {
+			opaque = writes.size === 0;
+		}
+		return { direction: "mutating", kind: "file", reads: [], writes: [...writes], command: null, opaque, scope };
+	}
+	// unknown: never opaque, never mutating-by-shape (2026-10-05 re-review) — whatever
+	// targets the payload yields still feed the deny-side layers; otherwise gray, as today.
+	const reads = new Set<string>();
+	if (unwrapped !== null) reads.add(unwrapped);
+	for (const p of pathsField) reads.add(p);
+	const writes = new Set<string>();
+	if (patchText !== null) for (const t of parseHashlineTargets(patchText)) writes.add(t);
+	const { kind, command } = inferUnknownShape(input);
+	return { direction: "unknown", kind, reads: [...reads], writes: [...writes], command, opaque: false, scope: false };
+}
+
+/** Dialog-only suffix (ADR-0002: local plaintext, never a block reason) naming a multi-target
+ *  edit's full target set — the matched denyPaths/gateOmpDir base alone does not say which of
+ *  N targets in a multi-header edit it was. Empty for a single-target call (bit-for-bit
+ *  unchanged `detail`). */
+function multiTargetDetailSuffix(access: ToolAccess): string {
+	const all = access.direction === "mutating" ? access.writes : access.reads;
+	return all.length > 1 ? ` (${all.length} targets: ${all.join(", ")})` : "";
+}
+
+/** Lexical + kernel-true forms of each target (item 10, plan-review F11,
+ *  generalized to N targets): omp opens an absolute input verbatim, so a
+ *  symlink-aliased target reaches a different file than path.resolve names
+ *  when the raw spelling contains `..`. Deduped. */
+function expandTargetForms(targets: string[], cwd: string): string[] {
+	const forms = new Set<string>();
+	for (const t of targets) {
+		forms.add(toRuleForm(path.resolve(cwd, expandHome(t))));
+		const kernel = kernelPath(t, cwd);
+		if (kernel !== null) forms.add(toRuleForm(kernel));
+	}
+	return [...forms];
+}
+
+/** User-rule match targets: bash/powershell = the full command string; a known
+ *  observing/mutating tool = every read/write target the adapter extracts (an
+ *  unlisted tool's shape-inferred fields never reach user rules — Claude-review
+ *  R2-2 — so a `deny`/`allow` regex can never key on an MCP tool's payload by
+ *  accident). A pathless observing call's effective target is the cwd (#48); a
+ *  pathless mutating call stays targetless here (opaque — nothing to match).
+ *  Semantics unchanged: deny = ANY target matches; allow = EVERY target
+ *  matches (F11). */
 function userRuleTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
-	const kind = toolKind(toolName);
-	if (kind === "command") return [String(input.command ?? "")];
-	if (kind === "file") {
-		const p = typeof input.path === "string" && input.path ? input.path : null;
-		if (!p) return isScopeTool(toolName) ? [toRuleForm(path.resolve(cwd))] : [];
-		const lexical = toRuleForm(path.resolve(cwd, expandHome(p)));
-		const kernel = kernelPath(p, cwd);
-		if (kernel === null) return [lexical];
-		return [...new Set([lexical, toRuleForm(kernel)])];
-	}
-	return [];
+	if (isCommandTool(toolName)) return [String(input.command ?? "")];
+	const access = toolAccess(toolName, input);
+	if (access.direction === "unknown") return [];
+	const raw = access.direction === "mutating" ? access.writes : access.reads.length > 0 ? access.reads : [cwd];
+	return expandTargetForms(raw, cwd);
 }
 
 // ============================================================================
@@ -1786,24 +2013,25 @@ function denyPathForms(raw: string, cwd: string): string[] {
 /** Normalize the configured denyPaths against one cwd (ADR-0002: anchored once per session, never re-derived) */
 const anchorDenyPaths = (paths: string[], cwd: string): string[] => paths.flatMap((b) => denyPathForms(b, cwd));
 
-/** Every path candidate a tool call exposes to denyPaths comparison (MCP/custom tools: none — classifier + hint covers).
+/** Every path candidate a tool call exposes to denyPaths comparison, via the adapter
+ *  (an unknown tool's shape-inferred fields are included here, unlike userRuleTargets).
  *  Scope tools with an omitted/empty path contribute the cwd: their search scope
  *  IS the cwd subtree (#48). */
 function denyPathCandidates(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
-	const kind = toolKind(toolName);
-	if (kind === "command") {
+	if (isCommandTool(toolName)) {
 		// win32: backslash-separated paths (`C:\proj\f`) are the native spelling; BASH_PATH_TOKENS is
 		// "/"-only, so unify separators first (drive letter is skipped by the absolute-path branch;
 		// a mis-read shell escape only yields extra candidates — false positives ask, the safe direction)
 		const cmd = String(input.command ?? "");
 		return bashPathTokens(path.sep === "\\" ? cmd.replace(/\\/g, "/") : cmd);
 	}
-	if (kind === "file") {
-		const p = typeof input.path === "string" && input.path ? input.path : null;
-		if (!p) return isScopeTool(toolName) ? [cwd] : [];
-		return [p];
-	}
-	return [];
+	const access = toolAccess(toolName, input);
+	if (access.direction === "mutating") return access.writes;
+	if (access.direction === "observing") return access.reads.length > 0 ? access.reads : [cwd];
+	// unknown: whatever targets the payload yields still feed denyPaths — the surviving
+	// BREAKING change (an unknown tool's extracted targets now hit this ask where today
+	// nothing grades them; `userRuleTargets` stays known-tool-only, see R2-2 above).
+	return [...access.reads, ...access.writes];
 }
 
 /** Does the call touch a user-declared protected path? `bases` are the denyPaths
@@ -1817,7 +2045,7 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
  *  one-directional: single-target semantics. */
 function hitDenyPaths(toolName: string, input: Record<string, unknown>, cwd: string, bases: string[]): string | null {
 	if (bases.length === 0) return null;
-	const subtree = isScopeTool(toolName);
+	const subtree = toolAccess(toolName, input).scope;
 	for (const candidate of denyPathCandidates(toolName, input, cwd)) {
 		for (const c of denyPathForms(candidate, cwd)) {
 			for (const b of bases) {
@@ -1839,7 +2067,7 @@ const OMP_DIR_IN_COMMAND = /(?<![\w.-])\.omp(?![\w.-])/;
  *  own target only (omitted path → cwd): a recursive search from a project root that merely
  *  traverses a nested `.omp` is not a `.omp` access. Returns the matched form (UI-only detail). */
 function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string): string | null {
-	if (toolKind(toolName) === "command") {
+	if (isCommandTool(toolName)) {
 		const command = String(input.command ?? "");
 		if (OMP_DIR_IN_COMMAND.test(command)) return ".omp referenced in the command";
 	}
@@ -2032,10 +2260,9 @@ export function isProtectedReadPath(rawPath: string | undefined, cwd: string, pr
  *  whose semantics apply; the paths come from the call's inputs (R3), so an unenumerated
  *  tool (ast_edit, an MCP filesystem tool, a later-added name) gets the write treatment. */
 function selfProtectDirection(toolName: string): "write" | "read" | "command" | "unknown" {
-	const kind = toolKind(toolName);
-	if (kind === "command") return "command";
-	if (toolName === "write" || toolName === "edit") return "write";
-	if (kind === "file") return "read";
+	if (isCommandTool(toolName)) return "command";
+	if (MUTATING_TOOL_NAMES.has(toolName)) return "write";
+	if (OBSERVING_TOOL_NAMES.has(toolName)) return "read";
 	return "unknown";
 }
 
@@ -2083,8 +2310,9 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 		return null;
 	}
 	const strings = inputStrings(input);
+	const access = toolAccess(toolName, input);
 	if (direction === "read") {
-		for (const s of strings) {
+		for (const s of [...strings, ...access.reads]) {
 			if (isProtectedReadPath(s, cwd, prot)) {
 				return {
 					verdict: "deny",
@@ -2095,8 +2323,11 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 		}
 		return null;
 	}
-	// write + unknown: any input string landing in the protected set is a write, fail-safe
-	for (const s of strings) {
+	// write + unknown: any input string landing in the protected set is a write, fail-safe.
+	// The adapter's own writes/reads are tested too (Claude-review F7, today's gap): an
+	// apply-patch `*** Update File: <agentDir>/config/pi-verdict.json` is a single raw input
+	// string the blind scan above treats as one opaque path, not a patch to parse.
+	for (const s of [...strings, ...access.writes, ...access.reads]) {
 		if (isProtectedWritePath(s, cwd, prot)) {
 			return {
 				verdict: "deny",
@@ -2105,20 +2336,31 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 			};
 		}
 	}
+	// kind "code" (eval): the command-direction substring signatures also run over the code
+	// text — `eval` writing the gate's own files via `!cmd`/`%%bash` must not bypass them.
+	if (access.kind === "code" && access.command !== null && prot.bashPatterns.some((re) => re.test(access.command as string))) {
+		return {
+			verdict: "deny",
+			reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only",
+			selfProtect: true,
+		};
+	}
 	return null;
 }
 
 /**
- * Tool call → rule-layer verdict. Order (#12; ADR-0005 adds layer 0; ADR-0002 inserts denyPaths):
+ * Tool call → rule-layer verdict. Order (#12; ADR-0005 adds layer 0; ADR-0002 inserts denyPaths;
+ * ADR-0009 moves the tools exemption after the deny-side layers and adds the opaque ask):
  *   0. self-protection — deny is terminal (no config exempts it, not even builtinDenyFloor:false)
- *   1. built-in base (bash danger regex floor / path sensitivity grading) — deny is terminal
- *      (the floor can be turned off via builtinDenyFloor)
+ *   1. built-in base (bash danger regex floor / path sensitivity grading over every adapter
+ *      target) — deny is terminal (the floor can be turned off via builtinDenyFloor)
  *   2. user deny → deny (beats allow)
- *      2a. gateOmpDir (default off): path/command touching a `.omp` directory → terminal ask
+ *   2a. gateOmpDir (default off): path/command touching a `.omp` directory → terminal ask
  *   3. denyPaths hit → terminal ask (ADR-0002: the declaring user adjudicates; before user allow)
  *   4. user allow → allow
  *   5. custom-tool exact match (user.tools) → allow (bypasses classifier for that tool)
- *   6. base (path tools' default allow/gray; everything else gray) → classifier
+ *   6. opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target
+ *   7. base (observing default allow/gray; everything else gray) → classifier
  */
 function classifyByRules(
 	toolName: string,
@@ -2130,63 +2372,81 @@ function classifyByRules(
 ): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
 	if (sp) return sp;
+
+	const access = toolAccess(toolName, input);
 	let base: RuleResult;
-	const kind = toolKind(toolName);
-	if (kind === "command") {
+	if (isCommandTool(toolName)) {
 		base = classifyBash(String(input.command ?? ""), user.builtinDenyFloor);
-	} else if (toolName === "write" || toolName === "edit") {
-		// isWrite grading nuance stays per-tool (not part of the family map)
-		base = classifyPath(String(input.path ?? ""), cwd, true, user.builtinDenyFloor);
-	} else if (toolName === "read") {
-		// read keeps classifyPath even with an empty path: resolved to cwd, it still
-		// carries the system-directory gray grading (bit-for-bit with the old switch)
-		base = classifyPath(String(input.path ?? ""), cwd, false, user.builtinDenyFloor);
-	} else if (kind === "file") {
-		// grep/find/ls: optional path; absent → cwd is the
-		// effective target, so user rules and denyPaths compare against it (#48)
-		const p = typeof input.path === "string" ? input.path : undefined;
-		base = p ? classifyPath(p, cwd, false, user.builtinDenyFloor) : { verdict: "allow" };
-	} else if (user.tools.includes(toolName)) {
-		base = { verdict: "allow", reason: "user tools allow rule" };
+	} else if (access.direction === "mutating") {
+		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
+		// after the deny-side layers and the tools exemption get first look.
+		base = access.opaque ? { verdict: "gray" } : classifyWrites(access.writes, cwd, user.builtinDenyFloor);
+	} else if (access.direction === "observing") {
+		const readTargets = access.reads.length > 0 ? access.reads : [cwd];
+		base = classifyReads(readTargets, cwd, user.builtinDenyFloor);
 	} else {
 		base = { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 	}
 	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
 
+	// User deny (known-tool targets only — R2-2: an unknown tool's shape-inferred fields
+	// never reach user rules; Item 10 / F11: deny fires on ANY target match).
 	const targets = userRuleTargets(toolName, input, cwd);
-	if (targets.length > 0) {
-		// Item 10 / F11: deny = any target matches; allow = every target matches.
-		for (const re of user.deny) {
-			if (targets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
-		}
-		// Forced .omp gate: terminal ask, after user deny, before denyPaths/user allow.
-		// Reason carries no path (it travels back into agent context); the path is UI-only detail.
-		if (user.gateOmpDir) {
-			const omp = hitOmpDir(toolName, input, cwd);
-			if (omp)
-				return { verdict: "ask", reason: "forced gate: access to a .omp directory (gateOmpDir)", detail: omp, askSource: "protected-path" };
-		}
-		// denyPaths hit → terminal ask (ADR-0002): after user deny, before user allow —
-		// a protected path is the user's exception to their own allow rules.
-		// The matched path goes to `detail` (confirm dialog only): reasons travel back
-		// into the agent context, so plaintext there would leak the declaration.
-		const hit = hitDenyPaths(toolName, input, cwd, denyPathBases);
-		if (hit)
+	for (const re of user.deny) {
+		if (targets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
+	}
+	// Forced .omp gate: terminal ask, after user deny, before denyPaths/user allow. Not gated
+	// by `targets` — denyPathCandidates (which hitOmpDir uses) also covers an unknown tool's
+	// adapter-derived fields. Reason carries no path (it travels back into agent context); the
+	// path is UI-only detail.
+	if (user.gateOmpDir) {
+		const omp = hitOmpDir(toolName, input, cwd);
+		if (omp)
 			return {
 				verdict: "ask",
-				reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
-				detail: hit,
+				reason: "forced gate: access to a .omp directory (gateOmpDir)",
+				detail: omp + multiTargetDetailSuffix(access),
 				askSource: "protected-path",
 			};
-		// ADR-0008: a user allow admits ONE simple command. A compound command, an unsound parse, a
-		// redirection or a write-shaped git invocation is never rule-allowed — it reaches the classifier.
-		const allowOk = kind !== "command" || allowAdmits(String(input.command ?? ""));
+	}
+	// denyPaths hit → terminal ask (ADR-0002): after user deny, before user allow — a
+	// protected path is the user's exception to their own allow rules. Also not gated by
+	// `targets` (an unknown tool's extracted targets now hit this ask where today nothing
+	// grades them — the surviving BREAKING change). The matched path goes to `detail` (confirm
+	// dialog only): reasons travel back into the agent context, so plaintext there would leak
+	// the declaration.
+	const hit = hitDenyPaths(toolName, input, cwd, denyPathBases);
+	if (hit) {
+		return {
+			verdict: "ask",
+			reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
+			detail: hit + multiTargetDetailSuffix(access),
+			askSource: "protected-path",
+		};
+	}
+	// User allow (known-tool targets only, same scope as user deny above). ADR-0008: a user
+	// allow admits ONE simple command. A compound command, an unsound parse, a redirection or
+	// a write-shaped git invocation is never rule-allowed — it reaches the classifier.
+	if (targets.length > 0) {
+		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
 				if (targets.every((t) => re.test(t))) return { verdict: "allow", reason: "user allow rule" };
 			}
 		}
 	}
+
+	// tools exemption: exact-name allowlist, checked AFTER every deny-side layer above and
+	// BEFORE the opaque ask / gray fall-through (ADR-0009) — a listed tool carrying a
+	// protected-path target now faces the ask above instead of a silent allow here.
+	if (user.tools.includes(toolName)) return { verdict: "allow", reason: "user tools allow rule" };
+
+	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at
+	// all — deterministic ask, headless → deny (never for an unknown tool: see toolAccess).
+	if (access.direction === "mutating" && access.opaque) {
+		return { verdict: "ask", reason: "mutating call with no extractable target", askSource: "rule" };
+	}
+
 	return base;
 }
 
@@ -2249,6 +2509,12 @@ function transcriptSafe(text: string): string {
 
 function toolCallLine(name: string, args: Record<string, unknown>): string {
 	if (typeof args.command === "string") return `${name}: ${transcriptSafe(args.command)}`;
+	// Multi-target edit (ADR-0009): the transcript action line names the full target set
+	// instead of silently showing only args.path (unset above one hashline header) or the
+	// raw patch JSON.
+	const access = toolAccess(name, args);
+	const targets = access.direction === "mutating" ? access.writes : access.direction === "observing" ? access.reads : [];
+	if (targets.length > 1) return `${name}: ${transcriptSafe(`${targets.length} targets: ${targets.join(", ")}`)}`;
 	if (typeof args.path === "string") return `${name}: ${transcriptSafe(args.path)}`;
 	return `${name}: ${transcriptSafe(JSON.stringify(args))}`;
 }

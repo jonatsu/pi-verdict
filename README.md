@@ -181,12 +181,17 @@ tool_call
   │     └─ <agentDir>/verdicts/ reads and writes → deny
   │
   ├─ 1. Rule layer (deterministic, zero latency)
-  │     ├─ built-in deny floor: bash danger regexes + path sensitivity S0–S5;
-  │     │   a write whose kernel target is unresolvable (symlink loop) fails closed
+  │     ├─ tool-access adapter (ADR-0009): one model of what a call touches —
+  │     │   every target a payload names (path/paths, or the hashline/apply-patch
+  │     │   headers inside a patch), not just input.path
+  │     ├─ built-in deny floor: bash danger regexes + path sensitivity S0–S5,
+  │     │   graded over every adapter target; a write whose kernel target is
+  │     │   unresolvable (symlink loop) fails closed
   │     ├─ your rules: user deny beats user allow
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
   │     │   before user allow; classifier sees an existence hint only
+  │     ├─ a mutating call naming no target at all → opaque ask (ADR-0009)
   │     └─ no built-in allowlist — every "always allow" claim is yours to make
   │
   ├─ 2. Gray zone → model classifier (defaults to session model — "self-reflection")

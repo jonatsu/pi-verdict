@@ -36,8 +36,12 @@ case fails.
   non-S0/S1 read. This is distinct from a classifier allow.
 - `classifier` — the gray zone. Run A (headless) asserts `fail-closed/deny`; run B asserts
   `classifier/allow`.
-- `protected-path` — a `denyPaths` match. Run A asserts `protected-path/deny` (the ask degraded
-  headless); run B asserts `protected-path/ask`.
+- `protected-path` — a `denyPaths`/`gateOmpDir` match. Run A asserts `protected-path/deny` (the ask
+  degraded headless); run B asserts `protected-path/ask`.
+- `rule-ask` — a rule-layer ask that is not a `denyPaths`/`gateOmpDir` match (e.g. the tool-access
+  adapter's opaque ask: a known mutating call naming no target at all, ADR-0009). Run B asserts
+  `rule/ask`; runs A and C assert `rule/deny` **with `degraded: true`** — a plain rule deny must
+  never pass as a degraded rule-ask.
 
 `expected.ruleId` and `expected.reasonIncludes` are substrings of the verdict reason. The floor
 reason is `rule <id>: <reason>`, so `ruleId: "git-push-force"` matches the force-push floor rule.

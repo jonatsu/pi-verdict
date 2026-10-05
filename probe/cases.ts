@@ -30,7 +30,7 @@ export interface Expectation {
 export interface Case {
 	/** Named for the behaviour, never the implementation. */
 	label: string;
-	family: "force-push" | "path-tier" | "kernel-path" | "self-protection" | "deny-paths" | "user-rules" | "user-allow";
+	family: "force-push" | "path-tier" | "kernel-path" | "self-protection" | "deny-paths" | "user-rules" | "user-allow" | "tool-access";
 	tool: string;
 	input: Record<string, unknown>;
 	/** Additionally asserted under the consumer-policy fixture config (run C). */
@@ -478,6 +478,101 @@ export function buildCases(fx: FixtureTree): Case[] {
 			config: { allow: ["^git (log)(\\s|$)"] },
 			ref: "arch-F2",
 			expected: { layer: "classifier" },
+		},
+	);
+
+	// ---- tool-access (ADR-0009: the tool-access adapter) ------------------------------
+	cases.push(
+		{
+			label: "multi-header edit: second header targets an S0 path",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: `[${fx.work}/a.ts#1a2b]\nPUT 1.=1:\n+x\n[~/.ssh/authorized_keys#3c4d]\nPUT 1.=1:\n+y\n` },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "multi-header edit: both headers in-cwd allows",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: `[${fx.work}/a.ts#1a2b]\nPUT 1.=1:\n+x\n[${fx.work}/b.ts#3c4d]\nPUT 1.=1:\n+y\n` },
+			expected: { layer: "allow" },
+		},
+		{
+			label: "pathless edit with no parseable header stays opaque",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: "replace the greet function with the new implementation\n" },
+			expected: { layer: "rule-ask" },
+		},
+		{
+			label: "grep omitted path: a declared base inside the cwd asks (bidirectional #48)",
+			family: "tool-access",
+			tool: "grep",
+			input: { pattern: "x" },
+			config: { denyPaths: [`${fx.work}/secret-sub`] },
+			ref: "F5",
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "apply-patch multi-file: one target hits an S0 tier",
+			family: "tool-access",
+			tool: "edit",
+			input: {
+				input: `*** Begin Patch\n*** Update File: ${fx.work}/a.ts\n@@\n-old\n+new\n*** Update File: ~/.ssh/authorized_keys\n@@\n-old\n+new\n*** End Patch\n`,
+			},
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "apply-patch Update File + Move to: the update target alone must deny, the in-cwd move target cannot launder it",
+			family: "tool-access",
+			tool: "edit",
+			input: {
+				input: `*** Begin Patch\n*** Update File: ~/.ssh/authorized_keys\n*** Move to: ${fx.work}/renamed.ts\n@@\n-old\n+new\n*** End Patch\n`,
+			},
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "a paths spoof does not rescue an unparseable input (stays opaque)",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: "<apply_patch>", paths: [`${fx.work}/src/a.ts`] },
+			ref: "F3",
+			expected: { layer: "rule-ask" },
+		},
+		{
+			label: "patch-mode edit rename target hits a declared denyPaths base",
+			family: "tool-access",
+			tool: "edit",
+			input: { path: `${fx.work}/old-name.ts`, edits: [{ op: "update", rename: "~/.bashrc" }] },
+			config: { denyPaths: ["~/.bashrc"] },
+			ref: "F3",
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "read list-split: a ;-separated path list exposes its second part to denyPaths",
+			family: "tool-access",
+			tool: "read",
+			input: { path: "README.md;~/.bashrc" },
+			config: { denyPaths: ["~/.bashrc"] },
+			ref: "F6",
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "ast_edit paths:['.'] : a declared base inside the cwd asks (bidirectional #48)",
+			family: "tool-access",
+			tool: "ast_edit",
+			input: { ops: [{ pat: "x", out: "y" }], paths: ["."] },
+			config: { denyPaths: [`${fx.work}/secret-sub`] },
+			ref: "F5",
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "ast_edit with no paths stays opaque (mutating scope tool never defaults to cwd)",
+			family: "tool-access",
+			tool: "ast_edit",
+			input: { ops: [{ pat: "x", out: "y" }] },
+			ref: "R2-4",
+			expected: { layer: "rule-ask" },
 		},
 	);
 

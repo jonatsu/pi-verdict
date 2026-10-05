@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/
 
 ## [Unreleased]
 
+### Added
+
+- **Tool-access adapter** (`toolAccess`, [ADR-0009](docs/adr/0009-tool-access-adapter.md)): one host-agnostic model of what a tool call reads or writes, replacing the single `input.path` read every file-tool consumer (user rules, `denyPaths`, the built-in floor, self-protection) used. Recognizes a plural `paths` field, a hashline-wrapped `path`, and — parsed directly out of a patch's `input`/`_input` text — hashline file headers (`[PATH]`/`[PATH#TAG]`, legacy `¶PATH`), `MV DEST` op lines, the apply-patch `*** Add/Update/Delete File:`/`*** Move to:` lines, and patch-mode `edits[].rename` values. `glob` and `ast_grep` join `grep`/`find`/`ls` as subtree-scoped tools; `ast_edit` joins `write`/`edit` as a known mutating tool.
+
 ### Changed
 
-- **BREAKING**: project overrides on `gateOmpDir`, `notifyAllows`, `classifierFallbackMode` and `subagentGate` now apply only their single narrowing value (`true`, `true`, `"shadow"` and `"normal"` respectively) — a project value that would widen the gate is ignored, with a skipped-note, instead of overwriting the user's value verbatim; `subagentAskTimeoutMs` applies only when strictly greater than the user's effective value (default `60000`), and both the user's and a project's value are capped at `2^31-1`ms (a larger value overflows `AbortSignal.timeout`/`setTimeout` and would fire almost immediately, acting like `"auto"`); `footer` leaves the overridable set entirely — a project could otherwise hide the `subagent off` warning badge via `footer:"off"` ([ADR-0006](docs/adr/0006-fork-posture-and-override-hardening.md) direction-table amendment).
-- `docs/configuration.md`'s project-override list no longer claims `autoDeny`, `audit`, `classifierMinConfidence` and `classifierFallbackModel` are overridable — the code has never allowed it; the doc was stale.
+- **BREAKING**: a multi-header omp `edit` (two or more hashline file headers in one patch) is now graded on every target the patch touches, not on `input.path` alone — omp itself leaves `path` unset once a patch crosses two headers, which previously let the whole edit through as a silent in-project write allow regardless of what its other headers touched (item 1; [ADR-0009](docs/adr/0009-tool-access-adapter.md)).
+- **BREAKING**: a `write`/`edit`/`ast_edit` call whose payload names no target at all (an empty path, a patch whose grammar is unrecognized, or an omitted `paths` on `ast_edit`) is now a deterministic ask instead of a silent in-cwd allow (the opaque-ask rule).
+- **BREAKING**: a tool listed in `tools` now faces the deterministic `denyPaths`/`gateOmpDir` ask if its extracted target is protected, instead of a silent allow — the `tools` exact-name exemption is checked after the deny-side layers, not before.
+- **BREAKING**: an unknown tool's path-shaped payload fields now reach the `denyPaths`/`gateOmpDir` ask, where previously nothing graded them; its fields still never reach user `deny`/`allow` regex matching (unchanged — an MCP tool's payload cannot accidentally satisfy a user rule).
+- An observing tool's (`read`/`grep`/`find`/`ls`/`glob`/`ast_grep`) `path` is now additionally split on `;`, `,` and whitespace for `denyPaths` and the built-in floor — omp's `read` opens each part of such a list separately while the gate previously graded only the whole string as one path.
+- Self-protection (layer 0) now also tests every tool-access adapter target and, for `eval`'s code text, the command-direction substring signatures — an apply-patch line or an `eval` shell-out touching the gate's own files no longer bypasses it.
+- A multi-target write's ask dialog detail and classifier transcript action line now name every target, not just the first or a raw JSON dump.
 
 ## [0.17.0] - 2026-10-05
 
