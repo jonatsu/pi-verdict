@@ -493,11 +493,24 @@ reason. A user `allow` such as `^npm (test|run)\b` or `^bash scripts/` still adm
   The probe grows the table by case.
 - **Effect.** When an `executes` target is in the written set, two things change:
   - no allow path admits the call, neither a user allow nor the fast path, so the call reaches the classifier;
-  - the classifier's action line carries a bounded excerpt of the file's current content. It uses the tool-access
-    plan's excerpt mechanism (Phase 4) and its redaction (Phase 5).
+  - the classifier's action line carries an excerpt of each written target.
 
-  An unreadable or oversized file gets an explicit "content unavailable" marker. The item never denies by itself;
-  the classifier decides.
+  The item never denies by itself; the classifier decides.
+- **The excerpt.** The tool-access plan landed the excerpt helper: `actionCallLine` appends
+  `boundedExcerpt(content, EXCERPT_CHARS)`, marked `[excerpt: N of M chars]`, to a `write` or `edit` action only. Its
+  command branch returns before any excerpt, so item 10 extends that branch. After the command, each written target
+  gets one line naming the file, followed by its excerpt:
+  - a same-batch target uses the recorded payload, which for an `edit` is the patch text rather than the whole file;
+  - an earlier-batch target is read from disk. The read takes a bounded prefix and reports the file size as the
+    total, so a large file is cut behind the usual marker rather than refused;
+  - a missing or unreadable file gets an explicit `[content unavailable: <reason>]` marker;
+  - at most three targets get an excerpt, and a `[N more written targets]` line counts the rest.
+- **The action cap.** Excerpts never count toward `ACTION_LINE_MAX_CHARS`, the rule Phase 4 set for write excerpts.
+  The over-cap ask still reads the command text alone.
+- **Redaction.** When the redactor matches the bash call's arguments, the whole action line becomes
+  `<protected-path>` as it does today, excerpts included. Otherwise the redactor also runs over each excerpt's source
+  text, passed as `{ content }`. A match replaces that excerpt with the marker and keeps the command. A `write`
+  action already gets the same treatment, because the redactor's raw-JSON check reads its content.
 
 **Limits, stated in the ADR and the CHANGELOG.** This narrows the laundering path and does not close it. The written
 set does not cover:
@@ -514,9 +527,13 @@ with `npm test` under `allow: ["^npm test\\b"]`. Controls: running a file not wr
 verdict. A written file that is only read (`cat scripts/x.sh`) is unaffected. A same-batch case: with the `write`
 gated but not yet run and absent from the branch, the following `bash scripts/x.sh` still reaches the classifier,
 and its excerpt comes from the recorded payload. A resumed session whose branch holds the earlier `write` seeds the
-set at `session_start`.
+set at `session_start`. A written file deleted before it runs gets the unavailable marker. A written script whose
+content names a `denyPaths` base reaches the classifier with its excerpt replaced by `<protected-path>` and the
+command intact. A long excerpt alongside a command just under `ACTION_LINE_MAX_CHARS` does not trigger the over-cap
+ask.
 
-**Dependency.** Item 9's `executes` and `writes`, and the tool-access plan's Phases 4-5.
+**Dependency.** Item 9's `executes` and `writes`. The excerpt helper and the redactor it builds on
+(`boundedExcerpt`, `redactorFor`) landed with the tool-access plan.
 
 ## Part C: evidence and structure
 
@@ -602,13 +619,13 @@ This settles the tool-access plan's open loader question.
 
 ## Interaction with the tool-access plan
 
-`docs/plans/tool-access-hardening.md` is being executed in parallel. Its "Interaction with the call-model plan"
-section covers this plan from its side.
+`docs/plans/tool-access-hardening.md` has been executed (its round outcome landed in `a0cbd2f`). Its "Interaction
+with the call-model plan" section covers this plan from its side. Every dependency below is therefore met.
 
 - **Items 1-8 and 11** are independent of it. Its Phase 2 reworks `userRuleTargets` and the user allow loop, and item
   1 changes the same loop's `allowAdmits` call. Whichever lands second rebases onto the other; there is no logical
   conflict.
-- **Item 7** inherits that plan's ordering rule once its Phase 4 lands: the over-cap ask runs before every allow path.
+- **Item 7** inherits that plan's ordering rule: the over-cap ask runs before every allow path.
 - **Item 9** extends that plan's `toolAccess` adapter and needs its Phase 2. It takes over that plan's deferred
   "one path-resolution service".
 - **Item 10** needs that plan's Phase 4 (content excerpt) and Phase 5 (redaction).
@@ -633,9 +650,8 @@ probe parity and no CHANGELOG entry, unless the step's text names a visible chan
    commit 1.
 7. `feat(classifier): name weakened transport security (item 8)`.
 8. Item 9: first its ADR (`docs(adr): …`), reviewed by the user; then five commits (`refactor(gate): …` for steps 1,
-   2, 4 and 5; `fix(paths): …` for step 3), after the tool-access plan's Phase 2.
-9. `feat(gate): follow session-written code into its execution (item 10)`, after item 9 and the tool-access plan's
-   Phases 4-5.
+   2, 4 and 5; `fix(paths): …` for step 3).
+9. `feat(gate): follow session-written code into its execution (item 10)`, after item 9.
 10. Item 12, in M-sized `refactor(layout): …` commits, after item 9. The first commit pins the directory-level
     self-protection.
 
