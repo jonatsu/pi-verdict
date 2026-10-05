@@ -2947,6 +2947,33 @@ interface ClassifierOutcome {
 
 const CLASSIFIER_TIMEOUT_MS = 25_000; // This gateway's CC classifier latency distribution: p90=19.8s (15s would kill ~15%); research/cache-sim data
 const FALLBACK_TIMEOUT_MS = 15_000; // #63: second-layer per-attempt budget — matches the first layer's per-attempt discipline (the two-tier retry can spend it twice)
+
+/** item 7: end-to-end adjudication budget — one gray-zone decision (first layer, its defensive
+ *  retry, the fallback cascade) must finish inside this, comfortably below omp's default
+ *  `extensionHandlers.toolCallTimeoutMs` (30 000 ms, per handler call), which would otherwise kill
+ *  the handler mid-cascade. Hardcoded rather than derived from the host's configured bound: the
+ *  extension cannot reliably read that setting, and 27 s sits below every sensible bound — raising
+ *  the host bound helps the subagent ask path (see `subagentAskTimeoutMs`), not this one. */
+const ADJUDICATION_BUDGET_MS = 27_000;
+
+/** item 7: per-attempt timeout under the shared deadline — an attempt may use its own cap only as
+ *  far as the remaining budget allows, less whatever is reserved for a later step. Only a
+ *  configured `classifierFallbackModel` justifies a reserve; without one the first layer keeps its
+ *  full cap. Never returns 0: a starved attempt still gets a token window to fail fast in, where a
+ *  non-positive timeout would abort before the call was ever made. A non-finite remaining budget
+ *  (no deadline) falls back to the cap rather than yielding a NaN timeout. Exported for tests (#35). */
+export const budgetedTimeoutMs = (capMs: number, remainingMs: number, reserveMs: number): number =>
+	Math.max(1, Math.min(capMs, Number.isFinite(remainingMs) ? remainingMs - reserveMs : capMs));
+
+/** item 7: one classifier attempt's outcome. `timedOut` marks this attempt's own deadline firing —
+ *  a budget verdict, not a compatibility failure, so classifyWithModel must not retry it. */
+type ClassifierAttempt =
+	| { ok: true; text: string; stopReason: string; errorMessage?: string; timedOut: boolean }
+	| { ok: false; error: string; timedOut: boolean };
+
+/** item 7: the shared adjudication deadline plus the time held back for the fallback — 0 for the
+ *  last step, since nothing runs behind it. */
+type ClassifierBudget = { deadlineAt: number; reserveMs: number };
 const CLASSIFIER_MAX_TOKENS = 512;
 const CLASSIFIER_RETRY_MAX_TOKENS = 1024; // Defensive retry tier: covers models that ignore reasoning:off or still exceed budget with light thinking
 const APIS_WITHOUT_TEMPERATURE = new Set<string>(["openai-codex-responses"]);
@@ -3107,11 +3134,14 @@ async function callClassifierOnce(
 	thinking: ThinkingLevel = "off",
 	systemPrompt: string = CLASSIFIER_SYSTEM,
 	timeoutMs: number = CLASSIFIER_TIMEOUT_MS,
-): Promise<{ ok: true; text: string; stopReason: string; errorMessage?: string } | { ok: false; error: string }> {
-	const fire = async (
-		withTemperature: boolean,
-	): Promise<{ ok: true; text: string; stopReason: string; errorMessage?: string } | { ok: false; error: string }> => {
-		const signals = [AbortSignal.timeout(timeoutMs)];
+): Promise<ClassifierAttempt> {
+	// item 7: one timeout window per ATTEMPT, created outside fire() so the temperature-rejection
+	// re-fire shares it — a fresh signal per fire would let a single attempt spend twice its cap and
+	// blow the adjudication deadline. Named so the caller can tell a budget verdict (the model was
+	// still working) from a compatibility failure (it answered something unusable).
+	const timeout = AbortSignal.timeout(timeoutMs);
+	const fire = async (withTemperature: boolean): Promise<ClassifierAttempt> => {
+		const signals = [timeout];
 		if (signal) signals.push(signal);
 		try {
 			const response = await complete(
@@ -3151,9 +3181,15 @@ async function callClassifierOnce(
 				.filter((b) => b.type === "text")
 				.map((b) => b.text)
 				.join("");
-			return { ok: true, text, stopReason: response.stopReason ?? "unknown", errorMessage: response.errorMessage };
+			return {
+				ok: true,
+				text,
+				stopReason: response.stopReason ?? "unknown",
+				errorMessage: response.errorMessage,
+				timedOut: timeout.aborted,
+			};
 		} catch (err) {
-			return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			return { ok: false, error: err instanceof Error ? err.message : String(err), timedOut: timeout.aborted };
 		}
 	};
 	const modelKey = `${model.api}|${model.id}`;
@@ -3170,6 +3206,9 @@ async function callClassifierOnce(
  * Gray-zone classification: two attempts (512 → retry with 1024 on failure).
  * Retry on abort/error/exception/output violating the contract (including empty output)—covers occasional empty output
  * from thinking models with light thinking, models ignoring disabled, and models rejecting thinking parameters; the retry is a model-independent compatibility layer.
+ * One carve-out (item 7): an attempt whose own deadline fired is NOT retried — a timeout is a budget
+ * verdict, not a compatibility failure, so it goes straight to the fallback (the retry would spend the
+ * remainder the fallback needs).
  * If both tiers fail → fail-closed deny (reason includes both diagnostics).
  */
 async function classifyWithModel(
@@ -3183,6 +3222,7 @@ async function classifyWithModel(
 	timeoutMs: number = CLASSIFIER_TIMEOUT_MS,
 	rules: readonly string[] = [],
 	redact: RedactorFn = () => false,
+	budget?: ClassifierBudget,
 ): Promise<ClassifierOutcome> {
 	const transcript = buildTranscript(host, actionLine, redact);
 	const userMessage = `<transcript>\n${transcript}\n</transcript>\nJudge the LAST action in the transcript above. Your entire response MUST begin with <verdict>.`;
@@ -3195,7 +3235,16 @@ async function classifyWithModel(
 	let rawResponse = ""; // #54: raw output of the last attempt ("" for exception attempts — diagnostics already live in failures)
 	for (const [n, maxTokens] of attempts) {
 		if (signal?.aborted) break; // User canceled; do not retry
-		const r = await callClassifierOnce(host, signal, complete, model, userMessage, maxTokens, thinking, systemPrompt, timeoutMs);
+		// item 7: the attempt's cap, as far as the shared deadline allows.
+		const attemptMs = budget ? budgetedTimeoutMs(timeoutMs, budget.deadlineAt - Date.now(), budget.reserveMs) : timeoutMs;
+		const r = await callClassifierOnce(host, signal, complete, model, userMessage, maxTokens, thinking, systemPrompt, attemptMs);
+		if (r.timedOut && !r.ok) {
+			// item 7: a timeout is a budget verdict, not a compatibility failure — retrying inside
+			// the same deadline only spends the remainder the fallback needs. A response that still
+			// arrived is a usable answer and is parsed below.
+			failures.push(`attempt ${n} (${maxTokens}t) timed out after ${attemptMs}ms`);
+			break;
+		}
 		if (r.ok) {
 			rawResponse = r.text;
 			const diag = `stopReason=${r.stopReason}, model=${model.id}, errorMessage=${JSON.stringify(r.errorMessage ?? null)}, raw output=${JSON.stringify(r.text.slice(0, 200))}`;
@@ -3499,6 +3548,10 @@ export interface AdjudicateEnv {
 	/** Transcript redaction predicate (item 6b, Phase 5) — built once per call by adjudicate
 	 *  from cwd + the anchored denyPaths bases; omitted in tests that don't exercise it. */
 	redact?: RedactorFn;
+	/** item 7: end-to-end adjudication budget override — a TEST SEAM. Production always uses
+	 *  ADJUDICATION_BUDGET_MS (the extension never reads the host's configured bound), while the
+	 *  budget tests need a sub-second deadline to observe the behavior without waiting 27 s. */
+	adjudicationBudgetMs?: number;
 }
 
 /** #67: the confidence floor. Below it the first layer abstains and the call cascades —
@@ -3539,6 +3592,7 @@ async function runConfidenceCascade(
 	denyPathsActive: boolean,
 	actionLine: string,
 	redact: RedactorFn,
+	deadlineAt: number,
 ): Promise<CascadeResult> {
 	const rules = state.userRules;
 	const demotionAsk = (): CascadeResult["effective"] => ({
@@ -3584,6 +3638,9 @@ async function runConfidenceCascade(
 		FALLBACK_TIMEOUT_MS,
 		state.userRules.classifierRules,
 		redact,
+		// item 7: the fallback is the last step, so nothing is reserved behind it — it may use
+		// whatever the shared deadline has left.
+		{ deadlineAt, reserveMs: 0 },
 	);
 	if (outcome.source !== "model") return failed(resolved.model.id, outcome.reason);
 	state.fallback.note(first?.verdict ?? null, outcome.verdict);
@@ -3670,6 +3727,9 @@ export async function resolveAskWithoutHuman(
 		rules.denyPaths.length > 0,
 		FALLBACK_TIMEOUT_MS,
 		rules.classifierRules,
+		// item 7 boundary: the subagent ask path runs in the handler outside the root-session
+		// adjudication deadline, so no budget is passed — its documented guidance stays "raise the
+		// host toolCallTimeoutMs above subagentAskTimeoutMs + 60000" (docs/configuration.md).
 		// The second-model prompt is a model payload like any other —
 		// without this it shipped past tool calls unredacted, defeating Phase 5 (ADR-0002).
 		env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd)),
@@ -3792,6 +3852,11 @@ export async function adjudicate(
 
 	// Gray zone → classifier; no available model → fail-closed
 
+	// item 7: one end-to-end deadline for the whole gray-zone decision, below omp's default
+	// toolCallTimeoutMs (30 000 ms) — without it the documented worst case (25 + 25 + 15 + 15 s)
+	// outlives the host bound and the handler is killed mid-cascade. Computed here so the no-model
+	// fail-closed path shares the same deadline with the normal path.
+	const deadlineAt = Date.now() + (env.adjudicationBudgetMs ?? ADJUDICATION_BUDGET_MS);
 	const resolved = env.getModel();
 	// item 6b (Phase 5): one redactor per adjudication, built from cwd + the anchored
 	// denyPaths bases, passed to every model call that renders a transcript from this
@@ -3815,6 +3880,7 @@ export async function adjudicate(
 			state.userRules.denyPaths.length > 0,
 			modelActionLine,
 			redact,
+			deadlineAt,
 		);
 		const eff = cascade.effective;
 		// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a
@@ -3873,6 +3939,8 @@ export async function adjudicate(
 	}
 
 	env.onPhase?.("classifier", resolved.model.id);
+	// item 7: hold time back for the fallback only when one is configured.
+	const reserveMs = state.userRules.classifierFallbackModel && env.getFallbackModel ? FALLBACK_TIMEOUT_MS : 0;
 	const outcome = await classifyWithModel(
 		env.host,
 		env.signal,
@@ -3884,6 +3952,7 @@ export async function adjudicate(
 		CLASSIFIER_TIMEOUT_MS,
 		state.userRules.classifierRules,
 		redact,
+		{ deadlineAt, reserveMs },
 	);
 
 	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
@@ -3899,6 +3968,7 @@ export async function adjudicate(
 					state.userRules.denyPaths.length > 0,
 					modelActionLine,
 					redact,
+					deadlineAt,
 				)
 			: {};
 	let effVerdict = cascade.effective?.verdict ?? outcome.verdict;

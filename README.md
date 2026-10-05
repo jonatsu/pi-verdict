@@ -213,7 +213,7 @@ tool_call
         └─ ask   → human confirm; non-interactive modes degrade to deny
 ```
 
-**fail-closed**: classifier exception / timeout (25s) / contract violation → deny. Never silently allow.
+**fail-closed**: classifier exception / timeout (each attempt capped inside a 27s end-to-end adjudication budget) / contract violation → deny. Never silently allow.
 
 At `session_start`, a schema-driven coverage report (debug-channel, `--auto-mode-debug`) names any
 active tool the adapter and your `tools` list both leave ungraded, and a one-time warning flags a

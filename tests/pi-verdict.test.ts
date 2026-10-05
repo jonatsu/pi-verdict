@@ -18,6 +18,7 @@ import autoMode, {
 	BASH_PATH_TOKENS,
 	bashPathTokens,
 	bindCompletion,
+	budgetedTimeoutMs,
 	type CompletionFn,
 	computeTmpdirBases,
 	declineDetail,
@@ -5338,5 +5339,106 @@ describe("action-line cap, layer 0 coverage, and exemption ordering (item 6a, Ph
 		expect(r?.block).toBe(true);
 		expect(String(r?.reason)).toContain("recursive delete");
 		expect(h.calls.length).toBe(0);
+	});
+});
+
+// ── end-to-end adjudication deadline (item 7, Phase 7) ──────────────────────
+
+describe("end-to-end adjudication deadline (item 7, Phase 7)", () => {
+	/** A provider that honors its abort signal but never answers: the attempt's own timeout is the
+	 *  only way out, which is exactly what the budget tests need. */
+	const hang = (opts: { signal?: AbortSignal }): Promise<never> => {
+		const { promise, reject } = Promise.withResolvers<never>();
+		opts.signal?.addEventListener("abort", () => reject(new Error("aborted by the attempt deadline")), { once: true });
+		return promise;
+	};
+
+	test("the budget caps the attempt below its 25 s, and a timeout is never retried", async () => {
+		setConfig({});
+		const state = new SessionState();
+		const env = adjudicateEnv();
+		env.adjudicationBudgetMs = 50; // test seam: production uses the 27 s constant
+		let calls = 0;
+		env.complete = (async (_m: any, _req: any, opts: any) => {
+			calls++;
+			return hang(opts);
+		}) as any;
+		const started = Date.now();
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		const elapsed = Date.now() - started;
+		expect(v).toMatchObject({ verdict: "deny" });
+		const windowMs = Number(v.reason.match(/timed out after (\d+)ms/)?.[1]);
+		expect(windowMs).toBeGreaterThan(0);
+		expect(windowMs).toBeLessThanOrEqual(50); // the budget, not the 25 s cap
+		expect(calls).toBe(1); // a timeout goes straight to the fallback, never to attempt 2
+		expect(elapsed).toBeLessThan(1_000); // ... and it fired well inside the 30 s host bound
+	});
+
+	test("a contract violation still retries inside the budget", async () => {
+		setConfig({});
+		const state = new SessionState();
+		const env = adjudicateEnv();
+		env.adjudicationBudgetMs = 5_000;
+		let calls = 0;
+		env.complete = (async () => {
+			calls++;
+			return calls === 1
+				? { content: [{ type: "text", text: "" }], stopReason: "length" }
+				: { content: [{ type: "text", text: "<verdict>allow</verdict> retry answered" }], stopReason: "stop" };
+		}) as any;
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		expect(v).toMatchObject({ verdict: "allow" });
+		expect(calls).toBe(2); // the retry tier is for unusable answers, not for slow models
+	});
+
+	test("the temperature-rejection re-fire shares the attempt's single timeout window", async () => {
+		// Real clock on purpose: the window is a native AbortSignal.timeout, which fake timers do not
+		// drive, and the latency below stands in for a provider that answers slowly — neither can be
+		// expressed deterministically. Kept to ~200 ms.
+		setConfig({});
+		const state = new SessionState();
+		const env = adjudicateEnv({ model: { id: "mock/temp-reject" } });
+		env.adjudicationBudgetMs = 300;
+		let calls = 0;
+		env.complete = (async (_m: any, _req: any, opts: any) => {
+			calls++;
+			if (calls === 1) {
+				// The provider rejects the temperature-bearing request only after burning most of the
+				// window; the re-fire must not receive a fresh one on top of it.
+				await Bun.sleep(250);
+				return { content: [], stopReason: "error", errorMessage: "temperature is not supported" };
+			}
+			return hang(opts);
+		}) as any;
+		const started = Date.now();
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		const elapsed = Date.now() - started;
+		expect(calls).toBe(2); // the re-fire ran
+		expect(v.verdict).toBe("deny");
+		expect(elapsed).toBeLessThan(450); // one window, not two: ~300 ms, not ~600 ms
+	});
+
+	test("a slow first layer times out into the fallback instead of dying at the host bound", async () => {
+		setConfig({ classifierFallbackModel: "mock/fb" });
+		const state = new SessionState();
+		const env = adjudicateEnv({ fallback: { model: { id: "fb-model" }, thinking: "off" } });
+		env.adjudicationBudgetMs = 200;
+		let calls = 0;
+		env.complete = (async (_m: any, _req: any, opts: any) => {
+			calls++;
+			if (calls === 1) return hang(opts); // the first layer never answers
+			return { content: [{ type: "text", text: "<verdict>allow</verdict> fb says fine" }], stopReason: "stop" };
+		}) as any;
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		expect(v).toMatchObject({ verdict: "allow", reason: "fb says fine" });
+		expect(calls).toBe(2); // the first attempt timed out; the fallback answered
+	});
+
+	test("the per-attempt budget keeps the full cap with no fallback and reserves only when one is configured", () => {
+		expect(budgetedTimeoutMs(25_000, 27_000, 0)).toBe(25_000); // no fallback: attempt 1 keeps its 25 s
+		expect(budgetedTimeoutMs(25_000, 27_000, 15_000)).toBe(12_000); // a configured fallback is reserved for
+		expect(budgetedTimeoutMs(15_000, 5_000, 0)).toBe(5_000); // the last step may use what is left
+		expect(budgetedTimeoutMs(15_000, -100, 0)).toBe(1); // starved: still a token window to fail in
+		expect(budgetedTimeoutMs(25_000, Number.NaN, 0)).toBe(25_000); // no deadline: the cap, not NaN
 	});
 });

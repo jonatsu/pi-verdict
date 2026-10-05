@@ -218,7 +218,8 @@ before the classifier:
 
 Pinned by the `eval semantics` test describe (user deny on code text, the F4 starter-allow
 non-admission, the F13 `!`/`%%bash` floor hits with a js-language negative control, denyPaths/
-`.omp` extraction from code text, and the `tools`-exemption loss) and by `session_start`'s
+`.omp` extraction from code text, and the `tools`-exemption loss), by the direct shell-API floor
+hit (`os.system(` — pinned alongside the action-cap and layer-0 group) and by `session_start`'s
 coverage-report tests.
 
 ## Phase 3 amendment: session_start coverage report and side-effecting tools warning (item 4)
