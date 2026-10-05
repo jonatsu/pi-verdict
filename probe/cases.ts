@@ -912,6 +912,21 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "allow" },
 		},
 		{
+			label: "read with shell-escaped spaces naming a declared protected directory asks",
+			family: "host-path",
+			tool: "read",
+			input: { path: "~/Tax\\ Returns/2025.pdf" },
+			config: { denyPaths: ["~/Tax Returns"] },
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "read with shell-escaped spaces naming an existing project file is still a rule allow",
+			family: "host-path",
+			tool: "read",
+			input: { path: "docs/My\\ Notes.md" },
+			expected: { layer: "allow" },
+		},
+		{
 			label: "read of a missing absolute file is still a rule allow",
 			family: "host-path",
 			tool: "read",

@@ -305,6 +305,10 @@ the peeled form too, because an extra form only widens what is graded.
 `?` as well, ahead of the selector peel; `.env?q=x` is `.env`. A `?q=` with no value is left alone, and
 the missing-target check below reads the peeled path too.
 
+*Shell escapes.* The host's `read` retries a missing path with a backslash before a space, tab, quote,
+bracket or brace removed (`tryShellEscapedPath`, 18.6.1), so `read` targets also contribute that
+unescaped form, and the missing-target check accepts a file that exists in either spelling.
+
 *Delimited entries.* The host splits every `read`, `grep`, `glob`, `ast_grep` and `ast_edit` path
 entry at top-level `;`, `,` and whitespace (`expandDelimitedPathEntries`, 18.6.1; a brace group and a
 backslash-escaped character are not separators), so each such tool's targets contribute the parts of

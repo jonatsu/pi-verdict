@@ -1969,6 +1969,8 @@ interface HostPathFormOptions {
 	splitList?: boolean;
 	/** Also grade the path with a `?q=` image question removed. */
 	peelImageQuestion?: boolean;
+	/** Also grade the path with shell escapes (`\ `, `\(`) removed. */
+	unescapeShell?: boolean;
 }
 
 /** Every spelling of one target that the gate must grade: the raw text and the host's expansion of
@@ -1997,8 +1999,16 @@ export function hostPathForms(target: string, how: HostPathFormOptions = {}): st
 	for (const form of [...forms]) {
 		const alias = wslDriveAlias(form);
 		if (alias !== null) forms.add(alias);
+		if (how.unescapeShell) forms.add(unescapeShellPath(form));
 	}
 	return [...forms];
+}
+
+/** The path with a backslash before a space, quote, bracket or brace removed: omp's `read` retries a
+ *  missing path in this form (tryShellEscapedPath, 18.6.1), so `~/Tax\ Returns/a.pdf` opens
+ *  `~/Tax Returns/a.pdf`. */
+function unescapeShellPath(target: string): string {
+	return target.includes("\\") ? target.replace(/\\([ \t"'(){}[\]])/g, "$1") : target;
 }
 
 /** Under WSL omp opens a Windows drive path through the drive's mount (`C:\x` is `/mnt/c/x`), as
@@ -2049,7 +2059,9 @@ export function hostReadPath(entry: string, cwd: string): string {
 	const asked = peelImageQuestion(entry) ?? entry;
 	const peeled = peelHostSelector(asked);
 	const literalExists = peeled !== null && fs.existsSync(path.resolve(cwd, expandHostPath(asked)));
-	return expandHostPath(peeled === null || literalExists ? asked : peeled);
+	const chosen = expandHostPath(peeled === null || literalExists ? asked : peeled);
+	const unescaped = unescapeShellPath(chosen);
+	return !fs.existsSync(path.resolve(cwd, chosen)) && fs.existsSync(path.resolve(cwd, unescaped)) ? unescaped : chosen;
 }
 
 // ============================================================================
@@ -2364,10 +2376,12 @@ function hostSeparators(target: string): string {
  *  and of the directory the glob walks wins: the spelling still matches a floor rule on its tail
  *  (`**` + `/*.pem`), the prefix covers the directory. */
 function gradedForms(toolName: string, targets: string[]): string[] {
+	const readSpellings = toolName !== "grep" && peelsHostSelector(toolName);
 	const how = {
 		peelSelector: peelsHostSelector(toolName),
 		splitList: splitsHostList(toolName),
-		peelImageQuestion: toolName !== "grep" && peelsHostSelector(toolName),
+		peelImageQuestion: readSpellings,
+		unescapeShell: readSpellings,
 	};
 	const forms = targets.flatMap((t) => hostPathForms(t, how));
 	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return [...new Set(forms)];

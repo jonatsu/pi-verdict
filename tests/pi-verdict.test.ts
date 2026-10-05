@@ -6078,6 +6078,30 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("hostPathForms removes shell escapes for read paths only", () => {
+		const forms = hostPathForms("~/Tax\\ Returns/a\\(1\\).pdf", { unescapeShell: true });
+		expect(forms).toContain(`${home}/Tax Returns/a(1).pdf`);
+		expect(hostPathForms("~/Tax\\ Returns/a.pdf")).not.toContain(`${home}/Tax Returns/a.pdf`);
+		expect(hostPathForms("a\\b", { unescapeShell: true })).toEqual(["a\\b"]);
+	});
+
+	test("a shell-escaped read path reaches the denyPaths ask and keeps its allow when the file exists", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.mkdirSync(path.join(cwd, "Tax Returns"));
+				fs.writeFileSync(path.join(cwd, "My Notes.md"), "x");
+				const h = session({ denyPaths: [path.join(cwd, "Tax Returns")] }, { cwd });
+				h.confirmAnswer = false;
+				const r = await toolCall(h, "read", { path: path.join(cwd, "Tax\\ Returns", "2025.pdf") });
+				expect(h.confirms).toBe(1);
+				expect(r?.block).toBe(true);
+				expect(await toolCall(h, "read", { path: "My\\ Notes.md" })).toBeUndefined();
+			},
+			home,
+		);
+	});
+
 	test("ordinary spellings keep their verdict", async () => {
 		await withTempDir(
 			"pv-hps-",
