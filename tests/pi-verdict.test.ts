@@ -61,10 +61,21 @@ interface Harness {
 	inputs: Array<string | undefined>;
 	editors: Array<string | undefined>;
 	findMap: Record<string, any> | undefined;
+	/** Coverage-report fixtures (Phase 3, item 4): undefined on both = host lacks getActiveTools/
+	 *  getAllTools entirely, exercising the capability-absent branch. */
+	activeTools: string[] | undefined;
+	allTools: Array<{ name: string; parameters: { properties?: Record<string, { type?: unknown }> } }> | undefined;
 	install: (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; compatLoader?: () => Promise<{ complete: any }> }) => void;
 }
 
-function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): Harness {
+function makeHarness(
+	cwd: string = "/proj",
+	opts?: {
+		ompRegistry?: boolean;
+		activeTools?: string[];
+		allTools?: Array<{ name: string; parameters: { properties?: Record<string, { type?: unknown }> } }>;
+	},
+): Harness {
 	const handlers: Record<string, any> = {};
 	const commands: Record<string, any> = {};
 	const shortcuts: Record<string, any> = {};
@@ -95,6 +106,8 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 		inputs: [],
 		editors: [],
 		findMap: undefined,
+		activeTools: opts?.activeTools,
+		allTools: opts?.allTools,
 	};
 	h.widgetSets = widgetSets;
 
@@ -181,6 +194,14 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 				registerShortcut: (k: string, o: any) => {
 					shortcuts[k] = o;
 				},
+				// Coverage-report fixtures (Phase 3, item 4): present only when a test set
+				// h.allTools before install() — most tests exercise the capability-absent branch.
+				...(h.allTools !== undefined
+					? {
+							getActiveTools: () => h.activeTools ?? h.allTools.map((t: any) => t.name),
+							getAllTools: () => h.allTools,
+						}
+					: {}),
 			} as any,
 			opts?.compatLoader ? { compatLoader: opts.compatLoader } : {},
 		);
@@ -280,10 +301,12 @@ function session(
 		debug?: boolean;
 		modelFlag?: string;
 		compatLoader?: () => Promise<{ complete: any }>;
+		activeTools?: string[];
+		allTools?: Array<{ name: string; parameters: { properties?: Record<string, { type?: unknown }> } }>;
 	} = {},
 ): Harness {
 	setConfig(cfg, opts.invalid);
-	const h = makeHarness(opts.cwd, { ompRegistry: opts.ompRegistry });
+	const h = makeHarness(opts.cwd, { ompRegistry: opts.ompRegistry, activeTools: opts.activeTools, allTools: opts.allTools });
 	h.install({ flag: opts.flag, debug: opts.debug, modelFlag: opts.modelFlag, compatLoader: opts.compatLoader });
 	return h;
 }
@@ -4728,5 +4751,124 @@ describe("tool-access adapter (ADR-0009)", () => {
 			input: "[/proj/a.ts#1a2b]\nPUT 1.=1:\n+x\n[/tmp/secret-rule-test/b.ts#3c4d]\nPUT 1.=1:\n+y\n",
 		});
 		expect(readAudit()[0].detail).toContain("2 targets");
+	});
+});
+
+// ── eval semantics (item 4, Phase 3) ──────────────────────
+
+describe("eval semantics (item 4)", () => {
+	test('a user deny regex tests the whole code text for kind "code"', async () => {
+		const h = session({ deny: ["evil_function"] });
+		const r = await toolCall(h, "eval", { language: "py", code: "evil_function()" });
+		expect(r?.block).toBe(true);
+		expect(r.reason).toContain("user deny rule");
+		expect(h.calls.length).toBe(0); // rule-layer deny, never reaches the classifier
+	});
+
+	test("the starter ^ls\\b allow does not admit a Python eval cell (F4)", async () => {
+		const h = session({ allow: ["^ls\\b"] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "eval", { language: "py", code: "ls = [1, 2, 3]" });
+		expect(r).toBeUndefined(); // allowed, but via the classifier
+		expect(h.calls.length).toBe(1); // user allow never applies to kind "code"
+	});
+
+	test("a py eval cell's !-line reaches the bash floor (F13)", async () => {
+		const h = session({});
+		const r = await toolCall(h, "eval", { language: "py", code: "!" + "rm -rf /tmp/x" });
+		expect(r?.block).toBe(true);
+		expect(r.reason).toContain("rm-recursive");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("a py eval cell's %%bash body reaches the bash floor (F13)", async () => {
+		const h = session({});
+		const r = await toolCall(h, "eval", { language: "py", code: "x = 1\n%%bash\n" + "rm -rf /tmp/x" });
+		expect(r?.block).toBe(true);
+		expect(r.reason).toContain("rm-recursive");
+	});
+
+	test("the py shell floor does not fire for js eval (language-gated)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "eval", { language: "js", code: "!" + "rm -rf /tmp/x" });
+		expect(r).toBeUndefined(); // not Python — the ! line is never extracted; reaches the classifier
+		expect(h.calls.length).toBe(1);
+	});
+
+	test("denyPaths extraction runs over eval code text", async () => {
+		const h = session({ denyPaths: ["/tmp/secret-eval-test"] });
+		h.ctx.hasUI = false; // headless: ask degrades to deny
+		const r = await toolCall(h, "eval", { language: "py", code: 'open("/tmp/secret-eval-test/x")' });
+		expect(r?.block).toBe(true);
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("gateOmpDir word check runs over eval code text", async () => {
+		const h = session({ gateOmpDir: true });
+		h.ctx.hasUI = false;
+		const r = await toolCall(h, "eval", { language: "py", code: 'dest = ".omp"' });
+		expect(r?.block).toBe(true);
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("eval leaves the tools exemption family (BREAKING)", async () => {
+		const h = session({ tools: ["eval"] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "eval", { language: "py", code: "print('hi')" });
+		expect(r).toBeUndefined(); // allowed, but via the classifier, not the tools exemption
+		expect(h.calls.length).toBe(1);
+	});
+});
+
+// ── session_start diagnostics (item 4, Phase 3) ──────────────────────
+
+describe("session_start coverage report and side-effecting tools warning (item 4)", () => {
+	test("coverage report names no-field and untyped tools, debug-gated", async () => {
+		const h = session(
+			{},
+			{
+				debug: true,
+				allTools: [
+					{ name: "mystery_tool", parameters: { properties: {} } },
+					{ name: "weird_tool", parameters: { properties: { path: { type: "number" } } } },
+					{ name: "read", parameters: { properties: { path: { type: "string" } } } },
+				],
+			},
+		);
+		await h.handlers.session_start({}, h.ctx);
+		const note = h.notifies.find(([msg]: [string, string]) => msg.includes("tool coverage"));
+		expect(note).toBeDefined();
+		expect(note?.[0]).toContain("mystery_tool");
+		expect(note?.[0]).toContain("weird_tool.path");
+		expect(note?.[0]).not.toContain("read,");
+		expect(note?.[0]).not.toMatch(/: read$/);
+	});
+
+	test("silent when debug is off", async () => {
+		const h = session({}, { allTools: [{ name: "mystery_tool", parameters: { properties: {} } }] });
+		await h.handlers.session_start({}, h.ctx);
+		expect(h.notifies.some(([msg]: [string, string]) => msg.includes("tool coverage"))).toBe(false);
+	});
+
+	test("silent when the host has no getActiveTools/getAllTools", async () => {
+		const h = session({}, { debug: true }); // no allTools set → capability absent
+		await h.handlers.session_start({}, h.ctx);
+		expect(h.notifies.some(([msg]: [string, string]) => msg.includes("tool coverage"))).toBe(false);
+	});
+
+	test("tools listing a side-effecting tool warns once at session_start", async () => {
+		const h = session({ tools: ["learn", "retain"] });
+		await h.handlers.session_start({}, h.ctx);
+		const note = h.notifies.find(([msg, level]: [string, string]) => level === "warning" && msg.includes("side-effecting"));
+		expect(note).toBeDefined();
+		expect(note?.[0]).toContain("learn");
+		expect(note?.[0]).toContain("retain");
+	});
+
+	test("no warning when tools lists only non-side-effecting names", async () => {
+		const h = session({ tools: ["read"] });
+		await h.handlers.session_start({}, h.ctx);
+		expect(h.notifies.some(([msg]: [string, string]) => msg.includes("side-effecting"))).toBe(false);
 	});
 });

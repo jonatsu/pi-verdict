@@ -159,3 +159,84 @@ the original plan recorded; the two versions agree on every cited fact:
 - Pinned by the `tool-access` probe family (multi-header `edit`, apply-patch multi-file, a `paths`
   spoof against unparseable patch text, patch-mode `rename`, the observing list-split, `ast_edit`
   scope precedence) and the `tool-access adapter` test suite.
+
+## Phase 3 amendment: kind `code` grading rules (item 4)
+
+`kind: "code"` (an `eval` cell) was declared by this ADR's type but left entirely ungraded: it
+reached `classifyByRules`' final `else` (gray, `tool not covered by built-in rules`), skipping the
+built-in floor, and `userRuleTargets` already returned `[]` for it (R2-2, unknown direction) —
+which also meant the starter template's `allow: ["^ls\b"]` matched nothing, but only by the same
+accident that excluded it from `deny`, `denyPaths` and `gateOmpDir` too. A Python cell can shell
+out (`!cmd`, `%%bash`), so a code call is not inert the way an unrecognised MCP tool's opaque
+payload is.
+
+**Decision:** `kind: "code"` gets its own grading, asymmetric by design — never through the user
+`allow` loop or the `tools` exact-name exemption, always through everything that can stop it
+before the classifier:
+
+- User `deny` tests the whole code text (`denyTargets = [...targets, access.command]`), alongside
+  the unaffected `targets`-based check (`targets` stays `[]` for an unknown-direction tool, so this
+  is purely additive).
+- `denyPathCandidates` and `hitOmpDir` extract from the code text the same way they extract from a
+  bash command: `bashPathTokens` for path mentions, `OMP_DIR_IN_COMMAND` for a bare `.omp` word
+  with no path separator around it (`dest = ".omp"`).
+- User `allow` is **never** reached: `targets` stays `[]`, so a code call always falls through to
+  the classifier unless something above denies or asks first — the starter `^ls\b` cannot admit a
+  Python cell that happens to assign a variable named `ls` (F4).
+- The `tools` exact-name exemption now excludes `kind: "code"` explicitly
+  (`access.kind !== "code"`): its documented scope was always "the tool has no shape worth
+  grading," which a `code` field contradicts. **BREAKING**: a user who listed `eval` in `tools`
+  loses that exemption — every call now reaches the classifier (or an earlier deny/ask) instead of
+  bypassing it.
+- `BASH_DANGER_RULES`, the tripwire (ADR-0007) and `allowAdmits` (ADR-0008) never run over the
+  whole code text — a Python cell is not a shell command line, and most of its text is ordinary
+  code those patterns were never meant to read.
+- **The bash floor does apply, narrowly**: `pyEvalShellLines` extracts a Python eval cell's
+  shell-executing lines — a `!cmd`/`name = !cmd` line, and a `%%bash` cell magic's body (every line
+  from the next one to the end of the cell) — and only those lines reach `classifyBash` (F13).
+  Verified 2026-10-05 against the **upstream `oh-my-pi` repository at tag `v18.6.1`** (cloned to
+  `.scratch/research/oh-my-pi`, matching the installed `@oh-my-pi/pi-coding-agent@18.6.1` exactly):
+  `coding-agent/src/eval/py/runner.py`'s `transform_cell` docstring and its `_LINE_MAGICS`/
+  `_CELL_MAGICS` registries. This **corrects** the original plan draft's `!`/`%sh`/`%%bash`/`%%sh`
+  citation — `_LINE_MAGICS` has no `"sh"` entry (the line magics are `pip`, `cd`, `pwd`, `ls`,
+  `env`, `set_env`, `time`, `timeit`, `who`, `whos`, `reset`, `load`, `run`; none of them shells
+  out) and `_CELL_MAGICS` registers only `"bash"` as shell-executing — `capture`/`timeit`/
+  `writefile` pass their body to `_exec_source` → `ast.parse` directly, with no re-transform, so
+  none of them can nest a `!`-line or a `%%bash` block. `pyEvalShellLines` is a plain line scan,
+  not Python's own string/comment-aware tokenizer (`_magic_line_indices`): a `!`/`%%bash` spelling
+  inside a string literal or comment is a false positive here, the accepted safe direction (ADR-0001
+  caveat; ADR-0007 precedent — a raw-text tripwire decides every hit, never a sandbox proof).
+  Backslash line-continuation folding is not reproduced; a continued `!`-line is read as separate
+  lines instead, which only widens what counts as a candidate.
+
+Pinned by the `eval semantics` test describe (user deny on code text, the F4 starter-allow
+non-admission, the F13 `!`/`%%bash` floor hits with a js-language negative control, denyPaths/
+`.omp` extraction from code text, and the `tools`-exemption loss) and by `session_start`'s
+coverage-report tests.
+
+## Phase 3 amendment: session_start coverage report and side-effecting tools warning (item 4)
+
+Two schema-driven, one-time `session_start` diagnostics, neither of which affects adjudication:
+
+- **Tool coverage report** (Claude-review F15: the adapter is payload-keyed and `session_start` has
+  no payload to run it on, so this inspects each active tool's declared schema instead, via
+  `getActiveTools()`/`getAllTools()` — present on both hosts per the plan's citations, guarded at
+  runtime by a `typeof` capability check since this ADR's own universal-plugin constraint 2
+  forbids depending on a specific host/version). Tools already covered — a known observing/
+  mutating/command name, or a name in the user's `tools` allowlist — are skipped; everything else
+  is checked for `COVERAGE_SIGNAL_FIELDS` (`path`, `paths`, `input`, `_input`, `code`, `command`,
+  `content` — kept in lockstep with the adapter's own field names, Claude-review R2-14) in its
+  declared schema. A schema with none of them stays gray/classifier-only forever (`noFields`); one
+  with a matching field name under an unexpected JSON-Schema `type` is a field the adapter's
+  string/string-array readers silently treat as absent today (`untyped`). Delivered as a single
+  `"info"` notification, **gated behind `--auto-mode-debug`/`PI_AUTO_MODE_DEBUG`** — the plan's
+  "debug-channel note, not noise" is read literally as the file's one existing low-level diagnostic
+  channel, not as an unconditional once-per-session notice: an unchanging tool roster would
+  otherwise repeat the same report every session for a user who never acts on it.
+- **Side-effecting tools warning**: `tools` naming a persistent-memory tool (`learn`, `memory_edit`,
+  `retain` — the explicit set the starter template's own comment already excludes them for) fires
+  one unconditional `"warning"` notification — these calls bypass the classifier entirely, and the
+  consumer's choice to list them stays theirs; the gate only stops being silent about it.
+
+Pinned by the `session_start coverage report and side-effecting tools warning` test describe,
+including the debug-off and capability-absent silent branches.

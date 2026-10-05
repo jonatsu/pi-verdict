@@ -527,6 +527,44 @@ function classifyBash(command: string, floorOn: boolean): RuleResult {
 	return { verdict: "gray", reason: "no built-in allowlist" };
 }
 
+/** Extracts the shell-executing lines of an omp `eval {language:"py"}` cell (item 4, F13):
+ *  the bash floor applies to these, never to the whole code text. Self-contained per
+ *  constraint 3 (own constants/parser, no host import) and verified 2026-10-05 against the
+ *  oh-my-pi v18.6.1 source (`coding-agent/src/eval/py/runner.py`'s `transform_cell`, the
+ *  `_LINE_MAGICS`/`_CELL_MAGICS` registries) — **not** the plan draft's `%sh`/`%%sh`: that
+ *  version has no such magic, line or cell (`_LINE_MAGICS` has no "sh" entry; `_CELL_MAGICS`
+ *  registers only "bash" as shell-executing — `capture`/`timeit`/`writefile` parse their body
+ *  as plain Python with no re-transform, so they cannot nest a nested `!`/`%%bash`). Two forms:
+ *  a line starting with `!` (optionally `name = !cmd`) is a one-line shell-out, the text after
+ *  `!` the command; a `%%bash` line is a cell magic — every line from the next one to the end
+ *  of the cell is bash script text verbatim (cell magics consume the remainder of the cell).
+ *  A plain line scan, not the real tokenizer (which is string/comment-aware via Python's own
+ *  `tokenize` module) — a `!`/`%%bash` spelling inside a string literal or comment is a false
+ *  positive here, the safe direction (more scrutiny, not less); this is a tripwire over a
+ *  cooperating-but-untrusted model's code, not a sandbox proof (ADR-0001 caveat, ADR-0007
+ *  precedent: a raw-text tripwire decides every hit). Backslash line-continuation folding
+ *  (`_fold_continuations` in the real source) is not reproduced — a continued `!`-line is
+ *  scanned line by line instead, which only widens what counts as a candidate shell line. */
+function pyEvalShellLines(code: string): string[] {
+	const lines = code.split("\n");
+	const out: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const stripped = lines[i].replace(/^[ \t]*/, "");
+		if (/^%%bash(?:\s|$)/.test(stripped)) {
+			out.push(...lines.slice(i + 1));
+			break;
+		}
+		if (stripped.startsWith("!")) {
+			out.push(stripped.slice(1).trim());
+			continue;
+		}
+		const assign = /^[ \t]*[A-Za-z_][A-Za-z_0-9.[\], ]*?\s*=\s*(.+)$/.exec(lines[i]);
+		const rhs = assign?.[1].trim();
+		if (rhs?.startsWith("!")) out.push(rhs.slice(1).trim());
+	}
+	return out;
+}
+
 // ============================================================================
 // Canonical forms: the only implementation of both tiers of dual-form matching (see the “dual-form matching” entry in CONTEXT.md).
 // ============================================================================
@@ -1038,6 +1076,30 @@ function recordTrust(root: string, decision: "trusted" | "untrusted", configPath
  * eval/github/debug/ida/security_scan/ast_edit (execute code or mutate state).
  */
 const DEFAULT_ALLOWED_TOOLS = ["ask", "todo", "wait", "yield", "think", "checkpoint", "rewind", "recall", "reflect"];
+
+/** Side-effecting tools whose starter-template exclusion (above) is a silent default, not a
+ *  stated warning (item 4, Phase 3): a user who lists one of these in `tools` gets a one-time
+ *  session_start warning instead of a quiet classifier bypass for persistent-memory writes. */
+const SIDE_EFFECTING_TOOL_NAMES: ReadonlySet<string> = new Set(["learn", "memory_edit", "retain"]);
+
+/** Session-start coverage report signal fields (Claude-review R2-14: kept in lockstep with the
+ *  adapter's own mutation triggers — `toolAccess`'s `readStringField`/`readStringArrayField`
+ *  calls read `path`, `_path`, `paths`, `input`, `_input`, `code`, `command`; `content` is an
+ *  additional signal — omp's own `write = {path, content?}` — not itself extracted as a target).
+ *  A schema exposing none of these will stay gray/classifier-only forever; one exposing a
+ *  matching field name under an unrecognized JSON-Schema type is a field the adapter cannot
+ *  read (it silently treats the field as absent). */
+const COVERAGE_SIGNAL_FIELDS = ["path", "paths", "input", "_input", "code", "command", "content"] as const;
+/** Expected top-level JSON-Schema `type` keyword per signal field — `paths` is the only array. */
+const COVERAGE_SIGNAL_FIELD_TYPE: Record<(typeof COVERAGE_SIGNAL_FIELDS)[number], string> = {
+	path: "string",
+	paths: "array",
+	input: "string",
+	_input: "string",
+	code: "string",
+	command: "string",
+	content: "string",
+};
 
 const USER_CONFIG_TEMPLATE = `${JSON.stringify(
 	{
@@ -1635,6 +1697,60 @@ function isCommandTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "powershell";
 }
 
+/** Minimal local shape of what the coverage report needs from a host tool (zero-dependency
+ *  constraint: not imported) — `ToolInfo.parameters` is a TypeBox `TSchema`, whose
+ *  `.properties` carries each declared field's own schema for an object schema. */
+interface CoverageToolInfo {
+	name: string;
+	parameters?: { properties?: Record<string, { type?: unknown }> };
+}
+
+/** Schema-driven session_start coverage report (item 4, Phase 3; Claude-review F15: the
+ *  adapter is payload-keyed and session_start has no payload to run it on, so this inspects
+ *  each ACTIVE tool's declared schema instead). Only tools outside the user's `tools`
+ *  allowlist and outside the adapter's known observing/mutating/command names are examined —
+ *  everything else is already graded. `noFields`: a schema exposing none of
+ *  COVERAGE_SIGNAL_FIELDS — the tool will stay gray/classifier-only forever. `untyped`: a
+ *  schema field matching a signal name under a JSON-Schema `type` the adapter's
+ *  string/string-array readers do not recognize (today silently treated as absent). A future
+ *  host tool then surfaces here instead of a silent gap. */
+function toolCoverageReport(
+	allTools: readonly CoverageToolInfo[],
+	activeNames: ReadonlySet<string>,
+	userTools: readonly string[],
+): { noFields: string[]; untyped: Array<{ tool: string; field: string }> } {
+	const userToolSet = new Set(userTools);
+	const noFields: string[] = [];
+	const untyped: Array<{ tool: string; field: string }> = [];
+	for (const tool of allTools) {
+		if (!activeNames.has(tool.name) || userToolSet.has(tool.name)) continue;
+		if (OBSERVING_TOOL_NAMES.has(tool.name) || MUTATING_TOOL_NAMES.has(tool.name) || isCommandTool(tool.name)) continue;
+		const properties = tool.parameters?.properties;
+		if (!properties || typeof properties !== "object") {
+			noFields.push(tool.name);
+			continue;
+		}
+		let anyField = false;
+		for (const field of COVERAGE_SIGNAL_FIELDS) {
+			if (!Object.hasOwn(properties, field)) continue;
+			anyField = true;
+			if (properties[field]?.type !== COVERAGE_SIGNAL_FIELD_TYPE[field]) untyped.push({ tool: tool.name, field });
+		}
+		if (!anyField) noFields.push(tool.name);
+	}
+	return { noFields, untyped };
+}
+
+/** One-time session_start warning (item 4, Phase 3): a known side-effecting tool
+ *  (persistent-memory writes) listed in the user's `tools` exact-name allowlist bypasses the
+ *  classifier entirely for every call. The consumer's choice stays theirs — this just stops
+ *  the gate being silent about it. */
+function sideEffectingToolsWarning(userTools: readonly string[]): string | null {
+	const hit = userTools.filter((t) => SIDE_EFFECTING_TOOL_NAMES.has(t));
+	if (hit.length === 0) return null;
+	return `pi-verdict: tools lists side-effecting tool(s) ${hit.join(", ")} — calls bypass the classifier entirely (persistent-memory writes get no further scrutiny)`;
+}
+
 type ToolDirection = "observing" | "mutating" | "unknown";
 type ToolAccessKind = "command" | "file" | "code" | null;
 
@@ -2031,7 +2147,11 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 	// unknown: whatever targets the payload yields still feed denyPaths — the surviving
 	// BREAKING change (an unknown tool's extracted targets now hit this ask where today
 	// nothing grades them; `userRuleTargets` stays known-tool-only, see R2-2 above).
-	return [...access.reads, ...access.writes];
+	// kind "code" (eval, item 4): denyPaths extraction also runs over the code text via the
+	// same path-token scan bash commands use — an eval cell is free-form text, not a shell
+	// command line, but a path mention in it is exactly as real a signal.
+	const codeTokens = access.kind === "code" && access.command !== null ? bashPathTokens(access.command) : [];
+	return [...access.reads, ...access.writes, ...codeTokens];
 }
 
 /** Does the call touch a user-declared protected path? `bases` are the denyPaths
@@ -2070,6 +2190,13 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 	if (isCommandTool(toolName)) {
 		const command = String(input.command ?? "");
 		if (OMP_DIR_IN_COMMAND.test(command)) return ".omp referenced in the command";
+	}
+	// kind "code" (eval, item 4): the same word check runs directly over the code text —
+	// denyPathCandidates' token extraction alone could miss a bare ".omp" with no path
+	// separator around it (e.g. `dest = ".omp"`), same rationale as the command branch above.
+	const access = toolAccess(toolName, input);
+	if (access.kind === "code" && access.command !== null && OMP_DIR_IN_COMMAND.test(access.command)) {
+		return ".omp referenced in the code";
 	}
 	for (const candidate of denyPathCandidates(toolName, input, cwd)) {
 		for (const form of denyPathForms(candidate, cwd)) {
@@ -2350,15 +2477,19 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 
 /**
  * Tool call → rule-layer verdict. Order (#12; ADR-0005 adds layer 0; ADR-0002 inserts denyPaths;
- * ADR-0009 moves the tools exemption after the deny-side layers and adds the opaque ask):
+ * ADR-0009 moves the tools exemption after the deny-side layers and adds the opaque ask; item 4
+ * (eval semantics) grades kind "code" through steps 1–2 and 5, never 4 — see ADR-0009's
+ * Phase 3 amendment):
  *   0. self-protection — deny is terminal (no config exempts it, not even builtinDenyFloor:false)
  *   1. built-in base (bash danger regex floor / path sensitivity grading over every adapter
- *      target) — deny is terminal (the floor can be turned off via builtinDenyFloor)
- *   2. user deny → deny (beats allow)
- *   2a. gateOmpDir (default off): path/command touching a `.omp` directory → terminal ask
+ *      target; a py eval cell's extracted shell-out lines only) — deny is terminal (the floor
+ *      can be turned off via builtinDenyFloor)
+ *   2. user deny → deny (beats allow; a code call's whole text is also a deny target)
+ *   2a. gateOmpDir (default off): path/command/code text touching a `.omp` directory → ask
  *   3. denyPaths hit → terminal ask (ADR-0002: the declaring user adjudicates; before user allow)
- *   4. user allow → allow
- *   5. custom-tool exact match (user.tools) → allow (bypasses classifier for that tool)
+ *   4. user allow → allow (never for kind "code": a code call always reaches the classifier
+ *      unless something above denies or asks first)
+ *   5. custom-tool exact match (user.tools) → allow (bypasses classifier; never for kind "code")
  *   6. opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target
  *   7. base (observing default allow/gray; everything else gray) → classifier
  */
@@ -2384,16 +2515,25 @@ function classifyByRules(
 	} else if (access.direction === "observing") {
 		const readTargets = access.reads.length > 0 ? access.reads : [cwd];
 		base = classifyReads(readTargets, cwd, user.builtinDenyFloor);
+	} else if (access.kind === "code" && access.command !== null && input.language === "py") {
+		// Phase 3 (F13): the bash floor applies to a Python eval cell's extracted shell-out
+		// lines only (pyEvalShellLines) — never the whole code text, which the floor's danger
+		// regexes/tripwire/allowAdmits never see (those stay bash-command-only).
+		const shellText = pyEvalShellLines(access.command).join("\n");
+		base = shellText ? classifyBash(shellText, user.builtinDenyFloor) : { verdict: "gray" };
 	} else {
 		base = { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 	}
 	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
 
 	// User deny (known-tool targets only — R2-2: an unknown tool's shape-inferred fields
-	// never reach user rules; Item 10 / F11: deny fires on ANY target match).
+	// never reach user rules; Item 10 / F11: deny fires on ANY target match). kind "code"
+	// (eval, item 4): the whole code text is also a deny target — user allow stays excluded
+	// (targets, reused below for allow, never gains the code text).
 	const targets = userRuleTargets(toolName, input, cwd);
+	const denyTargets = access.kind === "code" && access.command !== null ? [...targets, access.command] : targets;
 	for (const re of user.deny) {
-		if (targets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
+		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
 	}
 	// Forced .omp gate: terminal ask, after user deny, before denyPaths/user allow. Not gated
 	// by `targets` — denyPathCandidates (which hitOmpDir uses) also covers an unknown tool's
@@ -2438,8 +2578,10 @@ function classifyByRules(
 
 	// tools exemption: exact-name allowlist, checked AFTER every deny-side layer above and
 	// BEFORE the opaque ask / gray fall-through (ADR-0009) — a listed tool carrying a
-	// protected-path target now faces the ask above instead of a silent allow here.
-	if (user.tools.includes(toolName)) return { verdict: "allow", reason: "user tools allow rule" };
+	// protected-path target now faces the ask above instead of a silent allow here. kind
+	// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
+	// is non-code tools; a user who listed eval here loses the exemption (BREAKING).
+	if (user.tools.includes(toolName) && access.kind !== "code") return { verdict: "allow", reason: "user tools allow rule" };
 
 	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at
 	// all — deterministic ask, headless → deny (never for an unknown tool: see toolAccess).
@@ -4506,6 +4648,26 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				`pi-verdict: project config ${report.project.path} ignored — project not trusted (decisions: ${trustStorePath()})`,
 				"info",
 			);
+		// Side-effecting tools warning (item 4, Phase 3): one-time, unconditional — the user
+		// chose to list it, the gate just stops being silent about the consequence.
+		const sideEffectWarning = sideEffectingToolsWarning(state.userRules.tools);
+		if (sideEffectWarning) ctx.ui.notify(sideEffectWarning, "warning");
+		// Tool coverage report (item 4, Phase 3): a debug-channel note, not noise — gated
+		// behind --auto-mode-debug/PI_AUTO_MODE_DEBUG like every other per-session diagnostic.
+		// Host capability may be absent (constraint 2): skip silently rather than depend on a
+		// specific host/version.
+		if (debug) {
+			const hostTools = pi as { getActiveTools?: () => string[]; getAllTools?: () => CoverageToolInfo[] };
+			if (typeof hostTools.getActiveTools === "function" && typeof hostTools.getAllTools === "function") {
+				const coverage = toolCoverageReport(hostTools.getAllTools(), new Set(hostTools.getActiveTools()), state.userRules.tools);
+				const parts: string[] = [];
+				if (coverage.noFields.length > 0)
+					parts.push(`no declared path/code/command field, stays classifier-only: ${coverage.noFields.join(", ")}`);
+				if (coverage.untyped.length > 0)
+					parts.push(`unrecognized field type: ${coverage.untyped.map((u) => `${u.tool}.${u.field}`).join(", ")}`);
+				if (parts.length > 0) ctx.ui.notify(`🛡️ pi-verdict: tool coverage — ${parts.join("; ")}`, "info");
+			}
+		}
 		refreshStatus(ctx);
 	});
 

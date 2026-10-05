@@ -192,6 +192,8 @@ tool_call
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
   │     │   before user allow; classifier sees an existence hint only
   │     ├─ a mutating call naming no target at all → opaque ask (ADR-0009)
+  │     ├─ eval's code text: deny/denyPaths/.omp apply to the whole text, user
+  │     │   allow never does; the bash floor covers a py cell's !/%%bash lines only
   │     └─ no built-in allowlist — every "always allow" claim is yours to make
   │
   ├─ 2. Gray zone → model classifier (defaults to session model — "self-reflection")
@@ -206,6 +208,10 @@ tool_call
 ```
 
 **fail-closed**: classifier exception / timeout (25s) / contract violation → deny. Never silently allow.
+
+At `session_start`, a schema-driven coverage report (debug-channel, `--auto-mode-debug`) names any
+active tool the adapter and your `tools` list both leave ungraded, and a one-time warning flags a
+side-effecting tool (`learn`, `memory_edit`, `retain`) if you've listed it in `tools`.
 
 ## Evidence-driven, not vibes-driven
 
