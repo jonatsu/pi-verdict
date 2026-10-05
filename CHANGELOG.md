@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/
 ### Fixed
 
 - Protected-path redaction no longer treats a root `denyPaths` entry (`/` or a drive root) as an empty spelling that matches every string: `redactorFor` stripped the trailing separator with a negated string, which sliced to `""`, so every transcript line and action was replaced by `<protected-path>`. A root base now redacts only calls that actually name a path.
+- A type-invalid `deny` or `denyPaths` value now degrades the policy instead of vanishing silently ([ADR-0010](docs/adr/0010-policy-degraded.md)): a present `deny`/`denyPaths` that is neither a list nor a single string, and each non-string `deny` entry, is named in the session-start skip note and sets `policyDegraded`, so model allows are withheld as they already were for an uncompilable regex. The project-override merge now keeps such values instead of dropping them, so a trusted project config cannot hide one either. A single string for `deny` or `denyPaths`, in the user or a trusted project config, is read as a one-element list with a skip note naming the key and does not degrade, because its intent is unambiguous. A non-array or non-string `allow` value is named in the skip note too, without degrading, because a dropped allow cannot widen the gate.
 
 ## [0.17.0] - 2026-10-05
 

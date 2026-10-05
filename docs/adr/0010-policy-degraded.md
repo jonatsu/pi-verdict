@@ -34,7 +34,10 @@ loaded, and while it holds every model-originated *allow* is withheld:
    - a user config **parse failure** (invalid JSON),
    - an unexpected **load exception**,
    - a **trusted-project** parse failure or shape failure (a narrowing override that never applied),
-   - **any skipped `deny` or `denyPaths` entry** (an uncompilable regex, a type-invalid path).
+   - **any skipped `deny` or `denyPaths` entry** (an uncompilable regex, a type-invalid path), and a
+     `deny`/`denyPaths` value that is neither a list nor a single string. A single string is the
+     exception: its intent is unambiguous, so it is read as a one-element list with a skip note and
+     does not set the flag.
 
    Scope boundary, deliberate: a skipped `allow`/`tools`/cosmetic key does *not* set the flag —
    those never carried a protection that just got dropped (an unknown-key typo, R9, is likewise

@@ -5444,6 +5444,97 @@ describe("end-to-end adjudication deadline (item 7, Phase 7)", () => {
 	});
 });
 
+describe("type-invalid deny and denyPaths values degrade the policy", () => {
+	const reload = (cfg: object): { skipped: string[]; degraded: boolean } => {
+		fs.mkdirSync(path.join(TMP_AGENT, "config"), { recursive: true });
+		fs.writeFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), JSON.stringify(cfg));
+		const state = new SessionState(undefined, TMP_AGENT);
+		const report = state.reloadRules(os.tmpdir());
+		return { skipped: report.skipped, degraded: state.policyDegraded };
+	};
+
+	test("a non-array, non-string deny or denyPaths is named and degrades", () => {
+		for (const key of ["deny", "denyPaths"]) {
+			for (const bad of [7, { a: 1 }, true]) {
+				const r = reload({ [key]: bad });
+				expect(r.degraded).toBe(true);
+				expect(r.skipped.join(" ")).toContain(key);
+			}
+		}
+	});
+
+	test("a single string is treated as a one-element list with a note and keeps its protection", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-str-"));
+		try {
+			for (const key of ["deny", "denyPaths"]) {
+				const r = reload({ [key]: "x" });
+				expect(r.degraded).toBe(false);
+				expect(r.skipped.join(" ")).toContain(key);
+			}
+			const h = session({ denyPaths: path.join(cwd, "secrets") } as never, { cwd });
+			h.confirmAnswer = false;
+			await h.handlers.session_start({}, h.ctx);
+			expect(h.confirms).toBe(0);
+			const w = await toolCall(h, "write", { path: path.join(cwd, "secrets", "x"), content: "y" });
+			expect(h.confirms).toBe(1); // the protected-path ask
+			expect(w?.block).toBe(true);
+			const d = session({ deny: "^curl\\b" } as never, { cwd });
+			await d.handlers.session_start({}, d.ctx);
+			const c = await toolCall(d, "bash", { command: "curl https://example.com" });
+			expect(c?.block).toBe(true);
+			expect(d.calls).toHaveLength(0); // a rule deny, no classifier call
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a string deny in a trusted project override is coerced too", async () => {
+		await withTempDir("pv-proj-str-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			fs.writeFileSync(path.join(dir, ".pi", "pi-verdict.json"), JSON.stringify({ deny: "^echo marker" }));
+			const trustFile = path.join(TMP_AGENT, "config", "pi-verdict-trust.json");
+			fs.rmSync(trustFile, { force: true });
+			const h = session({}, { cwd: dir });
+			(h as any).selectIndex = 0; // Trust
+			try {
+				await h.handlers.session_start({}, h.ctx);
+				expect(h.notifies.some(([m]) => m.includes("policy degraded"))).toBe(false);
+				expect((await toolCall(h, "bash", { command: "echo marker" }))?.block).toBe(true);
+			} finally {
+				fs.rmSync(trustFile, { force: true });
+			}
+		});
+	});
+
+	test("a non-string deny entry is named and degrades", () => {
+		const r = reload({ deny: ["^curl\\b", 42] });
+		expect(r.degraded).toBe(true);
+		expect(r.skipped.join(" ")).toContain("deny: 42");
+	});
+
+	test("well-formed lists do not degrade", () => {
+		expect(reload({ deny: ["^curl\\b"], denyPaths: ["/some/where"] })).toEqual({ skipped: [], degraded: false });
+	});
+
+	test("a trusted project override with a type-invalid deny entry degrades the policy", async () => {
+		await withTempDir("pv-proj-invalid-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			fs.writeFileSync(path.join(dir, ".pi", "pi-verdict.json"), JSON.stringify({ deny: ["^echo marker", 42] }));
+			const trustFile = path.join(TMP_AGENT, "config", "pi-verdict-trust.json");
+			fs.rmSync(trustFile, { force: true });
+			const h = session({ deny: ["^echo user-deny"] }, { cwd: dir });
+			(h as any).selectIndex = 0; // Trust
+			try {
+				await h.handlers.session_start({}, h.ctx);
+				expect(h.notifies.some(([m, l]) => l === "warning" && m.includes("policy degraded"))).toBe(true);
+				expect((await toolCall(h, "bash", { command: "echo marker" }))?.block).toBe(true); // valid entry still applies
+			} finally {
+				fs.rmSync(trustFile, { force: true });
+			}
+		});
+	});
+});
+
 describe("redactor spellings", () => {
 	test("a root denyPaths base does not redact a call that names no path", () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pv-redact-"));

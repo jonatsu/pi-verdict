@@ -1155,6 +1155,30 @@ interface LoadedRules {
 
 const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
+/** A single string where `deny` or `denyPaths` expects a list has an unambiguous intent, so it
+ *  becomes a one-element list and keeps its protection; the note names the key. Other wrong
+ *  types are left for the loader's degrading checks. */
+const coerceSingleStringLists = (obj: Record<string, unknown>, skipped: string[], where: string): void => {
+	for (const key of ["deny", "denyPaths"]) {
+		const v = obj[key];
+		if (typeof v !== "string") continue;
+		obj[key] = [v];
+		skipped.push(`${key}: ${JSON.stringify(v)} is a string, not a list — treated as a one-element list (${where})`);
+	}
+};
+
+/** Union of two deny-side lists that keeps type-invalid values (a non-array, a non-string entry)
+ *  in the result, so the loader's own checks still see and report them after a project merge. */
+const unionKeepingInvalid = (userVal: unknown, projVal: unknown): unknown[] => {
+	const out: unknown[] = [];
+	for (const v of [userVal, projVal]) {
+		if (v === undefined || v === null) continue;
+		if (Array.isArray(v)) out.push(...v);
+		else out.push(v);
+	}
+	return [...new Set(out)];
+};
+
 /** subagentAskTimeoutMs feeds AbortSignal.timeout/setTimeout (below): a value above 2^31-1ms
  *  overflows those Node/Bun timers, which then fire almost immediately — acting like "auto"
  *  instead of waiting. The cap applies to the user's own value and to any project narrowing
@@ -1187,8 +1211,8 @@ const narrowScalar = (key: string, userVal: unknown, projVal: unknown, accept: u
 	return userVal;
 };
 const PROJECT_OVERRIDE_DIRECTION: Record<string, ProjectOverrideNarrow> = {
-	deny: (userVal, projVal) => [...new Set([...stringList(userVal), ...stringList(projVal)])],
-	denyPaths: (userVal, projVal) => [...new Set([...stringList(userVal), ...stringList(projVal)])],
+	deny: (userVal, projVal) => unionKeepingInvalid(userVal, projVal),
+	denyPaths: (userVal, projVal) => unionKeepingInvalid(userVal, projVal),
 	allow: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
 	tools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
 	ignoreTools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
@@ -1299,6 +1323,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		for (const k of Object.keys(raw as Record<string, unknown>)) {
 			if (!Object.hasOwn(KNOWN_USER_KEYS, k)) skipped.push(`unknown key: ${k} — ignored (${p})`);
 		}
+		coerceSingleStringLists(raw as Record<string, unknown>, skipped, p);
 		// [pi-verdict local patch: project overrides] merge the nearest trusted project's
 		// config over the global raw object, narrowing only (ADR-0006/R7)
 		const agentDir = agentDirPath();
@@ -1336,6 +1361,7 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 					// R7 — narrowing only, mechanically enforced: every key in
 					// PROJECT_OVERRIDE_DIRECTION applies its own narrowing merge; a key absent
 					// from the table is not overridable per project at all (handled below).
+					coerceSingleStringLists(projRaw as Record<string, unknown>, skipped, pp);
 					const merged = { ...raw } as Record<string, unknown>;
 					for (const [k, v] of Object.entries(projRaw as Record<string, unknown>)) {
 						const narrow = Object.hasOwn(PROJECT_OVERRIDE_DIRECTION, k) ? PROJECT_OVERRIDE_DIRECTION[k] : undefined;
@@ -1354,20 +1380,33 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		// entry cannot make the gate MORE permissive than it already is (it never granted
 		// anything); a dropped deny silently removes a protection (Claude-review F11). The
 		// deny call site below passes the marker; the allow call site does not.
-		const compile = (list: unknown, onSkip?: () => void): RegExp[] =>
-			(Array.isArray(list) ? list : [])
-				.filter((x): x is string => typeof x === "string")
-				.flatMap((src) => {
-					try {
-						return [new RegExp(src)];
-					} catch {
-						onSkip?.();
-						skipped.push(src);
-						return [];
-					}
-				});
+		const compile = (key: string, list: unknown, onSkip?: () => void): RegExp[] => {
+			if (list !== undefined && list !== null && !Array.isArray(list)) {
+				onSkip?.();
+				skipped.push(`${key}: ${JSON.stringify(list)} (must be an array of strings)`);
+				return [];
+			}
+			return ((list ?? []) as unknown[]).flatMap((src) => {
+				if (typeof src !== "string") {
+					onSkip?.();
+					skipped.push(`${key}: ${JSON.stringify(src)}`);
+					return [];
+				}
+				try {
+					return [new RegExp(src)];
+				} catch {
+					onSkip?.();
+					skipped.push(src);
+					return [];
+				}
+			});
+		};
 		// denyPaths entries are plain paths: only type-valid non-empty strings survive;
 		// anything else is skipped into the one-shot warning channel (invalid config never disables the gate)
+		if (raw.denyPaths !== undefined && raw.denyPaths !== null && !Array.isArray(raw.denyPaths)) {
+			degraded = true;
+			skipped.push(`denyPaths: ${JSON.stringify(raw.denyPaths)} (must be an array of strings)`);
+		}
 		const denyPaths = (Array.isArray(raw.denyPaths) ? raw.denyPaths : []).flatMap((x) => {
 			if (typeof x !== "string" || !x.trim()) {
 				if (x !== undefined && x !== null) {
@@ -1425,8 +1464,8 @@ function loadUserRules(cwd: string | null = null, sessionTrustedRoot: string | n
 		if (satRaw !== undefined && satValid === null) skipped.push(`subagentAskTimeoutMs: ${JSON.stringify(satRaw)}`);
 		return {
 			rules: {
-				allow: compile(raw.allow),
-				deny: compile(raw.deny, () => {
+				allow: compile("allow", raw.allow),
+				deny: compile("deny", raw.deny, () => {
 					degraded = true; // item 6c: a dropped deny regex silently removes a protection (ADR-0010)
 				}),
 				denyPaths,

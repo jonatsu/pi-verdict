@@ -625,6 +625,33 @@ export function buildCases(fx: FixtureTree): Case[] {
 			degradedConfig: true,
 			expected: { layer: "degraded-policy" },
 		},
+		{
+			label: "deny given as an object instead of an array: the protection is gone, so the classifier allow is withheld",
+			family: "policy-degraded",
+			tool: "bash",
+			input: { command: "cargo build" },
+			config: { deny: { pattern: "^curl\\b" } },
+			degradedConfig: true,
+			expected: { layer: "degraded-policy" },
+		},
+		{
+			label: "deny with a non-string entry: the dropped entry degrades the policy",
+			family: "policy-degraded",
+			tool: "bash",
+			input: { command: "cargo build" },
+			config: { deny: [42] },
+			degradedConfig: true,
+			expected: { layer: "degraded-policy" },
+		},
+		{
+			label: "denyPaths given as a number instead of an array: the protection is gone, so the classifier allow is withheld",
+			family: "policy-degraded",
+			tool: "bash",
+			input: { command: "cargo build" },
+			config: { denyPaths: 7 },
+			degradedConfig: true,
+			expected: { layer: "degraded-policy" },
+		},
 	);
 
 	return cases;
