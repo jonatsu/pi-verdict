@@ -5968,6 +5968,63 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("a glob that stays inside the project is a rule allow, and no other searching tool gets that", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({}, { cwd });
+				for (const p of ["**/*.ts", "src/**/*.ts", "src/{a,b}.ts", "*.md"]) expect(await toolCall(h, "glob", { path: p })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				for (const [tool, input] of [
+					["grep", { pattern: "x", path: "src/**/*.ts" }],
+					["ast_grep", { pat: "$K", lang: "ts", path: "src/**/*.ts" }],
+					["ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "ts", paths: ["src/*.ts"] }],
+				] as const) {
+					h.calls.length = 0;
+					expect((await toolCall(h, tool, input))?.block).toBe(true);
+					expect(h.calls).toHaveLength(1);
+				}
+			},
+			home,
+		);
+	});
+
+	test("a glob that can leave the project, or name a credential or git metadata, is not a rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({}, { cwd });
+				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				for (const p of ["../**/*.ts", "~/**/*.ts", "/etc/**", "**/.git/hooks/*", "src/../../**", "ssh://prod/etc/*", "vault://**"]) {
+					h.calls.length = 0;
+					expect((await toolCall(h, "glob", { path: p }))?.block).toBe(true);
+					expect(h.calls).toHaveLength(1);
+				}
+				h.calls.length = 0;
+				for (const p of ["**/*.pem", "**/id_rsa", "~/.ssh/*"]) expect((await toolCall(h, "glob", { path: p }))?.block).toBe(true);
+				expect(h.calls).toHaveLength(0); // the floor denies these without a model call
+			},
+			home,
+		);
+	});
+
+	test("a glob over a declared protected directory or a .omp directory still asks", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({ denyPaths: [path.join(cwd, "secret-sub")], gateOmpDir: true }, { cwd });
+				h.confirmAnswer = false;
+				for (const p of ["secret-sub/**", "**/*.ts", "**/.omp/**"]) {
+					h.confirms = 0;
+					expect((await toolCall(h, "glob", { path: p }))?.block).toBe(true);
+					expect(h.confirms).toBe(1);
+				}
+			},
+			home,
+		);
+	});
+
 	test("ordinary spellings keep their verdict", async () => {
 		await withTempDir(
 			"pv-hps-",

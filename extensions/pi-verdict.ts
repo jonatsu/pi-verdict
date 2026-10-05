@@ -1669,15 +1669,12 @@ const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitm
 
 /** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
 function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
-	const abs = path.resolve(cwd, expandHome(rawPath));
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
 	// kernel would open when a symlink component precedes `..` or the leaf is a symlink
 	// itself (path-layer review items 4, 7–8); one walk feeds this and the check below.
-	const walk = kernelWalk(rawPath, cwd);
-	const forms = [...new Set([...rebuiltForms(abs), ...(walk.resolved === null ? [] : rebuiltForms(walk.resolved))])];
-	const ruleForms = forms.map(toRuleForm);
+	const { forms, ruleForms, walk } = canonicalPathForms(rawPath, cwd);
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
 	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
 	const D = floorOn
@@ -1705,10 +1702,37 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
 	// (in either its lexical or real form) — a lexical prefix hit whose real
 	// form escapes the project (symlink alias) grades as an outside-cwd write.
-	const cwdBases = new Set(baseForms(path.resolve(cwd)));
-	const inCwd = (f: string) => [...cwdBases].some((b) => f === b || f.startsWith(b + path.sep));
-	if (forms.every(inCwd)) return { verdict: "allow" };
+	if (formsInCwd(forms, cwd)) return { verdict: "allow" };
 	return { verdict: "gray", reason: `write outside project directory (CWD): ${rawPath}` };
+}
+
+/** Every canonical form of a target the path rules test: lexical and realpath-rebuilt, plus the
+ *  kernel-walked spelling, each also in rule form. */
+function canonicalPathForms(rawPath: string, cwd: string): { forms: string[]; ruleForms: string[]; walk: ReturnType<typeof kernelWalk> } {
+	const abs = path.resolve(cwd, expandHome(rawPath));
+	const walk = kernelWalk(rawPath, cwd);
+	const forms = [...new Set([...rebuiltForms(abs), ...(walk.resolved === null ? [] : rebuiltForms(walk.resolved))])];
+	return { forms, ruleForms: forms.map(toRuleForm), walk };
+}
+
+/** Does every form sit inside the cwd, in either its lexical or its real spelling? */
+function formsInCwd(forms: string[], cwd: string): boolean {
+	const cwdBases = new Set(baseForms(path.resolve(cwd)));
+	return forms.every((f) => [...cwdBases].some((b) => f === b || f.startsWith(b + path.sep)));
+}
+
+/** A `glob` call names files and never reads their contents, so it may be a rule allow where a
+ *  `grep` of the same pattern may not: its literal prefix and every other graded form must stay inside the
+ *  project, and none may hit a credential (S0) or git metadata (S3) rule. A declared `denyPaths` base
+ *  under the prefix and a `.omp` directory are asked about by their own layers before this grade is read. */
+function globStaysInProject(targets: string[], cwd: string): boolean {
+	return targets.every((t) => {
+		// `ssh://host/etc` is a URL, not a project path, whatever directory the text resolves to.
+		if (/^[a-z][a-z0-9+.-]+:/i.test(t)) return false;
+		const { forms, ruleForms, walk } = canonicalPathForms(t, cwd);
+		const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
+		return !walk.unresolved && !hit(S0_SECRET) && !hit(anchoredS0) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
+	});
 }
 
 /** Grades every mutating target through classifyPath's existing write tiers
@@ -2953,8 +2977,9 @@ function classifyByRules(
 	}
 	if (base.verdict === "deny") return base; // Built-in floor: deny takes precedence over all user rules
 	// A glob target names files the prefix grade cannot see, so the floor's allow is not a
-	// verdict for it; the deny-side layers below still run on the prefix.
-	if (access.globbed && base.verdict === "allow")
+	// verdict for it; the deny-side layers below still run on the prefix. `glob` alone only lists
+	// names, so it keeps the allow while everything it can reach stays inside the project.
+	if (access.globbed && base.verdict === "allow" && !(toolName === "glob" && globStaysInProject(access.gradedReads, cwd)))
 		base = { verdict: "gray", reason: "path contains glob metacharacters (not graded as a literal path)" };
 
 	// User deny (known-tool targets only — R2-2: an unknown tool's shape-inferred fields

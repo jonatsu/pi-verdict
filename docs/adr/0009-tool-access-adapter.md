@@ -329,3 +329,14 @@ ordinary relative path to the host (`a:` is a directory name), so `a://..\..\.co
 reaches a credential file two directories up. The same list decides which `@` shorthand targets
 `expandHostPath` accepts. Hosts that register more schemes through an extension (omp's RPC host URIs)
 are not listed; their URLs are graded converted, the safe direction.
+
+*Glob listings.* The glob amendment above withholds the floor's allow from every glob target because
+neither grade can say what the glob matches. For `glob` alone that is too strict: it returns file
+names and never contents, so what a wrong guess exposes is a name. A `glob` call keeps the floor's
+allow when its literal prefix and every other graded form resolve inside the project directory (in
+both lexical and real spelling) and none hits an S0 or S3 rule. A declared `denyPaths` base at or
+under the prefix and a `.omp` directory under `gateOmpDir` are asked about by their own layers
+before the allow is read, so the allow never overrides them. A pattern that can leave the project
+(`../**`, `~/**`, `/etc/**`) or a `scheme://` URL stays gray. `grep`, `ast_grep` and `ast_edit` read or rewrite contents
+and keep the glob rule unchanged, and a user `allow` rule or `tools` entry still skips every glob
+target, `glob` included.
