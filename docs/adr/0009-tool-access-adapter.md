@@ -69,7 +69,9 @@ interface ToolAccess {
   `path`, listed in no starter config) and any third-party content-bearing tool. The opaque ask
   exists to catch a file write whose target can't be found — an unknown tool that names no file is
   not that case, so the narrower rule drops both the false positive and the MCP/`task` name-prefix
-  carve-out the first draft needed to avoid it.
+  carve-out the first draft needed to avoid it. *Amendment:* an opaque call skips the user `allow`
+  loop and the `tools` exemption as well, because its model-supplied `path`/`paths` do not name the
+  target the call really writes; a user allow regex that matched them used to admit the call.
 - **`scope`** (`grep`, `find`, `ls`, `glob`, `ast_grep`, `ast_edit`): the tool's `path`/`paths`
   accept a directory or glob and the search covers a subtree. It drives the **bidirectional**
   `denyPaths`/`gateOmpDir` compare (a declared base sitting *inside* the searched subtree hits, not

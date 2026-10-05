@@ -2621,9 +2621,10 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
  *   3a. over-cap action → terminal ask (item 6a, Phase 4): never a mechanical allow on an
  *       action the floor could not fully read (F8's ordering gap)
  *   4. user allow → allow (never for kind "code": a code call always reaches the classifier
- *      unless something above denies or asks first; never while policyDegraded — ADR-0010)
+ *      unless something above denies or asks first; never while policyDegraded — ADR-0010;
+ *      never for an opaque call or a glob path)
  *   5. custom-tool exact match (user.tools) → allow (bypasses classifier; never for kind "code";
- *      never while policyDegraded — ADR-0010)
+ *      never while policyDegraded — ADR-0010; never for an opaque call or a glob path)
  *   6. opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target
  *   7. base (observing default allow/gray; everything else gray) → classifier
  */
@@ -2725,7 +2726,9 @@ function classifyByRules(
 	// Suspended while policyDegraded (ADR-0010): a partially-loaded policy's allow list may
 	// still be present while a deny/denyPaths entry was dropped — granting mechanical allows
 	// on that basis is the fail-open direction this closes.
-	if (targets.length > 0 && !policyDegraded && !access.globbed) {
+	// An opaque call's path/paths are model-supplied while its real target is unknown, so no
+	// rule can vouch for it (the same call is denied without an allow rule configured).
+	if (targets.length > 0 && !policyDegraded && !access.globbed && !access.opaque) {
 		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
 		if (allowOk) {
 			for (const re of user.allow) {
@@ -2740,7 +2743,7 @@ function classifyByRules(
 	// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
 	// is non-code tools; a user who listed eval here loses the exemption (BREAKING). Suspended
 	// with user allow while policyDegraded (ADR-0010).
-	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded && !access.globbed)
+	if (user.tools.includes(toolName) && access.kind !== "code" && !policyDegraded && !access.globbed && !access.opaque)
 		return { verdict: "allow", reason: "user tools allow rule" };
 
 	// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at

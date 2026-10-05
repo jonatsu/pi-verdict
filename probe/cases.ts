@@ -553,6 +553,22 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule-ask" },
 		},
 		{
+			label: "a user allow regex does not admit an opaque edit through its paths field",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: "<apply_patch>", paths: [`${fx.work}/src/a.ts`] },
+			config: { allow: [".*"] },
+			expected: { layer: "rule-ask" },
+		},
+		{
+			label: "a tools entry does not exempt an opaque edit",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: "<apply_patch>", paths: [`${fx.work}/src/a.ts`] },
+			config: { tools: ["edit"] },
+			expected: { layer: "rule-ask" },
+		},
+		{
 			label: "patch-mode edit rename target hits a declared denyPaths base",
 			family: "tool-access",
 			tool: "edit",
