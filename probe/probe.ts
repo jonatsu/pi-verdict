@@ -116,9 +116,19 @@ function assertLayer(v: Verdict, c: Case, run: "A" | "B" | "C"): string | null {
 			// Run A is headless → the ask degrades to deny; run B is interactive → ask.
 			want = run === "B" ? { source: "protected-path", verdict: "ask" } : { source: "protected-path", verdict: "deny" };
 			break;
+		case "rule-ask":
+			// Rule-layer ask (e.g. an opaque write, an over-cap action): run B is interactive →
+			// ask; A and C are headless → the ask degrades to deny (checked below).
+			want = run === "B" ? { source: "rule", verdict: "ask" } : { source: "rule", verdict: "deny" };
+			break;
 	}
 	if (v.source !== want.source || v.verdict !== want.verdict) {
 		return `run ${run}: got ${v.source}/${v.verdict}, expected ${want.source}/${want.verdict}`;
+	}
+	// A rule deny must never pass as a degraded rule-ask: headless/consumer runs require the
+	// explicit degradation flag, not just the deny verdict.
+	if (exp.layer === "rule-ask" && run !== "B" && !v.degraded) {
+		return `run ${run}: expected degraded:true (ask demoted to deny), got degraded:${v.degraded}`;
 	}
 	const reason = v.reason ?? "";
 	if (exp.ruleId !== undefined && !reason.includes(`rule ${exp.ruleId}:`)) {

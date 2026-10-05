@@ -13,7 +13,7 @@
 import type { FixtureTree } from "./fixtures.ts";
 
 /** The layer that must decide the call (assert the source, not the verdict). */
-export type Layer = "rule" | "allow" | "classifier" | "protected-path";
+export type Layer = "rule" | "allow" | "classifier" | "protected-path" | "rule-ask";
 
 export interface Expectation {
 	layer: Layer;

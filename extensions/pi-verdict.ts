@@ -502,6 +502,10 @@ interface RuleResult {
 	detail?: string;
 	/** Set only by selfProtectCheck: this deny is not exempted by autoDeny:false. */
 	selfProtect?: true;
+	/** Named only on verdict:"ask": which rule-layer ask this is (ask-source seam). Every
+	 *  producer names its own source; an unset value maps to "protected-path" so older call
+	 *  sites this seam does not yet know about keep today's label (Claude-review R2-9). */
+	askSource?: "protected-path" | "rule";
 }
 
 /** Cap the danger-regex matching input (#25): the prefix-consuming character
@@ -2142,7 +2146,8 @@ function classifyByRules(
 		// Reason carries no path (it travels back into agent context); the path is UI-only detail.
 		if (user.gateOmpDir) {
 			const omp = hitOmpDir(toolName, input, cwd);
-			if (omp) return { verdict: "ask", reason: "forced gate: access to a .omp directory (gateOmpDir)", detail: omp };
+			if (omp)
+				return { verdict: "ask", reason: "forced gate: access to a .omp directory (gateOmpDir)", detail: omp, askSource: "protected-path" };
 		}
 		// denyPaths hit → terminal ask (ADR-0002): after user deny, before user allow —
 		// a protected path is the user's exception to their own allow rules.
@@ -2150,7 +2155,12 @@ function classifyByRules(
 		// into the agent context, so plaintext there would leak the declaration.
 		const hit = hitDenyPaths(toolName, input, cwd, denyPathBases);
 		if (hit)
-			return { verdict: "ask", reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]", detail: hit };
+			return {
+				verdict: "ask",
+				reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
+				detail: hit,
+				askSource: "protected-path",
+			};
 		// ADR-0008: a user allow admits ONE simple command. A compound command, an unsound parse, a
 		// redirection or a write-shaped git invocation is never rule-allowed — it reaches the classifier.
 		const allowOk = kind !== "command" || allowAdmits(String(input.command ?? ""));
@@ -2637,8 +2647,9 @@ export interface AuditRecord {
 	verdict: "allow" | "ask" | "deny";
 	reason: string;
 	/** #62: protected-path asks are recorded too — their user answers grade the
-	 *  denyPaths rules; rule allow/deny verdicts remain unaudited. */
-	source: "model" | "fail-closed" | "protected-path";
+	 *  denyPaths rules; rule allow/deny verdicts remain unaudited. "rule" covers a
+	 *  rule-layer ask whose askSource is not "protected-path" (ask-source seam). */
+	source: "model" | "fail-closed" | "protected-path" | "rule";
 	degraded: boolean;
 	/** #62 ground truth: the user's answer to an interactive ask confirm. Present only
 	 *  on records whose confirm actually ran; headless/degraded asks omit it. */
@@ -3042,17 +3053,18 @@ export async function adjudicate(
 	});
 
 	if (rule.verdict === "ask") {
+		const askSource = rule.askSource ?? "protected-path";
 		// denyPaths match → terminal ask (ADR-0002): exception for the declaring user to decide; no UI degrades to deny
 		if (env.hasUI) {
 			const ppRecord: AuditRecord = {
-				...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: "protected-path", degraded: false }, null),
+				...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: askSource, degraded: false }, null),
 				detail: rule.detail,
 			};
 			return {
 				verdict: "ask",
 				reason: rule.reason ?? "",
 				detail: rule.detail,
-				source: "protected-path",
+				source: askSource,
 				degraded: false,
 				autoResolve: "deny",
 				...(state.audit ? { pendingAudit: ppRecord } : {}),
@@ -3060,10 +3072,10 @@ export async function adjudicate(
 		}
 		// headless: the ask degrades to deny — recorded like the gray-zone rule (the effective post-degradation verdict is what lands in the record)
 		state.audit?.append({
-			...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: "protected-path", degraded: true }, null),
+			...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: askSource, degraded: true }, null),
 			detail: rule.detail,
 		});
-		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: true };
+		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: askSource, degraded: true };
 	}
 
 	// Gray zone → classifier; no available model → fail-closed
