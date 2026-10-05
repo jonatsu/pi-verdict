@@ -5,6 +5,10 @@ status: superseded (2026-09-25: self-protection layer fully removed — see fina
 date: 2025-08-27
 ---
 
+**Restored 2026-10-05 by [ADR-0005](0005-self-protection-layer-restored.md)** — the final revision below
+(removal) is itself superseded: the layer is back, snapshot-free (no `IntegrityWatch`). Read ADR-0005 for the
+current decision; the text below stands as the historical record of the removal.
+
 ## Background
 
 pi-verdict's security boundary (rule layer + classifier) is implemented by an extension running inside the agent process, and both its config file `config/pi-verdict.json` and the extension's own installed copy sit within the agent write permissions that boundary is meant to guard. With both writes classified as gray-zone → classifier judgment, a prompt injection needs only to convince the classifier to allow one write to clear `deny`, flip `builtinDenyFloor`, or rewrite the gate's own source — the next session's gate is then empty or owned by the attacker. A gate that can be turned off or rewritten by what it is guarding cannot credibly claim "risk accepted by the user."

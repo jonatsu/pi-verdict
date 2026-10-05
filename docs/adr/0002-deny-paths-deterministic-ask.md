@@ -184,6 +184,11 @@ decisions (deterministic ask on a denyPaths hit, the existence hint,
 bidirectional scope-tool matching) are unaffected — only the passages above
 that assumed the now-removed layer's existence are stale.
 
+**Superseded 2026-10-05 by [ADR-0005](0005-self-protection-layer-restored.md):** the layer is restored
+(snapshot-free), so the priority chain again starts at the self-protection deny and reads/writes to
+`<agentDir>/verdicts/` are denied — the passages this amendment marked stale are current again, except
+where ADR-0005 states otherwise.
+
 ## Amendment (2026-10-05): kernel-true spelling tier (path-layer review item 10, plan-review F11)
 
 denyPaths compares base forms of **both** the lexical and the kernel-true

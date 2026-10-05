@@ -1,5 +1,5 @@
 # Publish trigger: GitHub Release (published) or manual workflow_dispatch (tag input).
-# Publishes @frapetti-dev/pi-verdict to the GitHub Package Registry (npm.pkg.github.com),
+# Publishes @jonatsu/pi-verdict to the GitHub Package Registry (npm.pkg.github.com),
 # authenticated with the workflow's own GITHUB_TOKEN (packages: write) — no external
 # registry account or trusted-publisher setup required.
 
@@ -29,14 +29,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.release.tag_name || inputs.tag }}
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - name: Validate release tag
         env:
@@ -63,11 +63,11 @@ jobs:
           bun run typecheck
           bun test
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com
-          scope: "@frapetti-dev"
+          scope: "@jonatsu"
 
       - name: Validate package contents
         run: npm pack --dry-run

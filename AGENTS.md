@@ -17,14 +17,14 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 
 **Pipeline** — pure, UI-free `adjudicate(state, call, env) → Verdict`, called from the `tool_call` handler:
 
-1. `classifyByRules` → `RuleResult{allow|deny|gray|ask}`, in this order: built-in deny floor (`BASH_DANGER_RULES`, path sensitivity S0–S5 via `classifyPath`; off with `builtinDenyFloor:false`) → user `deny` regexes → forced `.omp` gate (`gateOmpDir`, default on) ask → `denyPaths` ask → user `allow` regexes → `tools` exact-name allowlist → gray. Deny beats allow. There is **no built-in allowlist** (`research/rule-layer-security-audit.md`).
-2. Gray zone → `classifyWithModel` (timeout `CLASSIFIER_TIMEOUT_MS`=25 s). Response MUST start with `<verdict>allow|ask|deny</verdict>` (verdict prefix contract) or it fails closed.
-3. Post-classifier: shadow cache (observe-only dual-key LRU(128), never changes the verdict) → `confidenceDemotion` (`classifierMinConfidence`, jev only) → `runConfidenceCascade` to `classifierFallbackModel` (`shadow` default | `enforce`; a demoted deny can never become an auto allow; ADR-0004).
+1. `classifyByRules` → `RuleResult{allow|deny|gray|ask}`, in this order: self-protection layer 0 (ADR-0005: a hard, config-exempt deny over the gate's own files) → built-in deny floor (`BASH_DANGER_RULES`, path sensitivity S0–S5 via `classifyPath`; off with `builtinDenyFloor:false`) → user `deny` regexes → forced `.omp` gate (`gateOmpDir`, default off) ask → `denyPaths` ask → user `allow` regexes → `tools` exact-name allowlist → gray. Deny beats allow. There is **no built-in allowlist** (`research/rule-layer-security-audit.md`).
+2. Gray zone → `classifyWithModel` (per-attempt cap `CLASSIFIER_TIMEOUT_MS`, inside the end-to-end adjudication budget `ADJUDICATION_BUDGET_MS` — item 7; a timed-out attempt is never retried). Response MUST start with `<verdict>allow|ask|deny</verdict>` (verdict prefix contract) or it fails closed.
+3. Post-classifier: `confidenceDemotion` (`classifierMinConfidence`, jev only) → `runConfidenceCascade` to `classifierFallbackModel` (`enforce` default | `shadow`; a demoted deny can never become an auto allow; ADR-0004).
 4. Presentation: single point `presentVerdict` (templates keyed by `source × degraded`). Block text via `blockedReason(tag, detail)` → `[auto-mode <tag> block] BLOCKED — ...`. `Verdict.detail` is UI-only; protected-path plaintext MUST NOT reach the agent, notifications, or the classifier (ADR-0002 existence hint only). Asks go through `confirmAsk` (rich dialog → `AskDecision`): Yes / No / "No, with explanation…" (user text → `declineDetail` → block reason) / "Explain…" (EXPLAIN-GATE role, `explainGate`; display-only output, **never offered for protected-path asks** — same ADR-0002 rule). `buildApproveDialog` also parses SGR left-clicks (`dialogLineAtRow` maps the click row via the host's `children`/`terminal.rows`/`viewportTop`): a click highlights, a second click on the same mouse-highlighted row confirms; keyboard input disarms; it never writes mouse-mode sequences and is inert on hosts that don't forward mouse input (pi 0.84.3's `TuiAltScreen` consumes it first). During a gray-zone model call the `tool_call` handler shows a one-row status widget (`ui.setWidget("verdict", …)`, fed by the UI-free `AdjudicateEnv.onPhase` hook; phase + tool + model id only, never command/path text) and clears it before presenting the verdict.
 
 **Fail direction**: closed. Classifier error / timeout / no model / malformed output ⇒ deny (`source:"fail-closed"`). No UI (`pi -p`, json, rpc) ⇒ every `ask` degrades to deny with `degraded:true`. Config errors ⇒ empty rules with the floor ON plus a notification, **and `policyDegraded` (ADR-0010): a config parse/load failure, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry withholds every model-originated allow — first layer + cascade → ask (`source:"degraded-policy"`), subagent second model → denied outright — and suspends user `allow`/`tools` for the session; named in the footer badge, `/automode`, every block reason, and a session-start warning**. The extension is never disabled. Audit write failures are fail-soft.
 
-**State**: `SessionState` class (exported for tests) holds shadow cache, fallback stats, `userRules`, audit log, and `denyPathBases`. `reset()` is the single reset list — add any new per-session state there. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
+**State**: `SessionState` class (exported for tests) holds fallback stats, `userRules`, audit log, and `denyPathBases`. `reset()` is the single reset list — add any new per-session state there. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
 
 **Dual host**: real pi and omp. Adapter detects omp by `"logger" in pi && "typebox" in pi`. Model calls go through `ctx.modelRegistry.complete` when present, else the `compatLoader` fallback (omp 18 shape). `[pi-verdict local patch: …]` comment tags mark divergences from upstream `jesset/pi-verdict`.
 
@@ -73,10 +73,13 @@ Two rules from that skill this repository has broken before:
   code, no process narration ("round 2", "a later review found…") — record the resulting choice and why it
   holds. The section banners described below are the one sanctioned divider.
 - **A reference must resolve inside the repository.** In source comments and test titles, cite a tracked
-  artifact: an issue (`#NN`), an ADR (`ADR-000N`), a plan item or finding id (`item 6b`, `Phase 5`, `F13`,
-  `R2-14`), or a test name. Never cite a finding tag from an untracked review report (the `.scratch/` round tags
-  `S-F5`, `R-F1`, `C3`): that report is gitignored, so the tag is unresolvable once the round closes.
-  `CHANGELOG.md` and `docs/adr/` keep their existing convention of plan-resolvable finding ids.
+  artifact: an issue (`#NN`), an ADR (`ADR-000N`), a plan item or finding id (`item 6b`, `Phase 5`, `F13`),
+  or a test name. The test is whether a reader can open the text the id labels — a finding id is only as good
+  as the document that defines it, so qualify it when more than one report numbers findings (`arch-F2`; the
+  plan cites its own `F*`/`R2-*` inline at the paragraph that carries them). A tag whose report lives only in
+  the gitignored `.scratch/`, with its text nowhere tracked, does not resolve — the round tags `S-F5`, `R-F1`
+  and `C3` are the cautionary example; put that provenance in the commit message instead. `CHANGELOG.md` and
+  `docs/adr/` keep their existing convention of plan-resolvable finding ids.
 
 `biome ci .` enforces the mechanical half of the skill; the review gates enforce the rest.
 
@@ -105,7 +108,7 @@ Two rules from that skill this repository has broken before:
 
 - **Bun** is the package manager and test runner (`bun.lock` committed). **TypeScript** (`tsc`) for typechecking only. Node 22 is used only in `publish.yml` for `npm pack/publish`.
 - Zero runtime dependencies; the pi package is an optional peer dep. Don't add runtime deps without a strong reason.
-- Package name is `@jonatsu/pi-verdict` (renamed from `@frapetti-dev/pi-verdict`). The deployment installs via the git spec; GitHub Packages publishing requires the scope to match `@jonatsu` — `publish.yml` still names the old scope, so fix or remove it before any Release publishes.
+- Package name is `@jonatsu/pi-verdict` (renamed from `@frapetti-dev/pi-verdict`). The deployment installs via the git spec; GitHub Packages publishing requires the scope to match `@jonatsu`, which `publish.yml` now does.
 - CI (`ci.yml`): `bun install --frozen-lockfile` → `bun run typecheck` → `biome ci .` → `bun test` → `bun run probe` → `bun run coverage && git diff --exit-code docs/coverage.md`. Publish (`publish.yml`, on GitHub Release): tag must equal `v` + `package.json` version and HEAD must be the tag commit, then typecheck + test + publish.
 - Dev workstation is Windows; `PI_CODING_AGENT_DIR` and home-relative fixtures must work cross-platform (Windows path separators are handled in code).
 
@@ -147,13 +150,13 @@ Keep docs in sync with functional changes:
 | Architectural decision | new `docs/adr/NNNN-title.md` (next number; `status:` and `date:` block, then Context) |
 | A security principle changes | `docs/security-principles.md` |
 
-## Installed Copies (historical: ADR-0001)
+## Installed Copies (self-protection: ADR-0005; history in ADR-0001)
 
-ADR-0001's self-protection layer was removed (final ADR revision) — the gate itself no longer blocks writes to these. The manual-only workflow remains project convention:
+ADR-0001's self-protection layer was removed (final ADR revision) and restored by ADR-0005 — the gate itself blocks writes to these again (and denies reads/writes to `<agentDir>/verdicts/`). The manual-only workflow remains project convention:
 
 - The agent MUST NOT write `<agentDir>/config/pi-verdict.json` or the installed copies under `<agentDir>/extensions/` — these are the user's live gate; changes are made by the user, by hand, outside the repo.
 - To test a new build the user runs `cp extensions/pi-verdict.ts extensions/jev-adapter.ts ~/.pi/agent/extensions/` and restarts pi (`jev-adapter.ts` only needed for the jev backend). Same for editing user rules.
-- `gateOmpDir` (default on) makes the gate ask (non-interactive → deny) on any tool call touching a `.omp` directory, including `~/.omp/agent/`. Additional backstop for omp hosts, not a replacement for the convention.
+- `gateOmpDir` (default off) makes the gate ask (non-interactive → deny) on any tool call touching a `.omp` directory, including `~/.omp/agent/`. Additional backstop for omp hosts, not a replacement for the convention.
 
 ## Smoke-testing a build without touching the installed copy
 

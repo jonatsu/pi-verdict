@@ -5277,8 +5277,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 			/** Boolean switch menu for gateOmpDir; local files can also unset (inherit the global value) */
 			async function editGateOmpDir(): Promise<void> {
-				const ON = "On — ask before any .omp directory access (default)";
-				const OFF = "Off — no forced gate on .omp directories";
+				const ON = "On — ask before any .omp directory access";
+				const OFF = "Off — no forced gate on .omp directories (default)";
 				const UNSET = "× Unset (inherit global gateOmpDir)";
 				const options = [ON, OFF];
 				if (kind === "local" && "gateOmpDir" in raw) options.push(UNSET);
