@@ -1884,19 +1884,85 @@ function peelsHostSelector(toolName: string): boolean {
 	return toolName === "read" || toolName === "grep" || !(OBSERVING_TOOL_NAMES.has(toolName) || MUTATING_TOOL_NAMES.has(toolName));
 }
 
+/** The tools whose path argument the host splits into a list of paths: every tool that reads or
+ *  searches, including `ast_edit`. `write` and `edit` open one file. */
+function splitsHostList(toolName: string): boolean {
+	return toolName !== "write" && toolName !== "edit";
+}
+
+const normalizeHostPathEntry = (entry: string): string => {
+	const trimmed = entry.trim();
+	return trimmed.length > 1 && trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed;
+};
+
+/** Splits at every top-level separator; a backslash escapes the next character and a brace group is
+ *  not split, as in omp's splitTopLevelDelimitedPath (18.6.1). */
+function splitTopLevel(entry: string, isSeparator: (ch: string) => boolean): string[] {
+	const parts: string[] = [];
+	let braceDepth = 0;
+	let start = 0;
+	for (let i = 0; i < entry.length; i++) {
+		const ch = entry[i];
+		if (ch === "\\" && i + 1 < entry.length) {
+			i++;
+		} else if (ch === "{") {
+			braceDepth++;
+		} else if (ch === "}") {
+			if (braceDepth > 0) braceDepth--;
+		} else if (braceDepth === 0 && isSeparator(ch)) {
+			parts.push(entry.slice(start, i));
+			start = i + 1;
+		}
+	}
+	parts.push(entry.slice(start));
+	return parts;
+}
+
+const HOST_LIST_SEPARATORS: ReadonlyArray<(ch: string) => boolean> = [
+	(ch) => ch === ";",
+	(ch) => ch === ",",
+	(ch) => /\s/.test(ch),
+	(ch) => ch === ";" || ch === "," || /\s/.test(ch),
+];
+
+/** Every part omp's expandDelimitedPathEntries (18.6.1) can split one entry into. The host tries `;`,
+ *  then `,`, then whitespace, then all three, and keeps the first split whose parts resolve; the gate
+ *  cannot tell which one wins, so it grades the parts of every split. */
+function hostPathListParts(entry: string): string[] {
+	const parts = new Set<string>();
+	for (const isSeparator of HOST_LIST_SEPARATORS) {
+		const raw = splitTopLevel(entry, isSeparator);
+		if (raw.length < 2) continue;
+		for (const part of raw.map(normalizeHostPathEntry)) if (part.length > 0) parts.add(part);
+	}
+	return [...parts];
+}
+
+interface HostPathFormOptions {
+	/** Also grade the path with a trailing read selector removed. */
+	peelSelector?: boolean;
+	/** Also grade each part of a `;`, `,` or whitespace separated list. */
+	splitList?: boolean;
+}
+
 /** Every spelling of one target that the gate must grade: the raw text and the host's expansion of
- *  it, each also without a trailing read selector when `peelSelector` is set. Deduplicated; an
- *  ordinary path yields itself alone. */
-export function hostPathForms(target: string, peelSelector = false): string[] {
+ *  it, plus, as `how` asks, the parts of a delimited list and the paths without a trailing read
+ *  selector. Deduplicated; an ordinary path yields itself alone. */
+export function hostPathForms(target: string, how: HostPathFormOptions = {}): string[] {
 	if (target.length > HOST_PATH_FORMS_MAX_CHARS) return [target];
-	const forms = new Set([target, expandHostPath(target)]);
-	if (peelSelector) {
-		for (const form of [...forms]) {
+	const whole = normalizeHostPathEntry(target);
+	const entries = new Set([target, whole]);
+	if (how.splitList) for (const part of hostPathListParts(whole)) entries.add(part);
+	const forms = new Set<string>();
+	for (const entry of entries) {
+		forms.add(entry);
+		forms.add(expandHostPath(entry));
+		if (!how.peelSelector) continue;
+		for (const form of [entry, expandHostPath(entry)]) {
 			const peeled = peelHostSelector(form);
-			if (peeled !== null) {
-				forms.add(peeled);
-				forms.add(expandHostPath(peeled));
-			}
+			if (peeled === null) continue;
+			forms.add(peeled);
+			forms.add(expandHostPath(peeled));
 		}
 	}
 	for (const form of [...forms]) {
@@ -2132,15 +2198,6 @@ function readPatchRenameTargets(input: Record<string, unknown>): string[] {
 	return out;
 }
 
-/** omp splits a `;`/`,`/whitespace-delimited path list and opens each part
- *  separately while the gate graded only the whole string as one path
- *  (Claude-review F6, a pre-existing bypass) — over-extraction (the whole
- *  string plus every part) is the safe direction on both sides. */
-function splitObservingPathList(p: string): string[] {
-	const parts = p.split(/[;,\s]+/).filter((s) => s.length > 0);
-	return parts.length > 1 ? [p, ...parts] : [p];
-}
-
 /** code/command shape inference for a tool outside the known observing/mutating
  *  sets (constraint 2: payload shape, not the tool name). A shape-inferred
  *  `command` (e.g. `debug`'s DAP request) never enters `classifyBash` — every
@@ -2163,7 +2220,7 @@ function toolAccess(toolName: string, input: Record<string, unknown>): ToolAcces
 
 	if (OBSERVING_TOOL_NAMES.has(toolName)) {
 		const reads = new Set<string>();
-		if (unwrapped !== null) for (const p of splitObservingPathList(unwrapped)) reads.add(p);
+		if (unwrapped !== null) reads.add(unwrapped);
 		for (const p of pathsField) reads.add(p);
 		return withGradedTargets(toolName, {
 			direction: "observing",
@@ -2234,8 +2291,8 @@ function hostSeparators(target: string): string {
  *  and of the directory the glob walks wins: the spelling still matches a floor rule on its tail
  *  (`**` + `/*.pem`), the prefix covers the directory. */
 function gradedForms(toolName: string, targets: string[]): string[] {
-	const peel = peelsHostSelector(toolName);
-	const forms = targets.flatMap((t) => hostPathForms(t, peel));
+	const how = { peelSelector: peelsHostSelector(toolName), splitList: splitsHostList(toolName) };
+	const forms = targets.flatMap((t) => hostPathForms(t, how));
 	if (!GLOB_PATH_TOOL_NAMES.has(toolName)) return [...new Set(forms)];
 	return [...new Set(forms.flatMap((f) => [f, hostSeparators(f), globLiteralPrefix(hostSeparators(f))]))];
 }

@@ -299,3 +299,13 @@ targets also contribute the peeled form, for the raw and the expanded spelling a
 `.env`). The peel mirrors omp's `splitPathAndSel` (18.6.1). It is not applied to `ast_grep`, `glob`,
 `find`, `ls` or the mutating tools, which the host does not peel; a tool the gate does not model gets
 the peeled form too, because an extra form only widens what is graded.
+
+*Delimited entries.* The host splits every `read`, `grep`, `glob`, `ast_grep` and `ast_edit` path
+entry at top-level `;`, `,` and whitespace (`expandDelimitedPathEntries`, 18.6.1; a brace group and a
+backslash-escaped character are not separators), so each such tool's targets contribute the parts of
+every entry, in `path` and in each `paths` element, mutating `ast_edit` included. The host tries `;`,
+then `,`, then whitespace, then all three, and keeps a split only when its parts resolve; the gate
+cannot see the filesystem the host sees, so it grades the parts of every split. This replaces the
+observing tools' earlier split of the single `path` field, which left `paths` entries and `ast_edit`
+whole. `write` and `edit` open one file and are not split. A part is graded like any other form: the
+worst grade wins, and a user `allow` regex has to admit it.

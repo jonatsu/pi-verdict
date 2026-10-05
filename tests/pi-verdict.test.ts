@@ -5788,16 +5788,16 @@ describe("host path spelling (ADR-0009)", () => {
 	});
 
 	test("hostPathForms peels a trailing read selector the way the host does", () => {
-		expect(hostPathForms(".env:raw", true)).toEqual([".env:raw", ".env"]);
-		expect(hostPathForms("a/b.pem:1-5", true)).toEqual(["a/b.pem:1-5", "a/b.pem"]);
-		expect(hostPathForms("a.ts:-20", true)).toEqual(["a.ts:-20", "a.ts"]);
-		expect(hostPathForms("a.ts:1-5:raw", true)).toEqual(["a.ts:1-5:raw", "a.ts"]);
-		expect(hostPathForms("a.ts:raw:1-5", true)).toEqual(["a.ts:raw:1-5", "a.ts"]);
-		expect(hostPathForms("@~/k:2", true)).toEqual(["@~/k:2", `${home}/k:2`, "@~/k", `${home}/k`]);
+		expect(hostPathForms(".env:raw", { peelSelector: true })).toEqual([".env:raw", ".env"]);
+		expect(hostPathForms("a/b.pem:1-5", { peelSelector: true })).toEqual(["a/b.pem:1-5", "a/b.pem"]);
+		expect(hostPathForms("a.ts:-20", { peelSelector: true })).toEqual(["a.ts:-20", "a.ts"]);
+		expect(hostPathForms("a.ts:1-5:raw", { peelSelector: true })).toEqual(["a.ts:1-5:raw", "a.ts"]);
+		expect(hostPathForms("a.ts:raw:1-5", { peelSelector: true })).toEqual(["a.ts:raw:1-5", "a.ts"]);
+		expect(hostPathForms("@~/k:2", { peelSelector: true })).toEqual(["@~/k:2", `${home}/k:2`, "@~/k", `${home}/k`]);
 	});
 
 	test("hostPathForms keeps a colon that does not start a selector", () => {
-		for (const p of ["foo:bar", "C:", ":raw", "a:xyz"]) expect(hostPathForms(p, true)).toEqual([p]);
+		for (const p of ["foo:bar", "C:", ":raw", "a:xyz"]) expect(hostPathForms(p, { peelSelector: true })).toEqual([p]);
 		expect(hostPathForms(".env:raw")).toEqual([".env:raw"]);
 	});
 
@@ -5838,6 +5838,60 @@ describe("host path spelling (ADR-0009)", () => {
 				fs.writeFileSync(path.join(cwd, "foo:bar"), "x");
 				const h = session({}, { cwd });
 				for (const p of ["a.ts:1-5", "a.ts:raw", "foo:bar"]) expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+			},
+			home,
+		);
+	});
+
+	test("hostPathForms splits a delimited entry the way the host does", () => {
+		const split = { splitList: true };
+		expect(hostPathForms("a.ts;b.ts", split)).toEqual(["a.ts;b.ts", "a.ts", "b.ts"]);
+		expect(new Set(hostPathForms("a.ts,b.ts c.ts", split))).toEqual(
+			new Set(["a.ts,b.ts c.ts", "a.ts", "b.ts c.ts", "a.ts,b.ts", "c.ts", "b.ts"]),
+		);
+		expect(hostPathForms('"a.ts; b.ts"', split)).toContain("b.ts");
+		expect(hostPathForms("src/{a,b}.ts", split)).toEqual(["src/{a,b}.ts"]);
+		expect(hostPathForms("a\\;b.ts", split)).toEqual(["a\\;b.ts"]);
+		expect(hostPathForms("a.ts;;~/x", split)).toContain(`${home}/x`);
+		expect(hostPathForms("a.ts;b.ts")).toEqual(["a.ts;b.ts"]);
+	});
+
+	test("a ;, comma or space separated entry hides no part from the floor in any scope tool", async () => {
+		const h = session({});
+		const cases = [
+			["ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "yaml", paths: ["src/x.ts;~/.config/glab-cli/config.yml"] }],
+			["ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "yaml", paths: ["src/x.ts;/etc/x.conf"] }],
+			["ast_grep", { pat: "$K", lang: "yaml", paths: ["src/x.ts,~/.ssh/config"] }],
+			["grep", { pattern: "x", paths: ["src/x.ts ~/.ssh/id_rsa"] }],
+			["glob", { path: "src/*.ts;~/.ssh/*" }],
+			["read", { path: "src/x.ts;~/.ssh/id_rsa" }],
+		] as const;
+		for (const [tool, input] of cases) expect((await toolCall(h, tool, input))?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a delimited ast_edit entry reaches the denyPaths ask", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({ denyPaths: [path.join(cwd, "secret-sub")] }, { cwd });
+				h.confirmAnswer = false;
+				const r = await toolCall(h, "ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "ts", paths: ["a.ts;secret-sub/x.ts"] });
+				expect(h.confirms).toBe(1);
+				expect(r?.block).toBe(true);
+			},
+			home,
+		);
+	});
+
+	test("a two-file ast_edit entry inside the project keeps its rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const h = session({}, { cwd });
+				const r = await toolCall(h, "ast_edit", { ops: [{ pat: "a", out: "b" }], lang: "ts", paths: ["a.ts;b.ts"] });
+				expect(r).toBeUndefined();
 				expect(h.calls).toHaveLength(0);
 			},
 			home,
