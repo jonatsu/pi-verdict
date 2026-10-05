@@ -424,14 +424,32 @@ export function buildCases(fx: FixtureTree): Case[] {
 		},
 	);
 
-	cases.push({
-		label: "a braced home variable spelling only the redactor matches asks instead of reaching the classifier",
-		family: "deny-paths",
-		tool: "bash",
-		input: { command: `cat $\{HOME}/.ssh/id_rsa` },
-		config: { denyPaths: ["~/.ssh/"] },
-		expected: { layer: "protected-path" },
-	});
+	cases.push(
+		{
+			label: "a braced home variable spelling only the redactor matches asks instead of reaching the classifier",
+			family: "deny-paths",
+			tool: "bash",
+			input: { command: `cat $\{HOME}/.ssh/id_rsa` },
+			config: { denyPaths: ["~/.ssh/"] },
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "a user allow rule does not admit a braced home variable spelling of a protected path",
+			family: "deny-paths",
+			tool: "bash",
+			input: { command: `cat $\{HOME}/.pv-private/notes.txt` },
+			config: { allow: ["^cat\\b"], denyPaths: ["~/.pv-private/"] },
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "a declared base name inside a longer filename is not a protected-path match",
+			family: "deny-paths",
+			tool: "bash",
+			input: { command: "bun test tests/secrets-loader.test.ts" },
+			config: { denyPaths: [`${fx.work}/secrets`] },
+			expected: { layer: "classifier" },
+		},
+	);
 
 	// ---- user-rules (item 10) ---------------------------------------------------------
 	cases.push(

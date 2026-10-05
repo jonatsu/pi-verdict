@@ -190,7 +190,10 @@ tool_call
   │     ├─ your rules: user deny beats user allow
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
-  │     │   before user allow; classifier sees an existence hint only
+  │     │   before user allow; classifier sees an existence hint only; a call the
+  │     │   redactor matches by a spelling the tokeniser misses (${HOME}) asks here too
+  │     ├─ a scope tool's glob path is graded as spelled and by its literal prefix;
+  │     │   a globbed path never gets a rule allow, user allow or tools exemption
   │     ├─ an action whose counted text exceeds 8192 chars → ask before user allow
   │     ├─ a mutating call naming no target at all → opaque ask (ADR-0009)
   │     ├─ eval's code text: deny/denyPaths/.omp apply to the whole text, user

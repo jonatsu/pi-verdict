@@ -4621,6 +4621,7 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 			const r = await toolCall(sub, "bash", { command: `cat \${HOME}/.ssh/id_rsa` });
 			expect(r?.block).toBe(true);
 			expect(sub.calls.length).toBe(0);
+			expect(r?.reason).toContain("names a user-declared protected path");
 			expect(r?.reason).not.toContain("/.ssh/");
 		});
 	});
@@ -5151,6 +5152,22 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		expect(h.notifies.some(([m]) => m.includes("/.ssh/id_rsa"))).toBe(false);
 	});
 
+	test("a call only the wide redactor matches reaches the classifier as the marker, not the path", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-wide-"));
+		try {
+			const h = session({ denyPaths: [path.join(cwd, "secrets")] }, { cwd });
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			await toolCall(h, "bash", { command: "echo xsecrets/a" }); // no path-word boundary, so no deterministic ask
+			expect(h.confirms).toBe(0);
+			expect(h.calls).toHaveLength(1);
+			const prompt = String(h.calls[0].messages[0].content);
+			expect(prompt).toContain("<protected-path>");
+			expect(prompt).not.toContain("xsecrets/a");
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	test("the subagent second-model prompt is redacted like every other model payload", async () => {
 		setConfig({ denyPaths: ["/tmp/pv-second-model"], classifierFallbackModel: "mock/fb" });
 		const state = new SessionState(undefined, TMP_AGENT);
@@ -5618,6 +5635,16 @@ describe("redactor platform spellings", () => {
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	test("strict matching needs path-word boundaries and the wide default does not", () => {
+		const spellings = ["/work/secrets", "secrets"];
+		expect(mentionsSpelling(["bun test tests/secrets-loader.test.ts"], spellings, posix)).toBe(true);
+		expect(mentionsSpelling(["bun test tests/secrets-loader.test.ts"], spellings, posix, true)).toBe(false);
+		expect(mentionsSpelling(["cat secrets/a.txt"], spellings, posix, true)).toBe(true);
+		expect(mentionsSpelling(["cat ./secrets"], spellings, posix, true)).toBe(true);
+		expect(mentionsSpelling(["cat /work/secrets-old/a"], spellings, posix, true)).toBe(false);
+		expect(mentionsSpelling(["cat $" + "{HOME}/.ssh/k"], ["{HOME}/.ssh", "/.ssh"], posix, true)).toBe(true);
 	});
 
 	test("a Windows backslash spelling matches a base in the raw string check", () => {

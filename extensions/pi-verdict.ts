@@ -2670,6 +2670,9 @@ function classifyByRules(
 	 *  the floor above them are unchanged, and everything they do not decide falls through
 	 *  to the classifier, whose allow is then withheld by adjudicate. */
 	policyDegraded: boolean,
+	/** True when the call names a user-declared protected path through a spelling the denyPaths
+	 *  tokeniser cannot extract, such as a braced home variable. */
+	namesProtectedPath: RedactorFn = () => false,
 ): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
 	if (sp) return sp;
@@ -2740,6 +2743,15 @@ function classifyByRules(
 			verdict: "ask",
 			reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
 			detail: hit + multiTargetDetailSuffix(access),
+			askSource: "protected-path",
+		};
+	}
+	// A model that sees only a marker in place of such a call cannot judge it, and a protected path
+	// overrides the user's own allow rules (ADR-0002), so the gate asks without a model call.
+	if (namesProtectedPath(input)) {
+		return {
+			verdict: "ask",
+			reason: "call names a user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
 			askSource: "protected-path",
 		};
 	}
@@ -2976,16 +2988,23 @@ const PROTECTED_PATH_MARKER = "<protected-path>";
  *  (the denyPaths tokeniser knows only `$HOME`, never `${HOME}` — F10 — so this raw check
  *  covers what the tokeniser structurally cannot), or the home-relative tail (e.g. a
  *  `~/.ssh/` declaration's `.ssh/` tail), in both its literal and `cwd`-resolved spellings so
- *  a relative declaration still catches an absolute spelling of the same path. Over-redaction
- *  is transcript-only and harmless; under-redaction is a leak — the conservative direction is
- *  wholesale. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
+ *  a relative declaration still catches an absolute spelling of the same path. In transcript
+ *  use (the default), over-redaction is harmless and under-redaction is a leak, so the
+ *  conservative direction is wholesale. With `strict`, the raw spelling check also needs path-word
+ *  boundaries, because the verdict's protected-path ask uses that form and a false positive there
+ *  blocks a legitimate call. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
  *  privacy marker, not an injection framing (PC-review F9). Detected only literally:
  *  obfuscated spellings (command substitution, base64, archiving — ADR-0002's documented
  *  holes) are NOT redacted here; the classifier's existence hint stays the backstop for those
  *  calls (recorded residual, ADR-0002 amendment — PC-review F5b). User-message lines are
  *  deliberately never redacted — the user's own disclosure in their own message is theirs
  *  (PC-review F5c). */
-export function redactorFor(cwd: string, bases: readonly string[], platform: RedactionPlatform = HOST_REDACTION_PLATFORM): RedactorFn {
+export function redactorFor(
+	cwd: string,
+	bases: readonly string[],
+	platform: RedactionPlatform = HOST_REDACTION_PLATFORM,
+	strict = false,
+): RedactorFn {
 	const fold = (s: string): string => (platform.caseInsensitive ? s.toLowerCase() : s);
 	const spellings = new Set<string>();
 	const home = os.homedir();
@@ -3033,8 +3052,8 @@ export function redactorFor(cwd: string, bases: readonly string[], platform: Red
 			for (const token of bashPathTokens(commandForPathTokens(access.command, platform.win32))) if (hits(token)) return true;
 		// Over the string values themselves: the JSON text doubles every backslash, so a Windows spelling
 		// would never match there. The JSON check stays for nesting deeper than inputStrings reads.
-		if (mentionsSpelling(inputStrings(args), spellings, platform)) return true;
-		return mentionsSpelling([JSON.stringify(args)], spellings, platform);
+		if (mentionsSpelling(inputStrings(args), spellings, platform, strict)) return true;
+		return mentionsSpelling([JSON.stringify(args)], spellings, platform, strict);
 	};
 }
 
@@ -3053,17 +3072,38 @@ function commandForPathTokens(command: string, win32: boolean): string {
 	return win32 ? command.replace(/\\/g, "/") : command;
 }
 
+/** Characters that end or begin a path word in a command or argument. */
+const LEFT_BOUNDARY = /[\s/\\'"`=~$({;,|&:]/;
+const RIGHT_BOUNDARY = /[\s/\\'"`;,|&)<>:]/;
+
 /** Does any text contain any spelling, comparing case-insensitively and across both separator
- *  styles where the platform does? Over-matching is the safe direction for redaction. */
-export function mentionsSpelling(texts: readonly string[], spellings: Iterable<string>, platform: RedactionPlatform): boolean {
+ *  styles where the platform does? Over-matching is the safe direction for transcript redaction.
+ *  `strict` additionally requires the spelling to sit on path-word boundaries, so `secrets` does not
+ *  match inside `secrets-loader.test.ts`; the verdict uses it, because a match there is a hard ask. */
+export function mentionsSpelling(
+	texts: readonly string[],
+	spellings: Iterable<string>,
+	platform: RedactionPlatform,
+	strict = false,
+): boolean {
 	const normalize = (s: string): string => {
 		const separated = platform.win32 ? s.replace(/\\/g, "/") : s;
 		return platform.caseInsensitive ? separated.toLowerCase() : separated;
 	};
 	const haystacks = texts.map(normalize);
+	const found = (h: string, needle: string): boolean => {
+		if (!strict) return h.includes(needle);
+		const needsLeft = /^[\w.-]/.test(needle);
+		for (let at = h.indexOf(needle); at >= 0; at = h.indexOf(needle, at + 1)) {
+			const before = at === 0 ? "" : (h[at - 1] ?? "");
+			const after = h[at + needle.length] ?? "";
+			if ((!needsLeft || before === "" || LEFT_BOUNDARY.test(before)) && (after === "" || RIGHT_BOUNDARY.test(after))) return true;
+		}
+		return false;
+	};
 	for (const spelling of spellings) {
 		const needle = normalize(spelling);
-		if (haystacks.some((h) => h.includes(needle))) return true;
+		if (needle && haystacks.some((h) => found(h, needle))) return true;
 	}
 	return false;
 }
@@ -3963,7 +4003,9 @@ export async function adjudicate(
 	call: { toolName: string; input: Record<string, unknown> },
 	env: AdjudicateEnv,
 ): Promise<Verdict> {
-	let rule = classifyByRules(
+	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
+	// the wide transcript redactor below, where over-redaction is harmless.
+	const rule = classifyByRules(
 		call.toolName,
 		call.input,
 		env.cwd,
@@ -3971,27 +4013,13 @@ export async function adjudicate(
 		state.prot,
 		state.anchoredDenyPathBases(env.cwd),
 		state.policyDegraded, // item 6c (Phase 6): suspend user allow/tools while the policy is degraded (ADR-0010)
+		redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd), HOST_REDACTION_PLATFORM, true),
 	);
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") {
 		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI)
 			return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
 		return { verdict: "deny", reason: rule.reason ?? "", source: "rule", degraded: false };
-	}
-
-	// One redactor per adjudication, built from cwd + the anchored denyPaths bases, passed to every
-	// model call that renders a transcript from this session's branch (first layer, cascade
-	// fallback, and the EXPLAIN-GATE path, which builds its own from state).
-	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
-	// The redactor also catches spellings the denyPaths tokeniser cannot extract, such as \`\${HOME}\`.
-	// A model that sees only a marker in place of such a call cannot judge it, and the gate already
-	// knows the call names a protected path, so it asks without a model call.
-	if (rule.verdict === "gray" && redact(call.input)) {
-		rule = {
-			verdict: "ask",
-			reason: "call names a user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
-			askSource: "protected-path",
-		};
 	}
 
 	// #62: the audit surface widens to protected-path asks (their user answers grade the
@@ -4056,6 +4084,14 @@ export async function adjudicate(
 	// fail-closed path shares the same deadline with the normal path.
 	const deadlineAt = Date.now() + (env.adjudicationBudgetMs ?? ADJUDICATION_BUDGET_MS);
 	const resolved = env.getModel();
+	// One redactor per adjudication, built from cwd + the anchored denyPaths bases, passed to every
+	// model call that renders a transcript from this session's branch (first layer, cascade
+	// fallback, and the EXPLAIN-GATE path, which builds its own from state).
+	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
+	// The strict check above decides the deterministic ask; the wide one still keeps a protected
+	// path out of every model payload, so a call it matches reaches a model only as the marker.
+	// The audit record keeps the raw action line (ADR-0002: audit never leaves the machine).
+	const modelActionLine = redact(call.input) ? PROTECTED_PATH_MARKER : actionLine;
 	if (!resolved) {
 		const reason = "no classifier model available (fail-closed)";
 		// #71: a fail-closed default deny is not a negative judgment. Record the applied
@@ -4066,7 +4102,7 @@ export async function adjudicate(
 			null,
 			{ kind: "fail-closed" },
 			state.userRules.denyPaths.length > 0,
-			actionLine,
+			modelActionLine,
 			redact,
 			deadlineAt,
 		);
@@ -4134,7 +4170,7 @@ export async function adjudicate(
 		env.signal,
 		env.complete,
 		resolved.model,
-		actionLine,
+		modelActionLine,
 		resolved.thinking,
 		state.userRules.denyPaths.length > 0,
 		CLASSIFIER_TIMEOUT_MS,
@@ -4154,7 +4190,7 @@ export async function adjudicate(
 					demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null,
 					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
 					state.userRules.denyPaths.length > 0,
-					actionLine,
+					modelActionLine,
 					redact,
 					deadlineAt,
 				)

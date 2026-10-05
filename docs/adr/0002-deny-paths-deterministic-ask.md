@@ -230,9 +230,11 @@ caller — F10):
   arguments *before* `transcriptSafe` caps the line — a path cut at the 600/400
   boundary would otherwise evade every base form. A hit replaces the whole line
   with the fixed marker `<protected-path>`, a neutral privacy marker rather than
-  an injection framing (plan-review F9). Over-redaction is transcript-only and
+  an injection framing (plan-review F9). In the transcript, over-redaction is
   explicitly accepted; under-redaction would be the leak, so the conservative
-  direction is wholesale.
+  direction is wholesale. The call-level ask below uses a stricter form of the same
+  predicate, which also requires path-word boundaries on the raw spelling check, because
+  a false positive there blocks a legitimate call.
 - **Recorded residual** (plan-review F5b): detection is literal and inherits
   this ADR's own documented obfuscation holes — a protected path behind command
   substitution, base64, or an archive is not redacted, because redaction sees
@@ -240,8 +242,9 @@ caller — F10):
   classifier's existence hint remains the backstop for exactly those calls
   (which is why item 3 of this phase adds no new prompt text).
 - **The call under review asks instead of being classified blind** (amendment): when the
-  predicate matches the call itself and no earlier layer decided, `adjudicate` returns a
-  deterministic protected-path ask (headless: deny) and makes no model call. The gate already
+  strict predicate matches the call itself, `classifyByRules` returns a deterministic
+  protected-path ask (headless: deny) right after the `denyPaths` hit check, so a user `allow`
+  rule or `tools` entry cannot override it, and `adjudicate` makes no model call. The gate already
   knows the call names a protected path, such as a `${HOME}` spelling the tokeniser misses, and a
   model that sees only the marker in place of the action cannot judge it. The ask carries no
   `detail`, because no declared base was matched.
