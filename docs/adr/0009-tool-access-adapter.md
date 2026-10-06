@@ -355,3 +355,14 @@ before the allow is read, so the allow never overrides them. A pattern that can 
 (`../**`, `~/**`, `/etc/**`) or a `scheme://` URL stays gray. `grep`, `ast_grep` and `ast_edit` read or rewrite contents
 and keep the glob rule unchanged, and a user `allow` rule or `tools` entry still skips every glob
 target, `glob` included.
+
+*Accepted residuals.* The amendment covers the spellings the host documents and an agent plausibly
+writes; these are left alone on purpose.
+- The Win32 forward-slash extended-length prefixes (`//?/C:/x`) are not stripped, because an agent does
+  not produce them.
+- A sqlite query string (`~/vault.db?limit=5`) is not peeled, so it can miss a `denyPaths` entry for the
+  database file.
+- A literal file named like `x.png?q=a` is graded as `x.png` as well, which can ask or deny where the
+  host would have read the literal name.
+- A deliberately obfuscated spelling is left to the classifier and to the future OS-level sandboxing
+  (`docs/plans/os-level-sandboxing-draft.md`); the gate does not chase every way to write a path.
