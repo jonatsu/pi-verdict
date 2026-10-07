@@ -2,12 +2,6 @@
 
 Open work for pi-verdict, grouped by kind and ordered by priority within each group. Prune an item when it is done.
 
-## Release
-
-- [ ] **Create the GitHub Release for `v0.18.0`** from your own terminal (`gh release` is blocked for agents by the deny floor). The bump commit `7e04851` and the annotated tag `v0.18.0` are pushed (2026-10-07). Publishing the release fires `publish.yml`, which re-runs typecheck and tests on the tag and publishes `@jonatsu/pi-verdict` to GitHub Packages. Two preconditions, checked 2026-10-07: the fork has never run a workflow (no runs at all, though the API reports Actions enabled), so first open https://github.com/jonatsu/pi-verdict/actions and enable workflows for the fork; and `gh` has no default repository in this checkout (remotes `origin` and `frapetti`), so name the repository explicitly:
-  `awk '/^## \[0.18.0\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md > /tmp/notes-0.18.0.md && gh release create v0.18.0 -R jonatsu/pi-verdict --verify-tag --title "pi-verdict 0.18.0 — tool-access adapter + host path resolution" --notes-file /tmp/notes-0.18.0.md`
-  `v0.17.0` stays a tag with no release: its `publish.yml` predates the `@jonatsu` scope fix (`0f0ab53`), so it could not publish.
-
 ## Security and correctness
 
 - [ ] **Diagnose reviewer subagents blocked silently in auto-mode** (reported 2026-10-05). The user gets no prompt and cannot let the subagent continue. Code trace at `a0cbd2f`: a subagent's ask goes to the root session's UI (`rootUi`, set only by a root `session_start` with UI and cleared on `session_shutdown`); with no `rootUi` or `subagentGate: "auto"`, `resolveAskWithoutHuman` denies every non-classifier ask and consults `classifierFallbackModel` for classifier asks (deny when none is configured), and the block notice goes to the subagent's invisible UI. Start from the user's audit logs (`<agentDir>/verdicts/`) and config: is `classifierFallbackModel` set, and is `rootUi` null (separate module instance, or cleared by shutdown ordering on `/new`/`/resume`)?
