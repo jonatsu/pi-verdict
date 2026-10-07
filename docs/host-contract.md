@@ -46,3 +46,16 @@ omp 18.5 does not re-export `DynamicBorder`, `keyHint` or `rawKeyHint` from
 by its index), so the rich approve dialog uses local, theme-aware substitutes
 (`extensions/pi-verdict.ts`, `DialogBorder`/`dialogKeyHint`/`dialogRawKeyHint`) rather than
 depend on a host export that may not exist.
+
+## Mouse clicks and the status widget
+
+`buildApproveDialog` parses SGR left-clicks: `dialogLineAtRow` maps the click row through the host's
+`children`, `terminal.rows` and `viewportTop`. A click highlights an option, and a second click on the same
+mouse-highlighted row confirms it; any keyboard input disarms the highlight. The dialog never writes
+mouse-mode sequences itself, so it is inert on a host that does not forward mouse input; pi 0.84.3's
+`TuiAltScreen` consumes mouse input before the dialog sees it.
+
+During a gray-zone model call the `tool_call` handler shows a one-row status widget
+(`ui.setWidget("verdict", …)`), fed by the UI-free `AdjudicateEnv.onPhase` hook, and clears it before
+presenting the verdict. The row carries the phase, the tool name and the model id only, never command or
+path text (ADR-0002).

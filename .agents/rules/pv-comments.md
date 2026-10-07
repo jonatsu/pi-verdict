@@ -13,7 +13,8 @@ say it, rename instead. Silence is a valid result.
 
 ## Shape
 
-- Write one to three plain sentences, and prefer one line.
+- Write one to three plain sentences in plain text, and prefer one line. Code spans in backticks are fine;
+  Markdown emphasis is not.
 - Give an exported symbol a doc comment that states its contract: what it returns, and which way it fails.
 - Name the fail direction on a security-relevant branch ("fails closed: an unreadable target asks"), and the
   protection it keeps ("no protected path reaches the classifier, ADR-0002").
