@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
-.claude/
+
+# Claude Code local state; the rule symlinks into .agents/rules/ are tracked
+.claude/*
+!.claude/rules/
 
 # dependencies
 node_modules/
