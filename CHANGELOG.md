@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/).
 
-## [Unreleased]
+## [0.18.0] - 2026-10-07
+
+Changes since `v0.17.0`: the tool-access adapter round ([ADR-0009](docs/adr/0009-tool-access-adapter.md), [ADR-0010](docs/adr/0010-policy-degraded.md)), the fixes from its review, and host path resolution, which grades each path the way omp 18.6.1 resolves it.
 
 ### Added
 
