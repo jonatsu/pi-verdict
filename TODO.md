@@ -4,7 +4,9 @@ Open work for pi-verdict, grouped by kind and ordered by priority within each gr
 
 ## Release
 
-- [ ] **Publish the next release** (checked 2026-10-07). No GitHub Release exists after `v0.15.0`, though the `v0.17.0` tag is pushed (`889c57a`, 2026-10-05). That tag cannot publish as is: a `release` event runs `publish.yml` as it stands at the tagged commit, and at `889c57a` it still names the `@frapetti-dev` scope while `package.json` is `@jonatsu/pi-verdict` (the scope fix, `0f0ab53`, came after the tag). Everything since the tag (the tool-access round, the review fixes, host path resolution) sits under `## [Unreleased]` in `CHANGELOG.md`. Recommended: leave `v0.17.0` as a tag, and cut `0.18.0` from current `main` (bump commit, CHANGELOG section, annotated tag, GitHub Release). `gh release` is blocked for agents by the deny floor, so the user runs that step. The deployment installs via the git spec, so the package publish only matters for GitHub Packages consumers.
+- [ ] **Create the GitHub Release for `v0.18.0`** from your own terminal (`gh release` is blocked for agents by the deny floor). The bump commit `7e04851` and the annotated tag `v0.18.0` are pushed (2026-10-07). Publishing the release fires `publish.yml`, which re-runs typecheck and tests on the tag and publishes `@jonatsu/pi-verdict` to GitHub Packages:
+  `awk '/^## \[0.18.0\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md > /tmp/notes-0.18.0.md && gh release create v0.18.0 --verify-tag --title "pi-verdict 0.18.0 — tool-access adapter + host path resolution" --notes-file /tmp/notes-0.18.0.md`
+  `v0.17.0` stays a tag with no release: its `publish.yml` predates the `@jonatsu` scope fix (`0f0ab53`), so it could not publish.
 
 ## Security and correctness
 
