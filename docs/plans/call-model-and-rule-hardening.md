@@ -1,8 +1,9 @@
 # Call model, rule hardening and measurement — plan
 
 **Status.** Approved by the user on 2026-10-05, not yet executed: items 1-8, item 1's shell-expansion amendment
-(1a), and items 9-12 in the delivery order below. Item 9's ADR is reviewed by the user before any of its code is
-written; see "Decisions". The plan is
+(1a), and items 9-12. On 2026-10-07 the user reordered delivery: item 12 (the file split) now comes first, along
+the file's existing sections, and item 9 follows the small Part A fixes; see "Delivery" and decision 11. Item 9's
+ADR is reviewed by the user before any of its code is written; see "Decisions". The plan is
 independent of `docs/plans/tool-access-hardening.md` for items 1-8 and 11, and builds on it for items 9, 10 and 12;
 see "Interaction with the tool-access plan".
 
@@ -56,10 +57,10 @@ flowchart LR
   P2 --> I9
   I9 --> I10
   P45 --> I10
-  I9 --> I12s
+  I12s -.->|"split first (2026-10-07)"| I9
 ```
 
-Solid arrows are hard dependencies. The dotted arrow is a recommended order.
+Solid arrows are hard dependencies. Dotted arrows are a recommended order.
 
 ## Context
 
@@ -599,7 +600,11 @@ This settles the tool-access plan's open loader question.
   - UI (dialog, footer).
 
   `extensions/jev-adapter.ts` stays where it is.
-- **Order.** Split after item 9, one module per commit, by mechanical moves with no behaviour change and probe parity.
+- **Order.** Split first, before item 9 (reordered 2026-10-07; the file had grown to 6,285 lines). Cut along the
+  file's existing banner sections, one module per commit, by mechanical moves with no behaviour change and probe
+  parity. The call-model module does not exist yet; item 9 creates it inside the split layout, and may move code
+  between modules when it redraws a seam. Re-verify the loader facts above against the installed omp (18.6.1 on
+  2026-10-07) before the first move.
 - **Module-level state.** Move it into `SessionState` or an injected platform object (home, case-insensitivity,
   realpath), so that tests can vary it.
 
@@ -640,20 +645,29 @@ Each commit carries its failing-before tests, its probe cases with markers remov
 and a regenerated `docs/coverage.md`. Refactor commits (item 9 steps 1, 2, 4 and 5, and all of item 12) instead carry
 probe parity and no CHANGELOG entry, unless the step's text names a visible change.
 
-1. `fix(rules): allow rules grade their operands and git's outside reach (items 1-2)`, with item 1a, the ADR-0008
-   amendment and BREAKING notes.
+The order below was set by the user on 2026-10-07 (decision 11). Two pieces of work outside this plan run around
+it, both tracked in `TODO.md`: the silent subagent-block diagnosis comes before step 1, and the simplify-then-recomment
+pass from the tool-access round's review runs module by module between steps 1 and 2.
+
+1. Item 12, in M-sized `refactor(layout): …` commits along the file's existing sections. The first commit pins the
+   directory-level self-protection.
 2. `fix(floor): gcloud S0 home, macOS raw disks (items 3-4)`.
 3. `fix(floor): git stash clear tripwire (item 5)`.
 4. `fix(floor): environment and history exfiltration tripwire (item 6a)`.
-5. `feat(audit): compact rule-verdict records and a replay tool (item 11)`. Recommended before commit 6.
-6. `feat(rules): built-in fast path for read-only inspection commands (item 7)`, with its new ADR. It lands after
-   commit 1.
-7. `feat(classifier): name weakened transport security (item 8)`.
-8. Item 9: first its ADR (`docs(adr): …`), reviewed by the user; then five commits (`refactor(gate): …` for steps 1,
-   2, 4 and 5; `fix(paths): …` for step 3).
+5. `fix(rules): allow rules grade their operands and git's outside reach (items 1-2)`, with item 1a, the ADR-0008
+   amendment and BREAKING notes. Check item 1a's home expansion against `expandHostPath`/`hostPathForms`, which
+   landed on 2026-10-07, and reuse them rather than adding a second expansion.
+6. `feat(audit): compact rule-verdict records and a replay tool (item 11)`. It is the safety net for step 7 and
+   the evidence base for step 8.
+7. Item 9: first its ADR (`docs(adr): …`), reviewed by the user; then five commits (`refactor(gate): …` for steps 1,
+   2, 4 and 5; `fix(paths): …` for step 3). It includes the differential tests against omp's own path code that
+   `TODO.md`'s rule-engine item proposes.
+8. `feat(rules): built-in fast path for read-only inspection commands (item 7)`, with its new ADR, measured with
+   step 6's replay; then `feat(classifier): name weakened transport security (item 8)`.
 9. `feat(gate): follow session-written code into its execution (item 10)`, after item 9.
-10. Item 12, in M-sized `refactor(layout): …` commits, after item 9. The first commit pins the directory-level
-    self-protection.
+
+OS-level sandboxing (`docs/plans/os-level-sandboxing-draft.md`) is a separate track. Its first branch, documenting
+how to run omp inside an existing sandbox, can land at any point; a built-in sandbox waits for item 9.
 
 The shared verification set matches the tool-access plan's: `bun run typecheck`, `mise exec -- biome ci .`,
 `bun test`, `bun run probe` (the existing cases never regress), and `bun run coverage && git diff --exit-code
@@ -686,3 +700,9 @@ Approved by the user later on 2026-10-05, after the merge:
    research recorded in item 10.
 10. **Item 12's layout: `extensions/pi-verdict/index.ts` with sibling modules.** **Approved.** A `lib/` directory
     would split the shipped code across two trees in `files`, provenance and self-protection.
+
+Approved by the user on 2026-10-07:
+
+11. **Delivery reordered: item 12 first, then items 3-6, 1-2, 11, 9, 7-8 and 10.** **Approved.** This supersedes
+    decision 7's "item 12 last". The file had reached 6,285 lines, and every later item is cheaper to write and
+    review in smaller modules. The cost is that item 9 may move some code a second time when it redraws a seam.
