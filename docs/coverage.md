@@ -92,9 +92,9 @@ Total cases: 180.
 | user-allow | git output flag writes | bash | classifier |  |  |  |  | ref=arch-F2 |
 | tool-access | multi-header edit: second header targets an S0 path | edit | rule |  | S0 |  |  |  |
 | tool-access | multi-header edit: both headers in-cwd allows | edit | allow |  |  |  |  |  |
-| tool-access | edit header with a placeholder tag still targets its S0 path | edit | rule |  | S0 |  |  | ref=ADR-0009 |
-| tool-access | edit header with trailing whitespace still targets its S0 path | edit | rule |  | S0 |  |  | ref=ADR-0009 |
-| tool-access | edit header with an apply-patch prefix still targets its S0 path | edit | rule |  | S0 |  |  | ref=ADR-0009 |
+| tool-access | edit header with a placeholder tag still targets its .git metadata path | edit | rule |  | .git metadata |  |  | ref=ADR-0009 |
+| tool-access | edit header with trailing whitespace still targets its .git metadata path | edit | rule |  | .git metadata |  |  | ref=ADR-0009 |
+| tool-access | edit header with an apply-patch prefix still targets its .git metadata path | edit | rule |  | .git metadata |  |  | ref=ADR-0009 |
 | tool-access | edit header behind an envelope marker still targets its .git metadata path | edit | rule |  | .git metadata |  |  | ref=ADR-0009 |
 | tool-access | write to a bracketed path with trailing whitespace is graded as the .git metadata file it names | write | rule |  | .git metadata |  |  | ref=ADR-0009 |
 | tool-access | pathless edit with no parseable header stays opaque | edit | rule-ask |  |  |  |  |  |
