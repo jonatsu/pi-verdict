@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 // is computed from the environment at load, so PI_CODING_AGENT_DIR / XDG_CONFIG_HOME must be set
 // first. This is the "test cases that intentionally exercise module loading boundaries"
 // exception; the specifier is a literal only because no runtime choice exists.
-import type { AdjudicateEnv, SessionState, Verdict } from "../extensions/pi-verdict.ts";
+import type { AdjudicateEnv, SessionState, Verdict } from "../extensions/pi-verdict/index.ts";
 import { buildCases, type Case, withAgentDir } from "./cases.ts";
 import { buildFixtures, cleanupFixtures, type FixtureTree } from "./fixtures.ts";
 
@@ -203,7 +203,7 @@ async function main(): Promise<void> {
 
 	fx = buildFixtures(agentDir);
 	process.env.XDG_CONFIG_HOME = fx.xdg;
-	ext = (await import("../extensions/pi-verdict.ts")) as Extension;
+	ext = (await import("../extensions/pi-verdict/index.ts")) as Extension;
 	const consumerPolicy = resolveConsumerPolicy();
 
 	const all = buildCases(fx).map((c) => withAgentDir(c, agentDir));

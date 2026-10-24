@@ -30,10 +30,10 @@ They condense the global `coding-standards` skill for this repository and win wh
 
 ## Architecture & Data Flow
 
-Two independent files in `extensions/` (no `src/`, no build step; TypeScript is shipped as-is). `package.json` → `"pi": {"extensions": ["./extensions"]}` makes the host auto-load **both**. `pi-verdict.ts` is one large file; splitting it into `extensions/pi-verdict/` modules is plan item 12, next in `TODO.md`.
+Two independent extensions in `extensions/` (no `src/`, no build step; TypeScript is shipped as-is). `package.json` → `"pi": {"extensions": ["./extensions"]}` makes the host auto-load **both**: it scans one level and loads `jev-adapter.ts` and `pi-verdict/index.ts`, never a sibling module. `pi-verdict/index.ts` is one large file; splitting it into sibling modules is plan item 12, next in `TODO.md`. Never add `extensions/index.ts` or a `package.json` inside `extensions/pi-verdict/`.
 
-- `extensions/pi-verdict.ts`. Default export `autoMode(pi, deps: AutoModeDeps = {})`.
-- `extensions/jev-adapter.ts`. Default export `jevAdapter(pi)`. Registers provider `typesafe` / model `typesafe/jev-latest` (non-generative "typed decision" classifier backend, ADR-0003). Inert if `pi.registerProvider` is absent. `pi-verdict.ts` value-imports helpers from it but does not load it as an extension.
+- `extensions/pi-verdict/index.ts`. Default export `autoMode(pi, deps: AutoModeDeps = {})`.
+- `extensions/jev-adapter.ts`. Default export `jevAdapter(pi)`. Registers provider `typesafe` / model `typesafe/jev-latest` (non-generative "typed decision" classifier backend, ADR-0003). Inert if `pi.registerProvider` is absent. `pi-verdict/index.ts` value-imports helpers from it (`../jev-adapter.ts`) but does not load it as an extension.
 
 **Host hooks** (all inside `autoMode`): flags `auto-mode` (default on), `auto-mode-model`, `auto-mode-debug` (also env `PI_AUTO_MODE_DEBUG=1`); `session_start` (project-trust prompt, `SessionState.reset()`, shortcut registration, audit prune); `tool_call` (the gate); commands `/automode` (on|off|status) and `/verdict` (interactive config editor, needs UI); toggle shortcut (default `ctrl+shift+a`).
 
@@ -58,7 +58,7 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 
 | Path | Purpose |
 | --- | --- |
-| `extensions/` | Shipped runtime code (the two files above) |
+| `extensions/` | Shipped runtime code (the two extensions above) |
 | `tests/` | `bun:test` suites, one per extension file |
 | `probe/` | The shared gate-testing contract: `cases.ts` (the case table), `probe.ts` (three-run runner), `fixtures.ts`, `consumer-policy.json`, `README.md`. Dev artifact; not shipped |
 | `tools/` | `provenance.ts`, `coverage.ts` (generates `docs/coverage.md`), `release-check.ts`. Dev artifacts; not shipped |
@@ -96,7 +96,7 @@ bun run release-check       # package.json version == annotated tag v<version> (
 
 ## Important Files
 
-- `extensions/pi-verdict.ts` — gate: `adjudicate`, `classifyByRules`, `toolAccess`, `hostPathForms`, `SessionState`, `presentVerdict`, `USER_CONFIG_TEMPLATE`, `DEFAULT_ALLOWED_TOOLS`, `autoMode`.
+- `extensions/pi-verdict/index.ts` — gate: `adjudicate`, `classifyByRules`, `toolAccess`, `hostPathForms`, `SessionState`, `presentVerdict`, `USER_CONFIG_TEMPLATE`, `DEFAULT_ALLOWED_TOOLS`, `autoMode`.
 - `extensions/jev-adapter.ts` — jev provider/transport (env `PI_VERDICT_JEV_TRANSPORT` = `openrouter|typesafe`, `PI_VERDICT_JEV_URL`, keys `OPENROUTER_API_KEY` / `TYPESAFE_API_KEY`).
 - `package.json` — `files` whitelist (a new runtime file under `extensions/` MUST be added or it won't publish), version, peer dep `@earendil-works/pi-coding-agent >=0.84.0` (optional; dev-pinned 0.84.3).
 - `tsconfig.json` — `paths` maps the pi package to `node_modules/.../dist/index.d.ts`.
@@ -135,14 +135,14 @@ Keep docs in sync with functional changes:
 
 - Never write `<agentDir>/config/pi-verdict.json` or an installed copy: they are the user's live gate, and the gate itself denies those writes.
 - On omp, the live gate is the git-spec install in `~/.omp/plugins`, pinned by commit in the user's agent-setup repository (`~/src/agent-setup`, `agents/omp/pi-verdict-pin.json`), which also deploys the policy file. A release reaches the user only through a pin bump there; coordinate it with that repository's session.
-- On pi, the user tests a build by copying `extensions/pi-verdict.ts` and `extensions/jev-adapter.ts` into `~/.pi/agent/extensions/` and restarting pi.
+- On pi, the user tests a build by copying the `extensions/pi-verdict/` directory and `extensions/jev-adapter.ts` into `~/.pi/agent/extensions/` and restarting pi. Delete a stale `~/.pi/agent/extensions/pi-verdict.ts` first, or two gates load.
 
 ## Smoke-testing a build without touching the installed copy
 
 Spawn a sub-instance that loads only the repo copy, against a throwaway agent dir (never the live `~/.omp/agent`):
 
 - Create a temp agent dir containing `config/pi-verdict.json` (test config) plus copies of `agent.db`, `config.yml`, `models.db` and `models.yml` from `~/.omp/agent`; `models.yml` fetches the OpenRouter key from OpenBao (`bao kv get`), so the key reaches only the omp process.
-- Run from a throwaway project dir: `PI_CODING_AGENT_DIR=<tmp> omp -p --no-session --no-title --no-extensions -e <repo>/extensions/pi-verdict.ts --tools read,bash --no-lsp "<prompt>"`. `-p` has no UI, so asks degrade to deny — this exercises the headless path only; interactive dialogs and `/verdict` are covered by the stub tests.
+- Run from a throwaway project dir: `PI_CODING_AGENT_DIR=<tmp> omp -p --no-session --no-title --no-extensions -e <repo>/extensions/pi-verdict/index.ts --tools read,bash --no-lsp "<prompt>"`. `-p` has no UI, so asks degrade to deny — this exercises the headless path only; interactive dialogs and `/verdict` are covered by the stub tests.
 - Delete the temp dir afterwards.
 
 ## Release

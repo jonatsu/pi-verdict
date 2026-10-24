@@ -25,7 +25,7 @@ import jevAdapter, {
 	verdictText,
 	wireModel,
 } from "../extensions/jev-adapter.ts";
-import { adjudicate, SessionState } from "../extensions/pi-verdict.ts";
+import { adjudicate, SessionState } from "../extensions/pi-verdict/index.ts";
 
 const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-verdict-jev-test-"));
 const SAVED_OR_KEY = process.env.OPENROUTER_API_KEY;

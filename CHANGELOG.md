@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (copy installs only)**: the gate moves from `extensions/pi-verdict.ts` to `extensions/pi-verdict/index.ts`, the first step of splitting it into modules (plan item 12). The module directory `extensions/pi-verdict/` and `extensions/jev-adapter.ts` are the shipped files; `package.json` `main` and `files` follow. Git-spec and `npm` installs (`pi install`, `omp plugin install`) need nothing. A copy install must delete `<agentDir>/extensions/pi-verdict.ts` first, then copy the `extensions/pi-verdict/` directory and `jev-adapter.ts` into `<agentDir>/extensions/`: a stale single-file copy beside the new directory loads a second gate (pi) or shadows the new one (omp). `pi --extension` takes `./extensions/pi-verdict/index.ts`. Self-protection ([ADR-0005](docs/adr/0005-self-protection-layer-restored.md)) covers the module directory by prefix and bash signature, and keeps protecting the sibling `<agentDir>/extensions/jev-adapter.ts` it imports; `tools/provenance.ts` hashes every committed file under `extensions/`.
+
 ## [0.18.1] - 2026-10-24
 
 Patch release for omp 18.12.6: path spellings the new host version resolves, its SQLite credential store, and two subagent auto-resolve holes.

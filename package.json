@@ -4,9 +4,9 @@
 	"description": "A minimal permission gate for Pi in the style of Claude Code's auto mode (fork of @frapetti-dev/pi-verdict)",
 	"author": "jonatsu (fork of frapetti-dev, https://github.com/frapetti-dev)",
 	"type": "module",
-	"main": "extensions/pi-verdict.ts",
+	"main": "extensions/pi-verdict/index.ts",
 	"files": [
-		"extensions/pi-verdict.ts",
+		"extensions/pi-verdict/",
 		"extensions/jev-adapter.ts",
 		"README.md",
 		"LICENSE"

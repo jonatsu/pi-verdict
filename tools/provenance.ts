@@ -9,14 +9,22 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 
-const FILES = ["extensions/pi-verdict.ts", "extensions/jev-adapter.ts"];
-
 function main(): void {
 	const git = (args: string[]): Buffer => execFileSync("git", args, { maxBuffer: 64 * 1024 * 1024 });
 	const head = git(["rev-parse", "HEAD"]).toString("utf8").trim();
 	console.log(`HEAD ${head}`);
+	// Every committed blob under extensions/, so a new module joins the pin without an edit here.
+	const files = git(["ls-tree", "-r", "--name-only", "HEAD", "--", "extensions/"])
+		.toString("utf8")
+		.split("\n")
+		.filter((file) => file !== "");
+	if (files.length === 0) {
+		console.error("provenance: no files under extensions/ at HEAD");
+		process.exitCode = 1;
+		return;
+	}
 	let dirty = false;
-	for (const file of FILES) {
+	for (const file of files) {
 		let blob: Buffer;
 		try {
 			blob = git(["cat-file", "blob", `HEAD:${file}`]);

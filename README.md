@@ -58,7 +58,7 @@ pi install npm:@jonatsu/pi-verdict
 omp plugin install npm:@jonatsu/pi-verdict
 
 # or directly from git — try it once
-pi --extension ./extensions/pi-verdict.ts
+pi --extension ./extensions/pi-verdict/index.ts
 
 ```
 

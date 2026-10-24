@@ -1,9 +1,10 @@
 /** Revised: AST walk checks the whitelist only for named nodes; (a) classify by structure; replay the gray zone with pi-permission's real whitelist */
+// Note: reads the gate source as text. The gate is split into extensions/pi-verdict/ modules and the allowlist sliced out here was removed, so this script no longer runs as is.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const SRC = fs.readFileSync(path.join(process.cwd(), "extensions/pi-verdict.ts"), "utf8");
+const SRC = fs.readFileSync(path.join(process.cwd(), "extensions/pi-verdict/index.ts"), "utf8");
 const start = SRC.indexOf("const BASH_SAFE_UNCONDITIONAL");
 const end = SRC.indexOf("// ============================================================================\n// Rule layer: file-path sensitivity (from research report §4.4)");
 const js = new Bun.Transpiler({ loader: "ts" }).transformSync(SRC.slice(start, end));

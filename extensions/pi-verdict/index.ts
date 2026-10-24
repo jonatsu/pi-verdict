@@ -86,7 +86,7 @@ import {
 	streamDecisions,
 	TRANSPORT_DEFAULTS,
 	USER_RULES_HEADER,
-} from "./jev-adapter";
+} from "../jev-adapter.ts";
 
 // ============================================================================
 // Rule layer: bash
@@ -2812,7 +2812,7 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 //   - <agentDir>/config/pi-verdict.json (the gate's decision input)
 //   - <agentDir>/config/pi-verdict-trust.json (project-trust decisions)
 //   - the installed extension copy, with its sibling jev-adapter.ts in the single-file
-//     form (pi under <agentDir>/extensions/, omp under
+//     and module-directory forms (pi under <agentDir>/extensions/, omp under
 //     plugins/node_modules/<pkg>/ in its config root — the install forms listed
 //     with resolveAgentDir; dev checkouts are not in scope)
 //   - <agentDir>/verdicts/ (write + read)
@@ -2825,7 +2825,7 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 // guarantee against a direct rewrite outside a tool call.
 // ============================================================================
 
-/** The module `pi-verdict.ts` value-imports from its own directory (`./jev-adapter`). */
+/** The module the gate value-imports from the extensions root beside it (`jev-adapter.ts`). */
 const JEV_ADAPTER_FILE = "jev-adapter.ts";
 
 interface ProtectedSet {
@@ -2859,8 +2859,8 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict.json"))) exact.add(f);
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"))) exact.add(f);
 
-	// Installed copy target: single-file form → the file itself (exact); npm directory
-	// form → the package root (prefix). extRoot and ownFile are matched on both their
+	// Installed copy target: single-file form → the file itself (exact); module-directory
+	// and npm directory forms → the directory or package root (prefix). extRoot and ownFile are matched on both their
 	// lexical and realpath forms so a symlinked directory (e.g. macOS /var →
 	// /private/var) cannot misalign the set.
 	const extTargets = new Set<string>();
@@ -2883,12 +2883,22 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir.
 				// A single-file copy also protects the sibling adapter module it imports, since rewriting
 				// that changes the gate as surely as rewriting the main file.
-				const targets = singleFile
-					? [own, path.join(path.dirname(own), JEV_ADAPTER_FILE)]
-					: [path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1))];
-				for (const f of targets.flatMap((target) => baseForms(target))) {
-					(singleFile ? exact : prefixes).add(f);
-					extTargets.add(f);
+				const targets: { file: string; isExact: boolean }[] = singleFile
+					? [
+							{ file: own, isExact: true },
+							{ file: path.join(path.dirname(own), JEV_ADAPTER_FILE), isExact: true },
+						]
+					: [{ file: path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1)), isExact: false }];
+				// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
+				// imports the adapter from the root beside it, outside the directory prefix.
+				if (!singleFile && segs.length === 2 && !segs[0].startsWith("@") && path.basename(extRoot) === "extensions") {
+					targets.push({ file: path.join(extRoot, JEV_ADAPTER_FILE), isExact: true });
+				}
+				for (const { file, isExact } of targets) {
+					for (const f of baseForms(file)) {
+						(isExact ? exact : prefixes).add(f);
+						extTargets.add(f);
+					}
 				}
 			}
 		}

@@ -40,7 +40,7 @@ import autoMode, {
 	setTmpdirBasesForTests,
 	setXdgConfigRootsForTests,
 	shellWords,
-} from "../extensions/pi-verdict.ts";
+} from "../extensions/pi-verdict/index.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -3822,7 +3822,10 @@ describe("self-protection layer (ADR-0005)", () => {
 			expect(isProtectedWritePath(path.join(dir, "shell.ts"), "/proj", prot)).toBe(true);
 			expect(isProtectedWritePath(path.join(dir, "ui", "dialog.ts"), "/proj", prot)).toBe(true);
 			expect(prot.bashPatterns.some((re) => re.test(`cp x ${path.join(dir, "shell.ts")}`))).toBe(true);
-			// the directory only, not its siblings in the extensions root
+			// the sibling adapter the gate imports, by exact path and by bash signature, but no other sibling
+			const adapter = path.join(agentDir, "extensions", "jev-adapter.ts");
+			expect(isProtectedWritePath(adapter, "/proj", prot)).toBe(true);
+			expect(prot.bashPatterns.some((re) => re.test(`cp x ${adapter}`))).toBe(true);
 			expect(isProtectedWritePath(path.join(agentDir, "extensions", "other.ts"), "/proj", prot)).toBe(false);
 		});
 	});
@@ -3837,6 +3840,22 @@ describe("self-protection layer (ADR-0005)", () => {
 			expect(isProtectedWritePath(path.join(pkg, "package.json"), "/proj", prot)).toBe(true);
 			expect(prot.bashPatterns.some((re) => re.test(`cp x ${path.join(pkg, "extensions", "pi-verdict", "shell.ts")}`))).toBe(true);
 		});
+	});
+
+	test("a write into the module directory is denied when the agent dir's extensions is a symlink to the repo", async () => {
+		// The running copy lives at its realpath in the repo; the agent dir reaches it through the link.
+		const link = path.join(TMP_AGENT, "extensions");
+		fs.symlinkSync(path.join(import.meta.dir, "..", "extensions"), link);
+		try {
+			const h = session({});
+			for (const rel of ["pi-verdict/shell.ts", "pi-verdict/index.ts", "jev-adapter.ts"]) {
+				const r = await toolCall(h, "write", { path: path.join(link, rel), content: "x" });
+				expect(r?.block).toBe(true);
+				expect(String(r?.reason)).toContain("self-protection");
+			}
+		} finally {
+			fs.rmSync(link, { force: true });
+		}
 	});
 
 	test("reads of the trust store are denied; the policy still reads (R6)", async () => {
