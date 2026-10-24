@@ -84,6 +84,8 @@ import {
 	HOST_RETURN_MARGIN_MS,
 	type HostBudget,
 	hostBudgetAdvice,
+	hostBudgetExpiry,
+	MIN_SUBAGENT_DIALOG_MS,
 	readHostHandlerBudget,
 	STATUS_WIDGET_KEY,
 	subagentAskWindow,
@@ -1060,6 +1062,17 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (mode === "normal" && ui !== null) {
 			const askTimeoutMs = state.userRules.subagentAskTimeoutMs;
 			const window = subagentAskWindow(askTimeoutMs, budget, Date.now() - handlerStart);
+			// Fails closed with no second model: what remains of the host budget is too short for a model call.
+			const expireOnHostBudget = (): { block: true; reason: string } => {
+				finalize({ subagent: { ...sub, resolution: "timeout" } });
+				const why = hostBudgetExpiry(askTimeoutMs, budget);
+				ui.notify(`🛡️ [${label}] subagent ask expired before omp's handler timeout: ${why}`, "warning");
+				return {
+					block: true,
+					reason: blockReason("subagent-expired", `no human answer before omp's handler budget ran out: ${why} — ${verdict.reason}`),
+				};
+			};
+			if (window.hostLimited && window.ms < MIN_SUBAGENT_DIALOG_MS) return expireOnHostBudget();
 			const deadline = AbortSignal.timeout(window.ms);
 			const signal = ctx.signal ? AbortSignal.any([deadline, ctx.signal]) : deadline;
 			// The race closes the wait even while the ask is still queued behind another dialog.
@@ -1072,10 +1085,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				finalize({ subagent: { ...sub, resolution: "timeout" } });
 				return { block: true, reason: blockReason("subagent-cancelled", "subagent run was cancelled while awaiting approval") };
 			}
-			if (window.hostLimited) {
-				const advice = hostBudgetAdvice(askTimeoutMs, budget);
-				ui.notify(`🛡️ [${label}] subagent ask expired before omp's handler timeout${advice ? `: ${advice}` : ""}`, "warning");
-			}
+			if (window.hostLimited) return expireOnHostBudget();
 			return finishWithoutHuman("timeout");
 		}
 		return finishWithoutHuman("auto");

@@ -44,7 +44,12 @@ import autoMode, {
 	setXdgConfigRootsForTests,
 	shellWords,
 } from "../extensions/pi-verdict/index.ts";
-import { HOST_BUDGET_MARGIN_MS, readHostHandlerBudget, subagentAskWindow } from "../extensions/pi-verdict/subagent.ts";
+import {
+	HOST_BUDGET_MARGIN_MS,
+	MIN_SUBAGENT_DIALOG_MS,
+	readHostHandlerBudget,
+	subagentAskWindow,
+} from "../extensions/pi-verdict/subagent.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -5496,9 +5501,11 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 	});
 
 	describe("omp's per-handler budget (extensionHandlers.toolCallTimeoutMs)", () => {
-		// The budget is injected; the dialog's real deadline is the budget less HOST_BUDGET_MARGIN_MS, so a
-		// budget just above the margin gives a short genuine deadline, as with subagentAskTimeoutMs above.
-		const SHORT_BUDGET = { ms: HOST_BUDGET_MARGIN_MS + 40, configured: false };
+		// The budget is injected; the dialog's real deadline is the budget less HOST_BUDGET_MARGIN_MS, so
+		// DIALOG_BUDGET gives a genuine deadline of about 2.5 s, as with subagentAskTimeoutMs above, and
+		// SHORT_BUDGET leaves a window too short for a dialog.
+		const DIALOG_BUDGET = { ms: HOST_BUDGET_MARGIN_MS + MIN_SUBAGENT_DIALOG_MS + 500, configured: false };
+		const SHORT_BUDGET = { ms: HOST_BUDGET_MARGIN_MS + 500, configured: false };
 		const EXPIRED = "subagent ask expired before omp's handler timeout";
 
 		/** Rich root dialog that never settles on its own: it closes only through the dialog's abort. */
@@ -5525,9 +5532,11 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 						neverAnswered(root, titles);
 						const r = await toolCall(sub, "read", { path: path.join(SENS, "x.md") });
 						expect(titles).toHaveLength(1);
-						expect(titles[0]).toContain("(answer within 1 s)");
+						expect(titles[0]).toMatch(/\(answer within \d+ s\)/);
 						expect(r?.block).toBe(true);
-						expect(String(r.reason)).toContain("subagent-auto");
+						expect(String(r.reason)).toContain("subagent-expired");
+						expect(String(r.reason)).toContain("extensionHandlers.toolCallTimeoutMs");
+						expect(String(r.reason)).not.toContain(path.basename(SENS));
 						expect(readAudit().at(-1).subagent).toEqual({ id: "Scout1", name: "scout", resolution: "timeout" });
 						const notices = root.notifies.map(([m]) => m);
 						const expiry = notices.find((m) => m.includes(EXPIRED));
@@ -5535,12 +5544,88 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 						expect(expiry).toContain("at least 120000");
 						expect(notices.join("\n")).not.toContain(path.basename(SENS));
 					},
+					{ hostBudget: DIALOG_BUDGET },
+				);
+			} finally {
+				clearAudit();
+			}
+		}, 15_000);
+
+		test("a host-limited expiry of a classifier ask denies without consulting the second model", async () => {
+			await withBridge(
+				{ subagentAskTimeoutMs: 60_000, classifierFallbackModel: "mock/fb" },
+				async (root, sub) => {
+					hangUntilAbort(root);
+					sub.responses = [ASK, ALLOW];
+					const r = await toolCall(sub, "bash", { command: "cargo build" });
+					expect(root.confirms).toBe(1);
+					expect(r?.block).toBe(true);
+					expect(String(r.reason)).toContain("subagent-expired");
+					expect(String(r.reason)).toContain("extensionHandlers.toolCallTimeoutMs (" + DIALOG_BUDGET.ms + " ms, default)");
+					expect(sub.calls.length).toBe(1); // the first-layer classifier only
+				},
+				{ hostBudget: DIALOG_BUDGET },
+			);
+		}, 15_000);
+
+		test("a window too short for a dialog skips it and denies at once, without the second model", async () => {
+			clearAudit();
+			try {
+				await withBridge(
+					{ audit: true, subagentAskTimeoutMs: 60_000, classifierFallbackModel: "mock/fb" },
+					async (root, sub) => {
+						const titles: string[] = [];
+						neverAnswered(root, titles);
+						hangUntilAbort(root);
+						sub.responses = [ASK, ALLOW];
+						const r = await toolCall(sub, "bash", { command: "cargo build" });
+						expect(titles).toHaveLength(0);
+						expect(root.confirms).toBe(0);
+						expect(r?.block).toBe(true);
+						expect(String(r.reason)).toContain("subagent-expired");
+						expect(sub.calls.length).toBe(1);
+						expect(readAudit().at(-1).subagent).toEqual({ id: "Scout1", name: "scout", resolution: "timeout" });
+						expect(root.notifies.some(([m]) => m.includes(EXPIRED))).toBe(true);
+					},
 					{ hostBudget: SHORT_BUDGET },
 				);
 			} finally {
 				clearAudit();
 			}
 		});
+
+		test("a subagent ask queued behind an open root dialog expires on time and never opens a dialog afterwards", async () => {
+			clearAudit();
+			try {
+				await withBridge(
+					{ audit: true, subagentAskTimeoutMs: 60_000, denyPaths: [SENS] },
+					async (root, sub) => {
+						let customs = 0;
+						let releaseRoot: (() => void) | undefined;
+						root.ctx.ui.custom = () =>
+							new Promise((resolve) => {
+								customs++;
+								releaseRoot = () => resolve("yes");
+							});
+						hangUntilAbort(root);
+						const rootCall = toolCall(root, "read", { path: path.join(SENS, "root.md") });
+						await flush(() => releaseRoot !== undefined);
+						const r = await toolCall(sub, "read", { path: path.join(SENS, "x.md") });
+						expect(r?.block).toBe(true); // returned while the root dialog is still open
+						expect(String(r.reason)).toContain("subagent-expired");
+						expect(readAudit().at(-1).subagent).toEqual({ id: "Scout1", name: "scout", resolution: "timeout" });
+						releaseRoot?.();
+						expect(await rootCall).toBeUndefined();
+						await flush(() => false); // give the queued subagent function its turn
+						expect(customs).toBe(1);
+						expect(root.confirms).toBe(0);
+					},
+					{ hostBudget: DIALOG_BUDGET },
+				);
+			} finally {
+				clearAudit();
+			}
+		}, 15_000);
 
 		test("a queued subagent dialog shows the time left when it opens, not when it was queued", async () => {
 			const { initTheme } = await import("@earendil-works/pi-coding-agent");

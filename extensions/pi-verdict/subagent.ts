@@ -40,6 +40,8 @@ export const OMP_HANDLER_TIMEOUT_DEFAULT_MS = 30_000;
 export const HOST_BUDGET_MARGIN_MS = 3_000;
 /** How long before the host budget ends the second model must have answered. */
 export const HOST_RETURN_MARGIN_MS = 1_000;
+/** A host-limited window shorter than this is not worth a dialog: the ask expires at once. */
+export const MIN_SUBAGENT_DIALOG_MS = 2_000;
 /** Headroom the docs ask for between the host budget and `subagentAskTimeoutMs`. */
 export const HOST_BUDGET_HEADROOM_MS = 60_000;
 
@@ -118,6 +120,15 @@ const budgetSpelling = (budget: HostBudget): string =>
 export function hostBudgetAdvice(askTimeoutMs: number, budget: HostBudget | null): string | null {
 	if (budget === null || budget.ms >= askTimeoutMs + HOST_BUDGET_HEADROOM_MS) return null;
 	return `${budgetSpelling(budget)} ends a subagent's tool call before subagentAskTimeoutMs (${askTimeoutMs} ms); set it to at least ${askTimeoutMs + HOST_BUDGET_HEADROOM_MS} in omp's config.yml`;
+}
+
+/** Why a host-limited ask expired, naming the budget and the setting to raise. */
+export function hostBudgetExpiry(askTimeoutMs: number, budget: HostBudget | null): string {
+	if (budget === null) return "the host's handler budget ran out";
+	return (
+		hostBudgetAdvice(askTimeoutMs, budget) ??
+		`${budgetSpelling(budget)} ran out before the ask could be answered; raise it in omp's config.yml`
+	);
 }
 
 /** Resolves to "aborted" as soon as `signal` aborts, even while `work` waits in the dialog queue. */
