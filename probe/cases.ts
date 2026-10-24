@@ -89,6 +89,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["short flag", "git push -f origin main", {}],
 		["bundle f not last", "git push -fu origin main", {}],
 		["bundle f last", "git push -uf origin main", {}],
+		["bundle with a digit option", "git push -4f origin main", {}],
 		["-c global option", "git -c key=value push --force origin main", {}],
 		["-C global option", "git -C /tmp/repo push -f origin main", {}],
 		["--git-dir", "git --git-dir=/tmp/r push --force", {}],

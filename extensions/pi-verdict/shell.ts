@@ -276,11 +276,11 @@ function envSplitsString(args: readonly string[]): boolean {
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
  *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the
  *  classifier (an audit boundary: the unbounded lookahead `--force(?![-\w])` exempted unknown
- *  spellings). Short flags are accepted in a bundle (`-f`, `-fu`, `-uf`), but not after an `o`,
+ *  spellings). Short flags are accepted in a bundle (`-f`, `-fu`, `-uf`, `-4f`), but not after an `o`,
  *  which takes the rest of the bundle as its value (`-of`). */
 export function isForceFlag(word: string): boolean {
 	const t = word.toLowerCase();
-	if (/^-[a-np-z]*f[a-z]*$/.test(t)) return true;
+	if (/^-[a-np-z0-9]*f[a-z0-9]*$/.test(t)) return true;
 	if (/^--force-with-lease(?:=|$)/.test(t)) return false;
 	if (t === "--force-if-includes") return false; // no-op without a lease (git documents it)
 	if (/^\+./.test(t)) return true; // a `+` refspec forces the update (F24)
@@ -369,7 +369,7 @@ const GIT_PUSH_RECURSION_DEPTH = 3;
  * word with a fully flexible body (so `git --git-dir=X push …` and `-c/-C` gaps need no special
  * handling), terminated by any of: a bare `--force`; another `--force-*` form (the invented
  * spelling included — only `--force-with-lease` is exempt); a bundled short `f` flag (`-f`, `-fu`,
- * `-uf`, and `-f>/dev/null`); or a `+` refspec word. Quoted content does not break it (the `a&b`
+ * `-uf`, `-4f`, and `-f>/dev/null`); or a `+` refspec word. Quoted content does not break it (the `a&b`
  * refname is a genuine force push). The tokenised word view owns pairing precision — this only
  * has to never MISS; a false trip is cleared by the word view.
  *
@@ -379,7 +379,7 @@ const GIT_PUSH_RECURSION_DEPTH = 3;
  */
 function tripwireHit(command: string): boolean {
 	const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
-	const pattern = /\bpush\b[\s\S]*?(?:--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z]*f[a-zA-Z]*\b|\s\+)/i;
+	const pattern = /\bpush\b[\s\S]*?(?:--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z0-9]*f[a-zA-Z0-9]*\b|\s\+)/i;
 	if (pattern.test(capped)) return true;
 	const joined = capped.replace(/(?<!\\)\\\r?\n/g, "");
 	return joined !== capped && pattern.test(joined);

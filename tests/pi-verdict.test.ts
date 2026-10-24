@@ -637,6 +637,11 @@ describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
 	test("bash -o pipefail -c → floor deny", async () => {
 		await denyRule("bash -o pipefail -c 'git " + P + "'");
 	});
+	test("-f bundled with a digit option (-4f, -6f, -f4) → floor deny", async () => {
+		await denyRule("git push -" + "4f origin main");
+		await denyRule("git push -" + "6uf origin main");
+		await denyRule("git push -" + "f4 origin main");
+	});
 	test("-f with redirection → floor deny", async () => {
 		await denyRule("git push -f>/dev/null origin main");
 	});
