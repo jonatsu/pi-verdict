@@ -52,7 +52,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 
 	const install = ownFile ? installTargets(agentDir, ownFile) : [];
 	for (const { target, isExact } of install) (isExact ? exact : prefixes).add(target);
-	const extTargets = new Set(install.map((t) => t.target));
+	const installTargetPaths = new Set(install.map((t) => t.target));
 
 	const plugins = pluginRoots(agentDir);
 	const enablement = enablementFiles(plugins);
@@ -63,7 +63,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	// Every spelling of a gate config path contains its file name; the install, enablement and audit
 	// paths need each spelling.
 	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/, /plugin-overrides\.json/];
-	if (extTargets.size > 0) bashPatterns.push(pathAlternation([...extTargets], agentDir));
+	if (installTargetPaths.size > 0) bashPatterns.push(pathAlternation([...installTargetPaths], agentDir));
 	if (enablement.length > 0) bashPatterns.push(pathAlternation(enablement, agentDir));
 
 	// The trust store is read-denied beside the audit directory, because reading it maps the route
@@ -130,21 +130,27 @@ function installRootFamilies(agentDir: string): InstallRootFamily[] {
  *  relative targets under every spelling. Empty for a dev checkout. */
 function installTargets(agentDir: string, ownFile: string): InstallTarget[] {
 	const out: InstallTarget[] = [];
-	const ownForms = new Set(baseForms(ownFile));
+	const ownForms = [...new Set(baseForms(ownFile))];
 	for (const { kind, roots } of installRootFamilies(agentDir)) {
-		for (const extRoot of roots) {
-			for (const own of ownForms) {
-				const rel = relativeBeneath(own, extRoot);
-				if (rel === null) continue;
+		for (const installRoot of roots) {
+			for (const rel of relativeToAny(ownForms, installRoot)) {
 				for (const { rel: targetRel, isExact } of relativeInstallTargets(kind, rel.split(path.sep))) {
-					for (const root of roots) {
-						for (const target of baseForms(path.join(root, ...targetRel))) out.push({ target, isExact });
-					}
+					for (const target of spellEveryRoot(roots, targetRel)) out.push({ target, isExact });
 				}
 			}
 		}
 	}
 	return out;
+}
+
+/** Returns the path below `root` of each form that lies under it. */
+function relativeToAny(forms: readonly string[], root: string): string[] {
+	return forms.map((form) => relativeBeneath(form, root)).filter((rel): rel is string => rel !== null);
+}
+
+/** Returns `rel` joined onto every spelling of its install root, each in its `baseForms`. */
+function spellEveryRoot(roots: readonly string[], rel: readonly string[]): string[] {
+	return roots.flatMap((root) => baseForms(path.join(root, ...rel)));
 }
 
 /** Returns the targets to protect for the gate file at `segs` inside an install root of `kind`. */
