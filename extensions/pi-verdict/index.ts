@@ -88,6 +88,7 @@ import {
 } from "./classifier.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";
+import { STATUS_WIDGET_KEY, serializeDialog, subagentIdentity, subagentLabel, type UiContext } from "./subagent.ts";
 import {
 	NEVER_CHOICE,
 	NOT_NOW_CHOICE,
@@ -141,6 +142,7 @@ export { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests }
 export { buildProtectedSet, isProtectedReadPath, isProtectedWritePath } from "./self-protection.ts";
 export { allowAdmits, BASH_MAX_MATCH_LEN, gitPushForce, isForceFlag, shellWords } from "./shell.ts";
 export { type RulesLoadReport, SessionState } from "./state.ts";
+export { subagentIdentity } from "./subagent.ts";
 
 // ============================================================================
 // Approve dialog
@@ -631,42 +633,9 @@ async function confirmAsk(
 	});
 }
 
-// ============================================================================
-// Subagent bridge (omp)
-// ============================================================================
-
-type UiContext = ExtensionContext["ui"];
-
-/** Widget key of the live classifier-status row. */
-const STATUS_WIDGET_KEY = "verdict";
-
-/** omp-only: `ctx.agent = { kind: "main" | "sub", id, name, … }` (pi's ExtensionContext has no `agent`).
- *  Returns the subagent's identity, or null for a root session / pi. */
-export function subagentIdentity(ctx: ExtensionContext): { id: string; name: string } | null {
-	const agent = (ctx as { agent?: unknown }).agent;
-	if (typeof agent !== "object" || agent === null) return null;
-	const a = agent as { kind?: unknown; id?: unknown; name?: unknown };
-	if (a.kind !== "sub") return null;
-	return { id: typeof a.id === "string" ? a.id : "?", name: typeof a.name === "string" ? a.name : "?" };
-}
-
-function subagentLabel(id: { id: string; name: string }): string {
-	return id.id === id.name ? `subagent ${id.id}` : `subagent ${id.id} (${id.name})`;
-}
-
 /** UI of the top-level interactive session in this process. Module-level: extension factories
  *  are re-bound per subagent session but module variables are shared across sessions. */
 let rootUi: UiContext | null = null;
-
-let dialogTail: Promise<void> = Promise.resolve();
-function serializeDialog<T>(fn: () => Promise<T>): Promise<T> {
-	const run = dialogTail.then(fn, fn);
-	dialogTail = run.then(
-		() => undefined,
-		() => undefined,
-	);
-	return run;
-}
 
 // ============================================================================
 // Extension body
