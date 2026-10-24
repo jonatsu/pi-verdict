@@ -3872,6 +3872,27 @@ describe("self-protection layer (ADR-0005)", () => {
 		});
 	});
 
+	test("pi package installs under <agentDir>/npm and <agentDir>/git protect the package root", async () => {
+		await withTempDir("pv-sp-pkg-", async (agentDir) => {
+			const npmPkg = path.join(agentDir, "npm", "node_modules", "@jonatsu", "pi-verdict");
+			const npm = buildProtectedSet(agentDir, path.join(npmPkg, "extensions", "pi-verdict", "index.ts"));
+			for (const rel of [["package.json"], ["extensions", "jev-adapter.ts"], ["extensions", "pi-verdict", "shell.ts"]]) {
+				expect(isProtectedWritePath(path.join(npmPkg, ...rel), "/proj", npm)).toBe(true);
+			}
+			expect(npm.bashPatterns.some((re) => re.test(`cp x ${path.join(npmPkg, "extensions", "pi-verdict", "shell.ts")}`))).toBe(true);
+			// a sibling package in the same scope is not the gate
+			expect(isProtectedWritePath(path.join(agentDir, "npm", "node_modules", "@jonatsu", "other", "index.ts"), "/proj", npm)).toBe(false);
+
+			const gitPkg = path.join(agentDir, "git", "github.com", "jonatsu", "pi-verdict");
+			const git = buildProtectedSet(agentDir, path.join(gitPkg, "extensions", "pi-verdict", "index.ts"));
+			for (const rel of [["package.json"], ["extensions", "jev-adapter.ts"], ["extensions", "pi-verdict", "shell.ts"]]) {
+				expect(isProtectedWritePath(path.join(gitPkg, ...rel), "/proj", git)).toBe(true);
+			}
+			expect(git.bashPatterns.some((re) => re.test(`cp x ${path.join(gitPkg, "extensions", "pi-verdict", "shell.ts")}`))).toBe(true);
+			expect(isProtectedWritePath(path.join(agentDir, "git", "github.com", "jonatsu", "other", "index.ts"), "/proj", git)).toBe(false);
+		});
+	});
+
 	test("a write into the module directory is denied when the agent dir's extensions is a symlink to the repo", async () => {
 		// The running copy lives at its realpath in the repo; the agent dir reaches it through the link.
 		const link = path.join(TMP_AGENT, "extensions");

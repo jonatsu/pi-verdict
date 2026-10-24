@@ -400,7 +400,7 @@ interface ProtectedSet {
  * Build the protected set. ownFile is this module's path (import.meta.url resolved;
  * null = unresolvable, config/trust/verdicts still protected). The installed copy is
  * protected only when ownFile sits under one of the install roots (the forms listed
- * with resolveAgentDir); dev checkouts (source inside the cwd) are NOT protected —
+ * with resolveAgentDir, plus pi's `<agentDir>/npm` and `<agentDir>/git` package installs); dev checkouts (source inside the cwd) are NOT protected —
  * in-project development writes are legitimate daily work.
  */
 export function buildProtectedSet(agentDir: string, ownFile: string | null): ProtectedSet {
@@ -417,21 +417,29 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	// the same relative targets under every spelling.
 	const extTargets = new Set<string>();
 	if (ownFile) {
-		type RootKind = "extensions" | "npm";
+		type RootKind = "extensions" | "npm" | "git";
 		const agentBases = new Set(baseForms(agentDir));
 		const configRootBases = new Set([...agentBases].map((b) => path.dirname(b)));
 		const layouts: { seg: string[]; kind: RootKind; bases: Set<string> }[] = [
 			{ seg: ["extensions"], kind: "extensions", bases: agentBases },
 			// omp plugin installs, under the agent dir or (omp 18.1+) beside it
 			{ seg: ["plugins", "node_modules"], kind: "npm", bases: new Set([...agentBases, ...configRootBases]) },
+			// pi package installs: `<agentDir>/npm/node_modules/<pkg>` and `<agentDir>/git/<host>/<path>`
+			{ seg: ["npm", "node_modules"], kind: "npm", bases: agentBases },
+			{ seg: ["git"], kind: "git", bases: agentBases },
 		];
 		const families: { kind: RootKind; roots: string[] }[] = [];
 		for (const { seg, kind, bases } of layouts) {
 			for (const base of bases) families.push({ kind, roots: baseForms(path.join(base, ...seg)) });
 		}
 		// Segments of the package root inside an install root. npm scopes are two-segment dirs
-		// (@scope/pkg): protect the package, not the whole scope dir.
-		const packageDepth = (segs: string[]): number => {
+		// (@scope/pkg): protect the package, not the whole scope dir. A git install is
+		// `<host>/<path>/…` with a path of unknown depth, so the package ends where `extensions` starts.
+		const packageDepth = (kind: RootKind, segs: string[]): number => {
+			if (kind === "git") {
+				const at = segs.findIndex((seg, k) => k >= 2 && seg === "extensions");
+				return at > 0 ? at : Math.min(3, segs.length - 1);
+			}
 			return segs[0].startsWith("@") ? 2 : 1;
 		};
 		const ownForms = new Set(baseForms(ownFile));
@@ -448,7 +456,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 								{ rel: segs, isExact: true },
 								{ rel: [JEV_ADAPTER_FILE], isExact: true },
 							]
-						: [{ rel: segs.slice(0, packageDepth(segs)), isExact: false }];
+						: [{ rel: segs.slice(0, packageDepth(kind, segs)), isExact: false }];
 					// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
 					// imports the adapter from the root beside it, outside the directory prefix. A top-level
 					// `<dir>.ts` or `<dir>.js` is a decoy entry: the host dedupes extensions by name, keeps the
