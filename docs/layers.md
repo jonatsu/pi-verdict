@@ -39,8 +39,8 @@ allow and the internal-URL shape does not withhold it. The floor grades these gr
 root `xd://` or to a topic URL, and a write to a name with any character outside letters, digits, `_` and
 `-`, since omp's URL parsing can rewrite such a name (`xd://:@resolve` reaches `resolve`). A device URL given to any tool other than
 `read` and `write` is held back like every internal URL. On pi, which has no `xd` scheme, the text is a
-relative path and takes the path grades, S0 included
-([research/2026-10-25-xd-device-dispatch.md](../research/2026-10-25-xd-device-dispatch.md)).
+relative path and takes the path grades, S0 included, except that an allow turns gray, so a host
+misdetected as pi never allows a device write silently ([research/2026-10-25-xd-device-dispatch.md](../research/2026-10-25-xd-device-dispatch.md)).
 
 ## Three consequences the probe encodes
 

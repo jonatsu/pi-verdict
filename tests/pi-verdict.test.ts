@@ -7657,6 +7657,13 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 		await expectRuleAllow(omp, "write", { path: "xd://foo_history", content: "{}" });
 	});
 
+	test("off omp, an xd:// write inside the project is not a rule allow, so a missed omp detection stays gray", async () => {
+		const pi = session({});
+		pi.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		await expectClassifier(pi, "write", { path: "xd://resolve", content: "apply it" });
+		await expectClassifier(pi, "write", { path: "xd://mcp__x", content: "{}" });
+	});
+
 	test("on pi, a device spelling whose path leaves the project through a symlink is not a rule allow", async () => {
 		await withTempDir("pv-xd-out-", async (outside) => {
 			await withTempDir("pv-xd-", async (cwd) => {

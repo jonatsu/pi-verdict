@@ -417,7 +417,8 @@ changed:
   omp dispatches on the WHATWG-parsed href, which drops empty credentials, an empty port, tabs, newlines
   and edge control characters, so a spelling such as `xd://:@resolve` reaches `resolve`. The allow applies only when the host
   is omp (`AdjudicateEnv.hostKind`): pi registers no `xd` scheme and opens the text as the relative path
-  `xd:/<name>`, so on pi an `xd://` target keeps the path grades, S0 included. Self-protection, the floor's denies, user `deny`,
+  `xd:/<name>`, so on pi an `xd://` target keeps the path grades, S0 included, with an allow turned gray: a host the
+  gate fails to detect as omp keeps the classifier on every device write. Self-protection, the floor's denies, user `deny`,
   `denyPaths`, the `.omp` gate and the code-loading ask still run first, and a user `deny` regex also tests
   an internal URL target as written, because its path form collapses `//`.
 - *Accepted residual.* The device allow relies on omp wrapping every tool in its canonical tool map; a host

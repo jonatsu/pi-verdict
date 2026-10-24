@@ -228,10 +228,18 @@ function classifyDeviceUrl(rawPath: string, isWrite: boolean): RuleResult {
 	return { verdict: "allow" };
 }
 
-/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification.
- *  On pi an `xd://` target is an ordinary relative path and takes the path grades. */
-function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean, host: HostKind): RuleResult {
-	if (host === "omp" && isDeviceUrl(rawPath)) return classifyDeviceUrl(rawPath, isWrite);
+/** Grades one target: an `xd://` URL on omp by its device, everything else by its path. Off omp an `xd://`
+ *  target is a relative path to pi, so its path grade stands, but its allow turns gray: a missed omp
+ *  detection must not turn a device write into a silent in-project allow. */
+function gradeTarget(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean, host: HostKind): RuleResult {
+	if (!isDeviceUrl(rawPath)) return classifyPath(rawPath, cwd, isWrite, floorOn);
+	if (host === "omp") return classifyDeviceUrl(rawPath, isWrite);
+	const grade = classifyPath(rawPath, cwd, isWrite, floorOn);
+	return grade.verdict === "allow" ? { verdict: "gray", reason: "xd:// target outside omp, not graded as a project path" } : grade;
+}
+
+/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
+function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
@@ -306,7 +314,7 @@ export function globStaysInProject(targets: string[], cwd: string): boolean {
  *  Single-target inputs behave bit-for-bit as today — classifyPath itself is
  *  unchanged and does all the grading; this only combines N results. */
 export function classifyWrites(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
-	const results = targets.map((t) => classifyPath(t, cwd, true, floorOn, host));
+	const results = targets.map((t) => gradeTarget(t, cwd, true, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow" };
@@ -343,7 +351,7 @@ export function s0DirectoryBeneath(target: string, cwd: string): boolean {
 
 export function classifyReads(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
 	if (targets.length === 0) return { verdict: "allow" };
-	const results = targets.map((t) => classifyPath(t, cwd, false, floorOn, host));
+	const results = targets.map((t) => gradeTarget(t, cwd, false, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	const gray = results.find((r) => r.verdict === "gray");

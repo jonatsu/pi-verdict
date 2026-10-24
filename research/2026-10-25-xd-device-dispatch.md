@@ -72,4 +72,4 @@ The host never opens a filesystem path for an `xd://` URL. The scheme is device-
 ## Residuals
 
 - The nested event depends on omp wrapping every tool in the canonical map. A host change that dispatched an unwrapped tool would make the outer allow unguarded; re-check `CA/sdk.ts` and `CA/tools/xdev.ts` on each host upgrade.
-- On pi, which registers no `xd` scheme, the URL text is an ordinary relative path (`xd:/<name>` under the session directory). The device allow therefore applies only when the host is omp; on pi the text takes the floor's path grades, S0 included.
+- On pi, which registers no `xd` scheme, the URL text is an ordinary relative path (`xd:/<name>` under the session directory). The device allow therefore applies only when the host is omp; on pi the text takes the floor's path grades, S0 included, with an allow turned gray so that a host misdetected as pi stays with the classifier.

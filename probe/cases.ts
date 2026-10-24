@@ -1083,6 +1083,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "user deny rule" },
 		},
 		{
+			label: "on pi, an xd:// write inside the project is never a rule allow",
+			family: "host-path",
+			tool: "write",
+			input: { path: "xd://resolve", content: "apply the preview" },
+			host: "pi",
+			ref: "ADR-0009",
+			expected: { layer: "classifier" },
+		},
+		{
 			label: "on pi, which has no xd scheme, an xd:// spelling keeps the floor's path grade with S0",
 			family: "host-path",
 			tool: "write",
