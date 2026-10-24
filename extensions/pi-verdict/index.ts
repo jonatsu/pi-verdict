@@ -75,7 +75,7 @@ import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
-import { type AutoModeDeps, completeForClassifier } from "./completion.ts";
+import { type CompatLoader, completionForHost } from "./completion.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
 import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
@@ -113,7 +113,7 @@ export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, t
 export { resolveAgentDir } from "./agent-dir.ts";
 export { AuditLog, type AuditRecord, type FallbackAudit } from "./audit.ts";
 export { budgetedTimeoutMs } from "./classifier.ts";
-export { type AutoModeDeps, bindCompletion, type CompletionFn } from "./completion.ts";
+export { bindCompletion, type CompatLoader, type CompletionFn } from "./completion.ts";
 export { BASH_PATH_TOKENS, bashPathTokens } from "./deny-paths.ts";
 export {
 	declineDetail,
@@ -157,6 +157,11 @@ const ASK_SOURCE_LABEL: Record<VerdictSource, string> = {
 function blockedReason(tag: string, detail: string): string {
 	const clean = detail.trim().replace(/\.+$/, "");
 	return `[auto-mode ${tag} block] BLOCKED — this action did NOT run. Reason: ${clean || "(no further reason given)"}. Report the block to the user; never claim it succeeded or completed.`;
+}
+
+/** Optional dependency injection for tests (#35): fake the compat fallback loader. */
+export interface AutoModeDeps {
+	compatLoader?: CompatLoader;
 }
 
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
@@ -878,7 +883,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return explainGate({
 			host: ctx.sessionManager,
 			signal: ctx.signal,
-			complete: completeForClassifier(ctx.modelRegistry, deps),
+			complete: completionForHost(ctx.modelRegistry, deps.compatLoader),
 			model: role.model,
 			thinking: role.thinking,
 			actionLine: redacted ? PROTECTED_PATH_MARKER : action,
@@ -945,7 +950,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			// a subagent's asks are resolved by the bridge (root UI / second model), never degraded in the pipeline
 			hasUI: sub ? true : !!ctx.hasUI,
 			getModel: () => resolveClassifier(ctx),
-			complete: completeForClassifier(ctx.modelRegistry, deps),
+			complete: completionForHost(ctx.modelRegistry, deps.compatLoader),
 			host: ctx.sessionManager,
 			signal: ctx.signal,
 			getFallbackModel: () => resolveFallbackClassifier(ctx),

@@ -14,7 +14,8 @@ export type CompletionFn = (
 	options?: Record<string, unknown>,
 ) => Promise<{ content: Array<{ type: string; text: string }>; stopReason?: string; errorMessage?: string }>;
 
-type CompatLoader = () => Promise<{ complete: CompletionFn }>;
+/** Loads the pi-ai compat module; tests inject a fake (#35). */
+export type CompatLoader = () => Promise<{ complete: CompletionFn }>;
 
 /** Shape of omp's `ModelRegistry.getApiKeyAndHeaders` — the "historical Pi extension facade". */
 type ApiKeyAndHeadersResolver = (
@@ -26,8 +27,8 @@ type ApiKeyAndHeadersResolver = (
  *  A load or call error propagates, and the classifier fails closed on it.
  *
  *  [pi-verdict local patch: omp 18.3.0 compat auth gap] The compat `complete` cannot see omp's session
- *  credentials, so the credential from `registry.getApiKeyAndHeaders` is forwarded with each call. Without that
- *  method or a key, the call goes out unauthenticated and the classifier fails closed on its error. */
+ *  credentials, so the credential from `registry.getApiKeyAndHeaders` is forwarded with each call. When that
+ *  method is absent, fails or returns no key, the request is sent unauthenticated, as the compat call makes it. */
 export function bindCompletion(
 	registry: { complete?: unknown; getApiKeyAndHeaders?: ApiKeyAndHeadersResolver },
 	// Safe: the compat module exports `complete` with this call shape on both hosts; a mismatch throws, failing closed.
@@ -68,16 +69,17 @@ function completionFor(registry: { complete?: unknown }, compatLoader?: CompatLo
 	return fn;
 }
 
-/** The registry members `completeForClassifier` reads; `getApiKeyForProvider` exists only on omp. */
-type ClassifierRegistry = { complete?: unknown; getApiKeyForProvider?: (provider: string) => Promise<string | undefined> };
+/** The registry members `completionForHost` reads; `getApiKeyForProvider` exists only on omp. */
+type HostRegistry = { complete?: unknown; getApiKeyForProvider?: (provider: string) => Promise<string | undefined> };
 
-/** Returns the completion call the gate's model calls use, with the same failure behavior as `bindCompletion`.
+/** Returns the completion call for every gate model call (classifier, fallback and EXPLAIN-GATE), with the
+ *  same failure behavior as `bindCompletion`.
  *
  *  [pi-verdict local patch: omp 18.3.0 jev/TypeSafe support] omp's compat call cannot see providers that
  *  extensions register, so a jev model on omp is called through `streamDecisions` directly, with its key
  *  resolved on every call. pi dispatches jev through its registry and never takes this branch. */
-export function completeForClassifier(registry: ClassifierRegistry, deps: AutoModeDeps): CompletionFn {
-	const generic = completionFor(registry, deps.compatLoader);
+export function completionForHost(registry: HostRegistry, compatLoader?: CompatLoader): CompletionFn {
+	const generic = completionFor(registry, compatLoader);
 	const isOmpCompat = typeof registry.complete !== "function";
 	return async (m, c, o) => {
 		if (!isOmpCompat || m.provider !== JEV_PROVIDER_ID) return generic(m, c, o);
@@ -96,9 +98,4 @@ export function completeForClassifier(registry: ClassifierRegistry, deps: AutoMo
 			errorMessage: result.errorMessage,
 		};
 	};
-}
-
-/** Optional dependency injection for tests (#35): fake the compat fallback loader. */
-export interface AutoModeDeps {
-	compatLoader?: CompatLoader;
 }

@@ -453,7 +453,7 @@ export default function jevAdapter(pi: ExtensionAPI): void {
 		// bridge (bindCompletion in pi-verdict/completion.ts) has no visibility into
 		// extension-registered providers (it talks to the bundled pi-ai
 		// package's own, unrelated provider registry), so pi-verdict/completion.ts's
-		// completeForClassifier() calls streamDecisions() directly for jev,
+		// completionForHost() calls streamDecisions() directly for jev,
 		// resolving auth fresh via ctx.modelRegistry.getApiKeyForProvider on
 		// every call instead. The registration below only feeds the sync
 		// availability check, so a stale snapshot never causes a wrong denial —
