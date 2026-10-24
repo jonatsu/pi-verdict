@@ -968,7 +968,8 @@ describe("security audit regression (all payloads must NOT be rule-allowed)", ()
 describe("path floor dual-form matching (#20)", () => {
 	// Fixtures live under the real home: macOS TMPDIR sits under /var/folders,
 	// which collides with the S1 system-prefix rule and contaminates the cases.
-	const root = fs.mkdtempSync(path.join(os.homedir(), ".pv-t20-"));
+	// Named here but created in beforeAll, so a run that skips this group leaves nothing behind.
+	const root = path.join(os.homedir(), `.pv-t20-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
 	const proj = path.join(root, "proj");
 	const secrets = path.join(root, "secrets", ".ssh");
 	const gitMeta = path.join(proj, ".git");
@@ -1043,7 +1044,8 @@ describe("kernel walk (path-layer items 7–8)", () => {
 	// symlink(); win32 skips. The dangling link points at a never-created file under the
 	// write-protected verdicts prefix, so the protected-set hit does not depend on any
 	// other test's filesystem state.
-	const root = fs.mkdtempSync(path.join(os.homedir(), ".pv-walker-"));
+	// Named here but created in beforeAll, so a run that skips this group leaves nothing behind.
+	const root = path.join(os.homedir(), `.pv-walker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
 	const proj = path.join(root, "proj");
 	const dangling = path.join(proj, "dangling");
 	const DANGLING_TARGET = path.join(TMP_AGENT, "verdicts", "pv-walker-dangling.jsonl");
@@ -1900,7 +1902,8 @@ describe("denyPaths + user rules kernel tier (item 10)", () => {
 	// Fixtures under the real home (macOS /var TMPDIR would hit S1 before the rule layer).
 	// `<proj>/link/../secret.md` opens `<root>/protected/secret.md` in the kernel — omp
 	// returns an absolute input verbatim — while path.resolve names `<proj>/secret.md`.
-	const root = fs.mkdtempSync(path.join(os.homedir(), ".pv-item10-"));
+	// Named here but created in beforeAll, so a run that skips this group leaves nothing behind.
+	const root = path.join(os.homedir(), `.pv-item10-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
 	const proj = path.join(root, "proj");
 	const outside = path.join(root, "outside");
 	const protectedDir = path.join(root, "protected");

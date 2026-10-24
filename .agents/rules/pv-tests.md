@@ -22,8 +22,10 @@ whole point. Test behavior through the real entry points: `toolCall` in `tests/`
   `h.confirms` and `h.selectPicks`.
 - Drive the real ask dialog with `driveDialogs` (the EXPLAIN-GATE tests) or `driveMouseDialog` (the mouse-click
   tests), which replay key scripts against `buildApproveDialog` through a fake `ui.custom`.
-- Put a fixture that needs a real home path under `fs.mkdtempSync(path.join(os.homedir(), ".pv-t20-"))`; a tmp
-  dir under `/var` collides with the S1 system-path floor.
+- Put a fixture that needs a real home path under `os.homedir()` (`.pv-<name>-…`); a tmp dir under `/var` collides
+  with the S1 system-path floor. Create it where it is removed: in a test body with `try`/`finally`, or in
+  `beforeAll` paired with `afterAll`. A `describe` body runs even when a filter skips the group, so a directory
+  made there leaks.
 - Keep tests offline: no network, no real model, no module mocks. A hand-built fake host is the extension's input.
 - Give each feature one top-level `describe`, and title each test by the behavior it pins, in English, with `ADR-000N` or `#NN` where it helps:
   `describe("scope-tool glob paths (ADR-0009)")`, `test("a globbed write over a protected path asks")`.
