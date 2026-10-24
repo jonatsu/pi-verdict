@@ -357,6 +357,11 @@ export function isCommandTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "powershell";
 }
 
+/** Returns a command tool's command line as text; a missing command is the empty string. */
+export function commandText(input: Readonly<Record<string, unknown>>): string {
+	return String(input.command ?? "");
+}
+
 /** Minimal local shape of what the coverage report needs from a host tool (zero-dependency
  *  constraint: not imported) — `ToolInfo.parameters` is a TypeBox `TSchema`, whose
  *  `.properties` carries each declared field's own schema for an object schema. */
@@ -764,7 +769,7 @@ function expandTargetForms(targets: string[], cwd: string): string[] {
  *  Semantics unchanged: deny = ANY target matches; allow = EVERY target
  *  matches (F11). */
 export function userRuleTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
-	if (isCommandTool(toolName)) return [String(input.command ?? "")];
+	if (isCommandTool(toolName)) return [commandText(input)];
 	const access = toolAccess(toolName, input);
 	if (access.direction === "unknown") return [];
 	const raw = access.direction === "mutating" ? access.gradedWrites : access.gradedReads.length > 0 ? access.gradedReads : [cwd];

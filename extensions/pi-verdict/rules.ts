@@ -1,4 +1,12 @@
-import { isCommandTool, isHostInternalUrl, multiTargetDetailSuffix, readMayRelocate, toolAccess, userRuleTargets } from "./access.ts";
+import {
+	commandText,
+	isCommandTool,
+	isHostInternalUrl,
+	multiTargetDetailSuffix,
+	readMayRelocate,
+	toolAccess,
+	userRuleTargets,
+} from "./access.ts";
 import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
@@ -55,7 +63,7 @@ export function classifyByRules(
 	let base: RuleResult;
 	let relocatable = false;
 	if (isCommandTool(toolName)) {
-		base = classifyBash(String(input.command ?? ""), user.builtinDenyFloor);
+		base = classifyBash(commandText(input), user.builtinDenyFloor);
 	} else if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
@@ -179,7 +187,7 @@ export function classifyByRules(
 	// An opaque call's path/paths are model-supplied while its real target is unknown, so no
 	// rule can vouch for it (the same call is denied without an allow rule configured).
 	if (targets.length > 0 && !policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl) {
-		const allowOk = !isCommandTool(toolName) || allowAdmits(String(input.command ?? ""));
+		const allowOk = !isCommandTool(toolName) || allowAdmits(commandText(input));
 		if (allowOk) {
 			for (const re of user.allow) {
 				if (targets.every((t) => re.test(t))) return { verdict: "allow", reason: "user allow rule" };

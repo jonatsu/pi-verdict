@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { collectStrings, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
+import { collectStrings, commandText, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
 import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
 import { baseForms, kernelForms, rebuiltForms } from "./paths.ts";
@@ -258,7 +258,7 @@ function bashDirectoryTargets(command: string, agentDir: string): string[] {
 export function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
 	const direction = selfProtectDirection(toolName);
 	if (direction === "command") {
-		const cmd = String(input.command ?? "");
+		const cmd = commandText(input);
 		const cdHit = bashDirectoryTargets(cmd, agentDirPath()).some((t) => isProtectedReadPath(t, cwd, prot));
 		if (prot.bashPatterns.some((re) => re.test(cmd)) || cdHit) {
 			return {

@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { isCommandTool, toolAccess } from "./access.ts";
+import { commandText, isCommandTool, toolAccess } from "./access.ts";
 import { expandHome } from "./floor.ts";
 import { baseForms, isWithin, kernelPath } from "./paths.ts";
 
@@ -185,7 +185,7 @@ export function callPathCandidates(
 		// win32: backslash-separated paths (`C:\proj\f`) are the native spelling; BASH_PATH_TOKENS is
 		// "/"-only, so unify separators first (drive letter is skipped by the absolute-path branch;
 		// a mis-read shell escape only yields extra candidates — false positives ask, the safe direction)
-		const cmd = String(input.command ?? "");
+		const cmd = commandText(input);
 		return bashPathTokens(commandForPathTokens(cmd, path.sep === "\\"));
 	}
 	const access = toolAccess(toolName, input);
@@ -238,7 +238,7 @@ const OMP_DIR_IN_COMMAND = /(?<![\w.-])\.omp(?![\w.-])/;
  *  traverses a nested `.omp` is not a `.omp` access. Returns the matched form (UI-only detail). */
 export function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string): string | null {
 	if (isCommandTool(toolName)) {
-		const command = String(input.command ?? "");
+		const command = commandText(input);
 		if (OMP_DIR_IN_COMMAND.test(command)) return ".omp referenced in the command";
 	}
 	// kind "code" (eval, item 4): the same word check runs directly over the code text —

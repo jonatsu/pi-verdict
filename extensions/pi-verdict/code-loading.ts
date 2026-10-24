@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isCommandTool, toolAccess } from "./access.ts";
+import { commandText, isCommandTool, toolAccess } from "./access.ts";
 import { agentDirPath } from "./agent-dir.ts";
 import { callPathCandidates, denyPathForms, expandPathSpelling } from "./deny-paths.ts";
 import { baseForms, fold, rebuiltForms } from "./paths.ts";
@@ -288,7 +288,7 @@ function expandCommandVariables(command: string, cwd: string): string {
 export function hitCodeLoadPath(toolName: string, input: Record<string, unknown>, cwd: string): CodeLoadHit | null {
 	const roots = rootsFor(cwd);
 	const access = toolAccess(toolName, input);
-	const command = isCommandTool(toolName) ? expandCommandVariables(String(input.command ?? ""), cwd) : null;
+	const command = isCommandTool(toolName) ? expandCommandVariables(commandText(input), cwd) : null;
 	const graded = command === null ? input : { ...input, command };
 	const subtree = access.scope && access.direction === "mutating";
 	for (const candidate of callPathCandidates(toolName, graded, cwd, "written")) {
