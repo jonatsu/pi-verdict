@@ -6,10 +6,6 @@ import { activeTransport, PROVIDER_ID as JEV_PROVIDER_ID, streamDecisions, TRANS
 // Host completion binding: one model-call function on both hosts
 // ============================================================================
 
-/** Models whose provider rejected a request carrying `temperature` (#47), keyed `api|id` for the process
- *  lifetime. The registry has no sampling metadata, so the provider's error is the only signal. */
-export const TEMPERATURE_REJECTED_MODELS = new Set<string>();
-
 /** The completion call both hosts provide (#35): pi's `ModelRegistry.complete`, or `complete` from the pi-ai
  *  compat module on omp. Options pass through unchanged. */
 export type CompletionFn = (

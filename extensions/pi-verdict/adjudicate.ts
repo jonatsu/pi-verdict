@@ -7,11 +7,10 @@ import {
 	type ClassifierOutcome,
 	classifyWithModel,
 	FALLBACK_TIMEOUT_MS,
-	type ModelChoice,
-	type PipelineHost,
 } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
+import type { ModelChoice, PipelineHost } from "./model-call.ts";
 import { HOST_REDACTION_PLATFORM, PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
 import type { SessionState } from "./state.ts";

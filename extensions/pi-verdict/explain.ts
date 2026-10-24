@@ -1,7 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sanitize } from "./action-line.ts";
-import { buildTranscript, callModelOnce, type PipelineHost, type ThinkingLevel } from "./classifier.ts";
+import { buildTranscript } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
+import { callModelOnce, type PipelineHost, type ThinkingLevel } from "./model-call.ts";
 import type { RedactorFn } from "./redaction.ts";
 
 // ============================================================================

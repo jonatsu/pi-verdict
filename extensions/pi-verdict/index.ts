@@ -75,9 +75,9 @@ import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
-import type { ModelChoice, ThinkingLevel } from "./classifier.ts";
 import { type AutoModeDeps, completeForClassifier } from "./completion.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
+import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";
 import { STATUS_WIDGET_KEY, subagentIdentity, subagentLabel, type UiContext } from "./subagent.ts";
@@ -112,7 +112,7 @@ export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 export { resolveAgentDir } from "./agent-dir.ts";
 export { AuditLog, type AuditRecord, type FallbackAudit } from "./audit.ts";
-export { budgetedTimeoutMs, type PipelineHost } from "./classifier.ts";
+export { budgetedTimeoutMs } from "./classifier.ts";
 export { type AutoModeDeps, bindCompletion, type CompletionFn } from "./completion.ts";
 export { BASH_PATH_TOKENS, bashPathTokens } from "./deny-paths.ts";
 export {
@@ -124,6 +124,7 @@ export {
 	explainGate,
 } from "./explain.ts";
 export { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "./floor.ts";
+export type { PipelineHost } from "./model-call.ts";
 export { mentionsSpelling, type RedactionPlatform, type RedactorFn, redactorFor } from "./redaction.ts";
 export { buildProtectedSet, isProtectedReadPath, isProtectedWritePath } from "./self-protection.ts";
 export { allowAdmits, BASH_MAX_MATCH_LEN, gitPushForce, isForceFlag, shellWords } from "./shell.ts";

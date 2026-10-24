@@ -1,7 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { USER_RULES_HEADER } from "../jev-adapter.ts";
 import { toolCallLine, transcriptSafe } from "./action-line.ts";
-import { type CompletionFn, TEMPERATURE_REJECTED_MODELS } from "./completion.ts";
+import type { CompletionFn } from "./completion.ts";
+import { callModelOnce, type PipelineHost, type ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn } from "./redaction.ts";
 
 // ============================================================================
@@ -35,10 +36,6 @@ function userRulesHint(rules: readonly string[]): string {
 
 const MAX_USER_MESSAGES = 5;
 const MAX_TOOL_CALLS = 10;
-
-/** The two session members the pipeline reads: the branch for the transcript and the session id for prompt
- *  caching. Narrow, so tests need no full `ExtensionContext`. */
-export type PipelineHost = Pick<ExtensionContext["sessionManager"], "getBranch" | "getSessionId">;
 
 /** User-message and tool-call lines from the session branch. Assistant narration and tool results stay out:
  *  they are an injection surface and token bulk. */
@@ -115,99 +112,11 @@ export const ADJUDICATION_BUDGET_MS = 27_000;
 export const budgetedTimeoutMs = (capMs: number, remainingMs: number, reserveMs: number): number =>
 	Math.max(1, Math.min(capMs, Number.isFinite(remainingMs) ? remainingMs - reserveMs : capMs));
 
-/** One model call's result. `timedOut` marks the attempt's own deadline firing, which `classifyWithModel`
- *  does not retry. */
-type ClassifierAttempt =
-	| { ok: true; text: string; stopReason: string; errorMessage?: string; timedOut: boolean }
-	| { ok: false; error: string; timedOut: boolean };
-
 /** The shared adjudication deadline and the time held back for the step after this one, 0 for the last. */
 type ClassifierBudget = { deadlineAt: number; reserveMs: number };
 const CLASSIFIER_MAX_TOKENS = 512;
 // The retry's larger window covers models that ignore disabled reasoning or think past the first window.
 const CLASSIFIER_RETRY_MAX_TOKENS = 1024;
-const APIS_WITHOUT_TEMPERATURE = new Set<string>(["openai-codex-responses"]);
-
-/** The provider rejected the request over the `temperature` parameter itself (#47). */
-function temperatureRejection(r: { ok: true; stopReason: string; errorMessage?: string } | { ok: false; error: string }): boolean {
-	if (r.ok) return (r.stopReason === "error" || r.stopReason === "aborted") && /temperature/i.test(r.errorMessage ?? "");
-	return /temperature/i.test(r.error);
-}
-
-/** Thinking levels in pi's vocabulary, as written in the `provider/id:thinking` model suffix. */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-
-/** A resolved model and its thinking level, or null when none is configured or authenticated. */
-export type ModelChoice = { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null;
-
-/** One model call, used by the classifier and EXPLAIN-GATE. Returns the text or an error and never throws.
- *  A provider that rejects `temperature` gets one retry without it, and the model is remembered so later
- *  calls omit it (#47); every other model keeps temperature 0 for determinism. */
-export async function callModelOnce(
-	host: PipelineHost,
-	signal: AbortSignal | undefined,
-	complete: CompletionFn,
-	model: NonNullable<ExtensionContext["model"]>,
-	userMessage: string,
-	maxTokens: number,
-	thinking: ThinkingLevel = "off",
-	systemPrompt: string = CLASSIFIER_SYSTEM,
-	timeoutMs: number = CLASSIFIER_TIMEOUT_MS,
-): Promise<ClassifierAttempt> {
-	// One timeout per attempt, shared by the temperature retry, so the retry cannot double the attempt's cap.
-	const timeout = AbortSignal.timeout(timeoutMs);
-	const fire = async (withTemperature: boolean): Promise<ClassifierAttempt> => {
-		const signals = [timeout];
-		if (signal) signals.push(signal);
-		try {
-			const response = await complete(
-				model,
-				{
-					systemPrompt,
-					messages: [{ role: "user", content: userMessage, timestamp: Date.now() }],
-				},
-				{
-					signal: AbortSignal.any(signals),
-					maxTokens,
-					...(withTemperature ? { temperature: 0 } : {}),
-					// Thinking options go out in both hosts' dialects (#35): pi reads `thinkingEnabled`/`effort`,
-					// omp's compat call reads `reasoning`/`disableReasoning`, and each ignores the other's fields.
-					// research/thinking-param-blackhole.md records why pi needs the API-native fields.
-					...(thinking === "off"
-						? { thinkingEnabled: false, disableReasoning: true }
-						: {
-								thinkingEnabled: true,
-								effort: thinking === "minimal" ? ("low" as const) : thinking,
-								reasoning: thinking === "minimal" ? ("low" as const) : thinking,
-							}),
-					cacheRetention: "short",
-					sessionId: host.getSessionId(),
-				},
-			);
-			const text = response.content
-				.filter((b) => b.type === "text")
-				.map((b) => b.text)
-				.join("");
-			return {
-				ok: true,
-				text,
-				stopReason: response.stopReason ?? "unknown",
-				errorMessage: response.errorMessage,
-				timedOut: timeout.aborted,
-			};
-		} catch (err) {
-			return { ok: false, error: err instanceof Error ? err.message : String(err), timedOut: timeout.aborted };
-		}
-	};
-	const modelKey = `${model.api}|${model.id}`;
-	const withTemperature = !APIS_WITHOUT_TEMPERATURE.has(model.api) && !TEMPERATURE_REJECTED_MODELS.has(modelKey);
-	const first = await fire(withTemperature);
-	if (withTemperature && temperatureRejection(first)) {
-		TEMPERATURE_REJECTED_MODELS.add(modelKey);
-		return fire(false);
-	}
-	return first;
-}
 
 /** Classifies a gray-zone action in up to two attempts, the second with a larger token window. An error, an
  *  abort or output outside the verdict prefix contract retries; a timeout does not, since the retry would
