@@ -2220,17 +2220,32 @@ function unquoteHashlinePath(raw: string): string | null {
  *  characters at the end of a header body. omp parses such a header as the untagged path. */
 const HASHLINE_PLACEHOLDER_TAG_RE = /#[^\s#./\\:[\]]{0,16}\s*$/;
 
+/** The leading apply-patch noise omp drops from a header path (`*** Update File: `, `Add file:`, bare
+ *  asterisks), so `[*** Update File: a.ts#1A2B]` edits `a.ts`. Matches the same text as omp's
+ *  expression with the optional `file`/`to` word grouped with its trailing run, which keeps matching
+ *  linear on a long run of punctuation. */
+const HASHLINE_PATH_NOISE_RE = /^\*{0,3}\s*(?:(?:update|add|delete|move)[^A-Za-z0-9]*(?:(?:file|to)[^A-Za-z0-9]*)?:)?\s*\*{0,3}\s*/i;
+
 /** Every path a trimmed header body can name: the body with a 4-hex tag stripped, which is also the
- *  raw spelling when no tag follows, and, when the body ends in a placeholder tag, the path in front
- *  of it as well. A form the host would not pick only adds scrutiny. Mirrors omp's `recover_header`
- *  (18.12.6). */
+ *  raw spelling when no tag follows, the path in front of a trailing placeholder tag, and each of
+ *  these without apply-patch noise. The host peels tag, quotes and noise in an order that depends on
+ *  the shape, so the gate grades every order; a form the host would not pick only adds scrutiny.
+ *  A well-formed header yields one path. Mirrors omp's `recover_header` (18.12.6). */
 function hashlineHeaderPaths(trimmedBody: string): string[] {
 	const forms = new Set<string>();
-	const tagless = stripHashlineTagAndQuotes(trimmedBody);
-	if (tagless) forms.add(tagless);
-	const placeholder = HASHLINE_PLACEHOLDER_TAG_RE.exec(trimmedBody);
-	const untagged = placeholder ? unquoteHashlinePath(trimmedBody.slice(0, placeholder.index).trim()) : null;
-	if (untagged) forms.add(untagged);
+	const addTagForms = (body: string): void => {
+		const tagless = stripHashlineTagAndQuotes(body);
+		if (tagless) forms.add(tagless);
+		const placeholder = HASHLINE_PLACEHOLDER_TAG_RE.exec(body);
+		const untagged = placeholder ? unquoteHashlinePath(body.slice(0, placeholder.index).trim()) : null;
+		if (untagged) forms.add(untagged);
+	};
+	addTagForms(trimmedBody);
+	addTagForms(trimmedBody.replace(HASHLINE_PATH_NOISE_RE, ""));
+	for (const form of [...forms]) {
+		const clean = form.replace(HASHLINE_PATH_NOISE_RE, "");
+		if (clean) forms.add(clean);
+	}
 	return [...forms];
 }
 

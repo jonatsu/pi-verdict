@@ -6205,6 +6205,33 @@ describe("hashline header spellings (ADR-0009)", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	test("an apply-patch prefix inside a header does not hide its target", async () => {
+		const h = session({});
+		for (const spelling of [
+			"*** Update File: .git/config#ABCD",
+			"*** Update File: .git/config#AUTO",
+			"Update File: .git/config#ABCD",
+			"*** Add File: " + dotEnv + "#ABCD",
+			"***Delete file:.git/config#ABCD",
+			"*** Move to: .git/config#ABCD",
+			'*** Update File: ".git/config"#ABCD',
+			'"*** Update File: .git/config"#ABCD',
+		]) {
+			expect((await toolCall(h, "edit", header(spelling)))?.block).toBe(true);
+		}
+		const second = await toolCall(h, "edit", { input: "[src/a.ts#1A2B]\n1:x\n[*** Update File: .git/config#ABCD]\n1:y\n" });
+		expect(second?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a benign header with an apply-patch prefix keeps its rule allow", async () => {
+		const h = session({});
+		for (const spelling of ["*** Update File: src/a.ts#1A2B", "add/x.ts#1A2B", "update/file: x.ts#1A2B"]) {
+			expect(await toolCall(h, "edit", header(spelling))).toBeUndefined();
+		}
+		expect(h.confirms).toBe(0);
+	});
+
 	test("a benign header with trailing whitespace keeps its rule allow", async () => {
 		const h = session({});
 		expect(await toolCall(h, "edit", { input: "[src/a.ts#1A2B] \n1:x\n[src/b.ts#3C4D]\t\n1:y\n" })).toBeUndefined();

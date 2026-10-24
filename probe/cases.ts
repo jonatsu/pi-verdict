@@ -555,6 +555,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "edit header with an apply-patch prefix still targets its S0 path",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: `[${fx.work}/a.ts#1a2b]\nPUT 1.=1:\n+x\n[*** Update File: ~/.ssh/authorized_keys#3c4d]\nPUT 1.=1:\n+y\n` },
+			ref: "ADR-0009",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
 			label: "pathless edit with no parseable header stays opaque",
 			family: "tool-access",
 			tool: "edit",
