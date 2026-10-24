@@ -4140,8 +4140,8 @@ export interface Verdict {
 	 *  owns the single finalize: append with userAnswer/answeredAt, or without them when
 	 *  presentation throws. Unset for every non-interactive verdict. */
 	pendingAudit?: AuditRecord;
-	/** Set on every ask: how the ask resolves without a human (subagent auto/timeout). "consult" = ask the second model; "allow"/"deny" = already decided by the cascade or not model-resolvable. */
-	autoResolve?: "consult" | "allow" | "deny";
+	/** Set on every ask: how the ask resolves without a human (subagent auto/timeout). "consult" = put it to the second model; "deny" = already ruled on by the cascade or not model-resolvable. */
+	autoResolve?: "consult" | "deny";
 }
 
 /** Per-call environment: host capabilities unrelated to presentation. model is lazily evaluated through getModel—preserving the original “resolve only for gray zone”
@@ -4304,7 +4304,6 @@ export async function resolveAskWithoutHuman(
 		state.policyDegraded
 			? { verdict: "deny", reason: `${WITHHELD_ALLOW_PREFIX}${modelAllowReason}` }
 			: { verdict: "allow", reason: modelAllowReason };
-	if (v.autoResolve === "allow") return withhold(v.reason);
 	if (v.autoResolve !== "consult") return { verdict: "deny", reason: `no human answer — ${v.reason}` };
 	const rules = state.userRules;
 	if (!rules.classifierFallbackModel || !env.getFallbackModel) {
@@ -4617,18 +4616,12 @@ export async function adjudicate(
 	// #62: an interactive ask defers the append to the handler finalize (ground truth);
 	// every other outcome appends immediately as before
 	if (env.hasUI && (effVerdict === "ask" || (effVerdict === "deny" && !state.userRules.autoDeny))) {
-		// Subagent gate: how this ask resolves without a human. ADR-0004 carve-out: a demoted deny is never auto-allowed.
-		// ADR-0004 carve-out: only an enforce-mode fallback may resolve a subagent ask.
-		// A shadow-mode opinion records without changing verdicts, so with no human it
-		// denies rather than auto-allowing (the pre-fix behavior let shadow allow).
+		// Subagent gate: how this ask resolves without a human. A cascaded ask (the second model already
+		// ruled) is never auto-allowed: its only route to an allow is the ADR-0004 carve-out, which turns a
+		// demoted ask or deny plus a second-model allow into an ask so that a human decides. Only an ask the
+		// cascade never reached may still be put to the second model.
 		const autoResolve: NonNullable<Verdict["autoResolve"]> =
-			effVerdict === "deny" || effSource !== "classifier"
-				? "deny"
-				: cascade.fb
-					? cascade.fb.mode === "enforce" && cascade.fb.verdict === "allow" && !(cascade.demoted && outcome.verdict === "deny")
-						? "allow"
-						: "deny"
-					: "consult";
+			effVerdict === "deny" || effSource !== "classifier" || cascade.fb ? "deny" : "consult";
 		return {
 			verdict: "ask",
 			reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason,

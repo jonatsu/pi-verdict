@@ -4627,6 +4627,25 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		});
 	});
 
+	test("ADR-0004 carve-out holds for subagents: a demoted first-layer ask is never auto-allowed", async () => {
+		const jevAsk40 = { text: "<verdict>ask</verdict> jev: ask 60% (confidence 40%; allow 30%, deny 10%)" };
+		const cfg = { classifierMinConfidence: 50, classifierFallbackModel: "mock/fb" };
+		for (const gate of ["auto", "normal"] as const) {
+			// "normal" with no root UI resolves without a human, like "auto"
+			await withBridge(
+				{ ...cfg, subagentGate: gate },
+				async (_root, sub) => {
+					sub.responses = [jevAsk40, ALLOW];
+					const r = await toolCall(sub, "bash", { command: "cargo build" });
+					expect(r?.block).toBe(true);
+					expect(String(r.reason)).toContain("second opinion allows");
+					expect(sub.calls.length).toBe(2);
+				},
+				{ rootHasUI: gate === "auto" },
+			);
+		}
+	});
+
 	test("auto: a call naming a protected path through a spelling the tokeniser misses is held without any model call", async () => {
 		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb", denyPaths: ["~/.ssh/"] }, async (_root, sub) => {
 			sub.responses = [ASK, ALLOW];
