@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-25
+
 ### Fixed
 
 - An omp `xd://` tool-device call through `read` or `write` is a silent rule allow again, so the classifier no longer asks about the outer call of a device dispatch (such as `write xd://mcp__lazy_skills_server_load_skill {"name":"python-style"}`); v0.20.0 sent every device call to the classifier. A `write xd://<tool>` runs the tool through omp's tool wrapper, which emits the tool's own `tool_call`, so that nested call is still adjudicated on its own; a `read xd://...` returns documentation the host generates (`research/2026-10-25-xd-device-dispatch.md`). Writes to the devices that run host code with no nested call (`xd://resolve`, `xd://reject`, `xd://propose`, `xd://report_issue`, in any case), to the root `xd://`, to a topic URL, and to a name with any character outside letters, digits, `_` and `-` still reach the classifier (omp dispatches on the parsed URL, which drops empty credentials, an empty port, tabs, newlines and edge control characters, so `xd://:@resolve` reaches `resolve`), as does a device URL given to any other tool. The allow applies only on omp: pi registers no `xd` scheme and opens the text as the relative path `xd:/<name>`, so on pi an `xd://` target keeps the floor's path grade, S0 included (`write xd://foo_history` is denied as a shell-history file), but never its allow: an in-project `xd://` write reaches the classifier, as in v0.20.0, so a host the gate fails to detect as omp is never allowed silently. Self-protection, the floor, user `deny`, `denyPaths`, the `.omp` gate and the code-loading ask still run first, and a user `deny` regex now also tests an internal URL target as written, so `^xd://mcp__lazy_skills_` denies the device write; before, it saw only the resolved path form (`<cwd>/xd:/…`) ([ADR-0009](docs/adr/0009-tool-access-adapter.md)).
@@ -458,7 +460,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/jonatsu/pi-verdict/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jonatsu/pi-verdict/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jonatsu/pi-verdict/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/jonatsu/pi-verdict/compare/v0.18.0...v0.18.1
