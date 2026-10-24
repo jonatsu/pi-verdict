@@ -40,4 +40,30 @@ jobs:
       - name: Coverage freshness
         run: bun run coverage && git diff --exit-code docs/coverage.md
 
+  # The gate fixes its win32 and darwin path handling at module load from process.platform,
+  # so only a runner on that OS exercises it. Lint, typecheck and coverage are OS-independent
+  # and stay in the verify job.
+  cross-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Probe
+        run: bun run probe
+
 # trigger re-registration: touch v2
