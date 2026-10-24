@@ -4,9 +4,19 @@
 
 **pi-verdict** (`@jonatsu/pi-verdict`) is a minimal permission-gate extension for [Pi](https://github.com/earendil-works/pi-coding-agent) and oh-my-pi (`omp`): a deterministic **rule layer** plus a **model classifier** for the gray zone. Every tool call is adjudicated to one of three states: `allow` / `ask` / `deny`. Default posture is allow-unless-intercepted ("Auto Mode"), the reverse of Claude Code.
 
-Domain terms live in `CONTEXT.md` (glossary); decisions live in `docs/adr/`; design conclusions are backed by measurements under `research/`. Read those before changing behavior, and use the glossary terms exactly (e.g. adjudication pipeline, dual-form matching, gray zone, `denyPaths` — always plural).
+Use the glossary terms exactly (e.g. adjudication pipeline, dual-form matching, gray zone, `denyPaths`, always plural).
+## Where to Read
 
-Open work is ranked in `TODO.md`; plans live in `docs/plans/`. Read `TODO.md` before starting new work.
+- Read before starting new work: [TODO.md](TODO.md) (ranked open work); plans: [docs/plans/](docs/plans/), finished ones in `docs/plans/archive/`.
+- Read when naming a concept or term: [CONTEXT.md](CONTEXT.md).
+- Read before changing a layer's order or decision: [docs/layers.md](docs/layers.md); the probe asserts it.
+- Read before adding or changing a config key or default: [docs/configuration.md](docs/configuration.md).
+- Read before changing behavior, or to learn why it is so: [docs/adr/README.md](docs/adr/README.md), the decision index.
+- Read before changing a security property: [docs/security-principles.md](docs/security-principles.md).
+- Read before changing host imports, dialog mouse handling or the status widget: [docs/host-contract.md](docs/host-contract.md).
+- Read before adding a probe case: [probe/README.md](probe/README.md); [docs/coverage.md](docs/coverage.md) is generated from it.
+- Read before filing or triaging an issue: [issue tracker](docs/agents/issue-tracker.md), [triage labels](docs/agents/triage-labels.md), [domain docs](docs/agents/domain.md).
+- Read when tracing a claim made before v0.17.0: [docs/verification-2026-10-04.md](docs/verification-2026-10-04.md), a dated record.
 
 ## Agent Rules (YOU MUST)
 
@@ -27,22 +37,22 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 
 **Host hooks** (all inside `autoMode`): flags `auto-mode` (default on), `auto-mode-model`, `auto-mode-debug` (also env `PI_AUTO_MODE_DEBUG=1`); `session_start` (project-trust prompt, `SessionState.reset()`, shortcut registration, audit prune); `tool_call` (the gate); commands `/automode` (on|off|status) and `/verdict` (interactive config editor, needs UI); toggle shortcut (default `ctrl+shift+a`).
 
-**Pipeline** — pure, UI-free `adjudicate(state, call, env) → Verdict`, called from the `tool_call` handler. `docs/layers.md` is the authoritative layer map, and the probe asserts it; change both together.
+**Pipeline** — pure, UI-free `adjudicate(state, call, env) → Verdict`, called from the `tool_call` handler; change it together with `docs/layers.md`.
 
 1. `classifyByRules` → `RuleResult{allow|deny|gray|ask}`. Every file-tool layer reads its targets from the tool-access adapter `toolAccess` (ADR-0009), graded in every form the host can resolve the path to (`hostPathForms`), worst grade winning. Order: self-protection (ADR-0005: a hard, config-exempt deny over the gate's own files) → built-in deny floor (`BASH_DANGER_RULES`, path sensitivity S0–S5 via `classifyPath`; off with `builtinDenyFloor:false`) → user `deny` regexes → forced `.omp` gate (`gateOmpDir`, default off) ask → `denyPaths` ask (also a call the strict redactor matches) → over-cap action ask → user `allow` regexes / `tools` exact-name exemption → opaque-call ask → gray. Deny beats allow. There is **no built-in allowlist** (`research/rule-layer-security-audit.md`).
 2. Gray zone → `classifyWithModel` (per-attempt cap `CLASSIFIER_TIMEOUT_MS`, inside the end-to-end budget `ADJUDICATION_BUDGET_MS`; a timed-out attempt is never retried). Response MUST start with `<verdict>allow|ask|deny</verdict>` (verdict prefix contract) or it fails closed.
 3. Post-classifier: `confidenceDemotion` (`classifierMinConfidence`, jev only) → `runConfidenceCascade` to `classifierFallbackModel` (`enforce` default | `shadow`; a demoted deny can never become an auto allow; ADR-0004).
-4. Presentation: single point `presentVerdict` (templates keyed by `source × degraded`). Block text via `blockedReason(tag, detail)` → `[auto-mode <tag> block] BLOCKED — ...`. `Verdict.detail` is UI-only; protected-path plaintext MUST NOT reach the agent, notifications, or any model (ADR-0002 existence hint only). Asks go through `confirmAsk` (rich dialog → `AskDecision`): Yes / No / "No, with explanation…" (user text → `declineDetail` → block reason) / "Explain…" (EXPLAIN-GATE role, `explainGate`; display-only output, **never offered for protected-path asks** — same ADR-0002 rule). Before changing the dialog's mouse handling or the gray-zone status widget, read `docs/host-contract.md`, which records the host metrics they depend on.
+4. Presentation: single point `presentVerdict` (templates keyed by `source × degraded`). Block text via `blockedReason(tag, detail)` → `[auto-mode <tag> block] BLOCKED — ...`. `Verdict.detail` is UI-only; protected-path plaintext MUST NOT reach the agent, notifications, or any model (ADR-0002 existence hint only). Asks go through `confirmAsk` (rich dialog → `AskDecision`): Yes / No / "No, with explanation…" (user text → `declineDetail` → block reason) / "Explain…" (EXPLAIN-GATE role, `explainGate`; display-only output, **never offered for protected-path asks** — same ADR-0002 rule).
 
 **Fail direction**: closed. Classifier error / timeout / no model / malformed output ⇒ deny (`source:"fail-closed"`). No UI (`pi -p`, json, rpc) ⇒ every `ask` degrades to deny with `degraded:true`. Config errors ⇒ empty rules with the floor ON plus a notification, **and `policyDegraded` (ADR-0010): a config parse/load failure, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry withholds every model-originated allow — first layer + cascade → ask (`source:"degraded-policy"`), subagent second model → denied outright — and suspends user `allow`/`tools` for the session; named in the footer badge, `/automode`, every block reason, and a session-start warning**. The extension is never disabled. Audit write failures are fail-soft.
 
 **Subagents** (omp): a subagent session's ask goes to the root session's UI (`rootUi`); with no root UI, or `subagentGate: "auto"`, it resolves without a human through `resolveAskWithoutHuman`, which consults `classifierFallbackModel` and denies everything else.
 
-**State**: `SessionState` class (exported for tests) holds fallback stats, `userRules`, audit log, `policyDegraded`, and `denyPathBases`. `reset()` is the single reset list — add any new per-session state there. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
+**State**: `SessionState` class (exported for tests) holds fallback stats, `userRules`, audit log, `policyDegraded`, and `denyPathBases`. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
 
-**Dual host**: real pi and omp. Adapter detects omp by `"logger" in pi && "typebox" in pi`. Model calls go through `ctx.modelRegistry.complete` when present, else the `compatLoader` fallback (omp 18 shape). `[pi-verdict local patch: …]` comment tags mark divergences from upstream `jesset/pi-verdict`. The omp host source for path and loader behavior is cloned under `.scratch/research/oh-my-pi` (git-ignored); check its version against the installed `omp --version` before citing it.
+**Dual host**: real pi and omp. Adapter detects omp by `"logger" in pi && "typebox" in pi`. Model calls go through `ctx.modelRegistry.complete` when present, else the `compatLoader` fallback (omp 18 shape). The omp host source for path and loader behavior is cloned under `.scratch/research/oh-my-pi` (git-ignored); check its version against the installed `omp --version` before citing it.
 
-**Config**: `<agentDir>/config/pi-verdict.json` (user), written from `USER_CONFIG_TEMPLATE` on first run; project override `<project>/.omp|.pi/pi-verdict.json`, applied only if trusted (`<agentDir>/config/pi-verdict-trust.json`), and only in the narrowing direction (ADR-0006). `agentDir` = `PI_CODING_AGENT_DIR` if set, else self-anchored from the install path (`resolveAgentDir`), fallback `~/.pi/agent`; never probe the host dir tree. Every key, its default and its override direction are documented in `docs/configuration.md`; defaults live in `EMPTY_RULES`. Audit (opt-in): `<agentDir>/verdicts/<sessionId>.jsonl`.
+**Config**: `<agentDir>/config/pi-verdict.json` (user), written from `USER_CONFIG_TEMPLATE` on first run; project override `<project>/.omp|.pi/pi-verdict.json`, applied only if trusted (`<agentDir>/config/pi-verdict-trust.json`), and only in the narrowing direction (ADR-0006). `agentDir` = `PI_CODING_AGENT_DIR` if set, else self-anchored from the install path (`resolveAgentDir`), fallback `~/.pi/agent`; never probe the host dir tree. Defaults live in `EMPTY_RULES`. Audit (opt-in): `<agentDir>/verdicts/<sessionId>.jsonl`.
 
 ## Key Directories
 
@@ -52,7 +62,7 @@ Two independent files in `extensions/` (no `src/`, no build step; TypeScript is 
 | `tests/` | `bun:test` suites, one per extension file |
 | `probe/` | The shared gate-testing contract: `cases.ts` (the case table), `probe.ts` (three-run runner), `fixtures.ts`, `consumer-policy.json`, `README.md`. Dev artifact; not shipped |
 | `tools/` | `provenance.ts`, `coverage.ts` (generates `docs/coverage.md`), `release-check.ts`. Dev artifacts; not shipped |
-| `docs/` | `configuration.md`, `security-principles.md`, `layers.md` (the layer map the probe asserts), `host-contract.md`, `coverage.md` (generated), `plans/` (tracked plans), `adr/` (NNNN-*.md), `agents/` (skill config, not product docs), `images/`, `demo.gif` |
+| `docs/` | Reference docs, plans and ADRs (routed in "Where to Read"); `agents/` is skill config, not product docs |
 | `.agents/rules/` | Repository rules for agents (`pv-*.md`); `.claude/rules/` holds symlinks to them |
 | `research/` | Evidence notes + offline sims (`cache-sim/`, `rule-engine-sim/`); not part of tests/typecheck |
 | `scripts/` | `demo.tape` (vhs recording of `docs/demo.gif`; macOS/zsh/RamDisk-specific) |
@@ -90,7 +100,6 @@ bun run release-check       # package.json version == annotated tag v<version> (
 - `extensions/jev-adapter.ts` — jev provider/transport (env `PI_VERDICT_JEV_TRANSPORT` = `openrouter|typesafe`, `PI_VERDICT_JEV_URL`, keys `OPENROUTER_API_KEY` / `TYPESAFE_API_KEY`).
 - `package.json` — `files` whitelist (a new runtime file under `extensions/` MUST be added or it won't publish), version, peer dep `@earendil-works/pi-coding-agent >=0.84.0` (optional; dev-pinned 0.84.3).
 - `tsconfig.json` — `paths` maps the pi package to `node_modules/.../dist/index.d.ts`.
-- `CONTEXT.md`, `docs/adr/`, `docs/configuration.md`, `CHANGELOG.md`.
 
 ## Runtime/Tooling Preferences
 
@@ -98,7 +107,7 @@ bun run release-check       # package.json version == annotated tag v<version> (
 - Zero runtime dependencies; the pi package is an optional peer dep. Don't add runtime deps without a strong reason.
 - Package name is `@jonatsu/pi-verdict` (renamed from `@frapetti-dev/pi-verdict`). The deployment installs via the git spec; GitHub Packages publishing requires the scope to match `@jonatsu`.
 - CI (`ci.yml`): `bun install --frozen-lockfile` → `bun run typecheck` → `biome ci .` → `bun test` → `bun run probe` → `bun run coverage && git diff --exit-code docs/coverage.md`. Publish (`publish.yml`, on GitHub Release): tag must equal `v` + `package.json` version and HEAD must be the tag commit, then typecheck + test + publish.
-- Dev workstation is Windows with WSL2; `PI_CODING_AGENT_DIR` and home-relative fixtures must work cross-platform (Windows path separators are handled in code).
+- Keep `PI_CODING_AGENT_DIR` and home-relative fixtures cross-platform; Windows path separators are handled in code. The dev host is native Linux and CI runs only `ubuntu-latest`, so the win32 and darwin branches (fixed at module load from `process.platform`) are untested; their tests skip. WSL drive aliases are tested by setting `WSL_DISTRO_NAME`.
 
 ## Testing & QA
 
@@ -122,13 +131,11 @@ Keep docs in sync with functional changes:
 
 `CHANGELOG.md` and `docs/adr/` may cite plan item and finding ids that a tracked plan defines; code may not (`pv-comments.md`).
 
-## Installed Copies (self-protection: ADR-0005; history in ADR-0001)
+## Installed Copies (ADR-0005)
 
-ADR-0001's self-protection layer was removed (final ADR revision) and restored by ADR-0005 — the gate itself blocks writes to these again (and denies reads/writes to `<agentDir>/verdicts/`). The manual-only workflow remains project convention:
-
-- The agent MUST NOT write `<agentDir>/config/pi-verdict.json` or the installed copies under `<agentDir>/extensions/` — these are the user's live gate; changes are made by the user, by hand, outside the repo.
-- To test a new build the user runs `cp extensions/pi-verdict.ts extensions/jev-adapter.ts ~/.pi/agent/extensions/` and restarts pi (`jev-adapter.ts` only needed for the jev backend). Same for editing user rules.
-- `gateOmpDir` (default off) makes the gate ask (non-interactive → deny) on any tool call touching a `.omp` directory, including `~/.omp/agent/`. Additional backstop for omp hosts, not a replacement for the convention.
+- Never write `<agentDir>/config/pi-verdict.json` or an installed copy: they are the user's live gate, and the gate itself denies those writes.
+- On omp, the live gate is the git-spec install in `~/.omp/plugins`, pinned by commit in the user's agent-setup repository (`~/src/agent-setup`, `agents/omp/pi-verdict-pin.json`), which also deploys the policy file. A release reaches the user only through a pin bump there; coordinate it with that repository's session.
+- On pi, the user tests a build by copying `extensions/pi-verdict.ts` and `extensions/jev-adapter.ts` into `~/.pi/agent/extensions/` and restarting pi.
 
 ## Smoke-testing a build without touching the installed copy
 
@@ -147,7 +154,7 @@ Spawn a sub-instance that loads only the repo copy, against a throwaway agent di
 ## Git & Workflow Conventions
 
 - Feature branches: `feat/description-with-dash-separated-and-MAY-contains-issue-number`.
-- [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for messages. **Do not run `git commit` without the user's permission.**
+- [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for messages. Commit verified work without asking; push only with the user's authorization.
 - Update CHANGELOG before merging to main.
-- Issues are GitHub issues managed via `gh` (`docs/agents/issue-tracker.md`); triage labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` (`docs/agents/triage-labels.md`). Single-context domain docs: root `CONTEXT.md` + `docs/adr/` (`docs/agents/domain.md`).
+- Issues are GitHub issues managed via `gh`; the issue and triage docs are routed in "Where to Read".
 - To inspect another GitHub project's source, use `gh api`. Clone an open-source project for research under `.scratch/research/` (git-ignored), never `/tmp`.
