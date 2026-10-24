@@ -6195,4 +6195,20 @@ describe("hashline header spellings (ADR-0009)", () => {
 		expect(await toolCall(h, "edit", header("src/a.ts#AUTO"))).toBeUndefined();
 		expect(h.calls).toHaveLength(0);
 	});
+
+	test("trailing whitespace after a header does not hide its target", async () => {
+		const h = session({});
+		for (const tail of [" ", "\t", "  \t", "\r"]) {
+			const r = await toolCall(h, "edit", { input: `[src/a.ts#1A2B]\n1:x\n[.git/config#ABCD]${tail}\n1:y\n` });
+			expect(r?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a benign header with trailing whitespace keeps its rule allow", async () => {
+		const h = session({});
+		expect(await toolCall(h, "edit", { input: "[src/a.ts#1A2B] \n1:x\n[src/b.ts#3C4D]\t\n1:y\n" })).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+		expect(h.confirms).toBe(0);
+	});
 });

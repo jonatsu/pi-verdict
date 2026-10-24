@@ -2253,7 +2253,8 @@ function parseHashlineTargets(text: string): string[] {
 	const targets: string[] = [];
 	const stripped = text.startsWith("\uFEFF") ? text.slice(1) : text;
 	for (const raw of stripped.split("\n")) {
-		const line = raw.replace(/\r$/, "");
+		// omp trims the line end before it reads a header, so `[path#TAG] ` is still a header.
+		const line = raw.trimEnd();
 		if (line.startsWith("[") && line.endsWith("]")) {
 			targets.push(...hashlineHeaderPaths(line.slice(1, -1).trim()));
 			continue;
