@@ -5278,6 +5278,46 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		expect(h.notifies.some(([m]) => m.includes("/.ssh/id_rsa"))).toBe(false);
 	});
 
+	test("a home-relative declaration does not make the same tail inside another tree a protected path", async () => {
+		const home = os.homedir();
+		const tail = ".pv-strict-tail";
+		await withTempDir("pv-strict-cwd-", async (cwd) => {
+			fs.mkdirSync(path.join(cwd, tail), { recursive: true });
+			fs.writeFileSync(path.join(cwd, tail, "data"), "x");
+			const h = session({ denyPaths: [`~/${tail}/`] }, { cwd });
+			h.confirmAnswer = false;
+			// the project's own `.pv-strict-tail/data` is another tree: no protected-path ask
+			expect(await toolCall(h, "read", { path: path.join(cwd, tail, "data") })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+			// every spelling of the declared home path still asks
+			for (const [tool, input] of [
+				["read", { path: `~/${tail}/x` }],
+				["read", { path: `${home}/${tail}/x` }],
+				["bash", { command: `cat \${HOME}/${tail}/x` }],
+				["bash", { command: `cat $HOME/${tail}/x` }],
+				["bash", { command: `cat ~/${tail}/x` }],
+			] as const) {
+				h.confirms = 0;
+				expect((await toolCall(h, tool, input))?.block).toBe(true);
+				expect(h.confirms).toBe(1);
+			}
+		});
+		// a relative spelling from a cwd that is the home directory still names the declared path
+		const h = session({ denyPaths: [`~/${tail}/`] }, { cwd: home });
+		h.confirmAnswer = false;
+		expect((await toolCall(h, "bash", { command: `cat ${tail}/x` }))?.block).toBe(true);
+		expect(h.confirms).toBe(1);
+	});
+
+	test("transcript redaction keeps the home-relative tail while the strict ask match drops it", () => {
+		const home = os.homedir();
+		const base = `${home}/.pv-strict-tail`;
+		const call = { path: "/work/.pv-strict-tail/data" };
+		expect(redactorFor("/work", [base])(call)).toBe(true);
+		expect(redactorFor("/work", [base], undefined, true)(call)).toBe(false);
+		expect(redactorFor("/work", [base], undefined, true)({ command: `cat \${HOME}/.pv-strict-tail/x` })).toBe(true);
+	});
+
 	test("a call only the wide redactor matches reaches the classifier as the marker, not the path", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-wide-"));
 		try {

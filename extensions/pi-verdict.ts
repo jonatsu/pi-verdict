@@ -3406,8 +3406,9 @@ const PROTECTED_PATH_MARKER = "<protected-path>";
  *  a relative declaration still catches an absolute spelling of the same path. In transcript
  *  use (the default), over-redaction is harmless and under-redaction is a leak, so the
  *  conservative direction is wholesale. With `strict`, the raw spelling check also needs path-word
- *  boundaries, because the verdict's protected-path ask uses that form and a false positive there
- *  blocks a legitimate call. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
+ *  boundaries and leaves out the bare home-relative tail (`~/`, `$HOME` and `${HOME}` spellings stay),
+ *  because the verdict's protected-path ask uses that form and a false positive there blocks a
+ *  legitimate call. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
  *  privacy marker, not an injection framing (PC-review F9). Detected only literally:
  *  obfuscated spellings (command substitution, base64, archiving — ADR-0002's documented
  *  holes) are NOT redacted here; the classifier's existence hint stays the backstop for those
@@ -3426,11 +3427,13 @@ export function redactorFor(
 	for (const base of bases) {
 		for (const form of baseForms(base)) spellings.add(form);
 		// `~/` and `$HOME`/`${HOME}` spellings of the same base, plus the home-relative tail
-		// (e.g. `.ssh/`) when the base sits under the user's home directory.
+		// (e.g. `/.ssh/`) when the base sits under the user's home directory. The bare tail matches
+		// the same directory name in any other tree, so the strict ask match leaves it out.
 		const relativeToHome =
 			home && (fold(base) === fold(home) || fold(base).startsWith(fold(home + path.sep))) ? base.slice(home.length) : null;
 		if (relativeToHome !== null && relativeToHome !== "") {
-			for (const form of [relativeToHome, `~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`]) {
+			const prefixedForms = [`~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`];
+			for (const form of strict ? prefixedForms : [relativeToHome, ...prefixedForms]) {
 				spellings.add(form); // `{HOME}` + tail produces the literal ${HOME}… — F10's missed tokeniser form
 				for (const resolved of denyPathForms(form, cwd)) spellings.add(resolved); // literal + cwd-resolved, both ways
 			}
