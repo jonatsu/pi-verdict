@@ -3122,6 +3122,11 @@ describe("agentDir self-anchoring (#35)", () => {
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
 	});
 
+	test("pi module-directory install form (extensions/pi-verdict/index.ts) anchors to the pi agent dir", () => {
+		const own = path.join(HOME, ".pi", "agent", "extensions", "pi-verdict", "index.ts");
+		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
+	});
+
 	test("PI_CODING_AGENT_DIR wins over anchoring", () => {
 		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "pi-verdict", "extensions", "pi-verdict.ts");
 		expect(resolveAgentDir(own, HOME, "/custom/agent")).toBe("/custom/agent");
@@ -3804,6 +3809,33 @@ describe("self-protection layer (ADR-0005)", () => {
 			expect(isProtectedWritePath(path.join(pkg, "extensions", "jev-adapter.ts"), "/proj", prot)).toBe(true);
 			const dev = buildProtectedSet(agentDir, "/proj/extensions/pi-verdict.ts");
 			expect(isProtectedWritePath("/proj/extensions/jev-adapter.ts", "/proj", dev)).toBe(false);
+		});
+	});
+
+	test("a module-directory install protects the whole directory, by prefix and by bash signature", async () => {
+		await withTempDir("pv-sp-copy-", async (agentDir) => {
+			const dir = path.join(agentDir, "extensions", "pi-verdict");
+			const prot = buildProtectedSet(agentDir, path.join(dir, "index.ts"));
+			expect(prot.prefixes).toContain(path.join(fs.realpathSync(agentDir), "extensions", "pi-verdict"));
+			expect(prot.prefixes).not.toContain(path.join(fs.realpathSync(agentDir), "extensions"));
+			expect(isProtectedWritePath(path.join(dir, "index.ts"), "/proj", prot)).toBe(true);
+			expect(isProtectedWritePath(path.join(dir, "shell.ts"), "/proj", prot)).toBe(true);
+			expect(isProtectedWritePath(path.join(dir, "ui", "dialog.ts"), "/proj", prot)).toBe(true);
+			expect(prot.bashPatterns.some((re) => re.test(`cp x ${path.join(dir, "shell.ts")}`))).toBe(true);
+			// the directory only, not its siblings in the extensions root
+			expect(isProtectedWritePath(path.join(agentDir, "extensions", "other.ts"), "/proj", prot)).toBe(false);
+		});
+	});
+
+	test("an npm package install with the module-directory layout protects the package root", async () => {
+		await withTempDir("pv-sp-copy-", async (agentDir) => {
+			const pkg = path.join(agentDir, "plugins", "node_modules", "@jonatsu", "pi-verdict");
+			const own = path.join(pkg, "extensions", "pi-verdict", "index.ts");
+			const prot = buildProtectedSet(agentDir, own);
+			expect(isProtectedWritePath(path.join(pkg, "extensions", "pi-verdict", "shell.ts"), "/proj", prot)).toBe(true);
+			expect(isProtectedWritePath(path.join(pkg, "extensions", "jev-adapter.ts"), "/proj", prot)).toBe(true);
+			expect(isProtectedWritePath(path.join(pkg, "package.json"), "/proj", prot)).toBe(true);
+			expect(prot.bashPatterns.some((re) => re.test(`cp x ${path.join(pkg, "extensions", "pi-verdict", "shell.ts")}`))).toBe(true);
 		});
 	});
 
