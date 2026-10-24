@@ -35,7 +35,8 @@ The `git-push-force` rule is now two layers:
    true whenever its parse is **unsound** — a sentinel marks a construct the scanner cannot resolve
    (`$(` inside double quotes, backticks, a here-document, a process substitution, `eval`, `env -S`
    forms, an unterminated quote, a `-c` template with a positional reference, an unmodelled shell
-   option, an unmodelled `git` global option, recursion past the depth cap). It returns false
+   option, an unmodelled `git` global option, an expansion or glob before git's subcommand,
+   recursion past the depth cap). It returns false
    (clearing the tripwire hit) only when the parse is **sound** and contains no force push — the
    quoted-argument case, a non-`git` `push` (e.g. `docker push --force`), a `push` that is not
    git's subcommand (`git stash push -- +file`), and a `+word` that is a push option's value

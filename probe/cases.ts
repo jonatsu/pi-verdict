@@ -128,6 +128,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["force flag after 2>&1", "git push origin main 2>&1 --force", {}],
 		["quoted digit before a redirection is an argument", "git -C '2'>/dev/null push origin +main", {}],
 		["{fd} descriptor prefix is part of the redirection", "git {fd}>/dev/null push origin +main", {}],
+		["expansion among git's global options", "git -C $NOPE dir push origin +main", {}],
 	];
 	for (const [label, command, extra] of forcePush) {
 		const { open, item, ref, ...expect } = extra;

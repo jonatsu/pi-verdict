@@ -692,6 +692,14 @@ describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
 		expect(shellWords("a {fd}>x b")).toEqual(["a", "b"]);
 		expect(shellWords("a '{fd}'>x b")).toEqual(["a", "{fd}", "b"]);
 	});
+	// An unquoted empty expansion vanishes from argv, and a glob may match nothing or several words:
+	// either can shift which word git reads as its subcommand.
+	test("an expansion or glob among git's global options keeps the deny", async () => {
+		await denyRule("git $NOPE " + P);
+		await denyRule("git -C $NOPE dir push origin +" + "main");
+		await denyRule(`git -C dir \${NOPE} push origin +` + "main");
+		await denyRule("git -c a=* dir push -" + "f");
+	});
 	test("&&, a background & and |& still separate commands", () => {
 		expect(gitPushForce("git push origin main & echo --" + "force")).toBe(false);
 		expect(gitPushForce("git push origin main && echo --" + "force")).toBe(false);
