@@ -1415,6 +1415,17 @@ describe("toggle shortcut", () => {
 		expect(raw).toContain("ctrl+shift+a");
 		expect(raw).toContain("toggleShortcut sets the master-switch toggle key"); // _hint explanatory text
 	});
+	test("config template _hint links this repository's reference and names the real fallback triggers", () => {
+		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
+		const h = makeHarness();
+		h.install();
+		const hint = String(JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8"))._hint);
+		expect(hint).toContain("https://github.com/jonatsu/pi-verdict/blob/main/docs/configuration.md");
+		expect(hint).not.toContain("jesset");
+		expect(hint).toContain("classifierMinConfidence");
+		expect(hint).not.toContain("classifierFallbackConfidence");
+		expect(hint).not.toContain("todo, ask, task"); // task is deliberately outside the starter list
+	});
 });
 
 // ── denyPaths (ADR-0002): deterministic ask + classifier existence hint ──
