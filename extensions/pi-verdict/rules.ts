@@ -48,10 +48,11 @@ export function classifyByRules(toolName: string, input: Record<string, unknown>
 
 	const access = toolAccess(toolName, input);
 	const graded = gradeBase(toolName, input, access, ctx);
-	if (graded.base.verdict === "deny") return graded.base; // the floor's deny beats every user rule
+	if (graded.verdict === "deny") return graded; // the floor's deny beats every user rule
+	const relocatable = readsRelocatable(toolName, access, ctx.cwd);
 	const internalUrl = namesInternalUrl(toolName, access);
-	const base = withholdFloorAllow(graded.base, toolName, access, internalUrl, ctx.cwd);
-	const flags: VouchFlags = { policyDegraded: ctx.policyDegraded, relocatable: graded.relocatable, internalUrl };
+	const base = withholdFloorAllow(graded, toolName, access, { relocatable, internalUrl }, ctx.cwd);
+	const flags: VouchFlags = { policyDegraded: ctx.policyDegraded, relocatable, internalUrl };
 	const targets = userRuleTargets(toolName, input, ctx.cwd);
 
 	return (
@@ -68,45 +69,34 @@ export function classifyByRules(toolName: string, input: Record<string, unknown>
 	);
 }
 
-/** Grades the call against the built-in floor. `relocatable` marks a relative `read` target that
- *  does not exist, which no rule may vouch for. */
-function gradeBase(
-	toolName: string,
-	input: Record<string, unknown>,
-	access: ToolAccess,
-	ctx: RuleContext,
-): { base: RuleResult; relocatable: boolean } {
+/** Returns the built-in floor's grade for the call, before any target shape turns its allow gray. */
+function gradeBase(toolName: string, input: Record<string, unknown>, access: ToolAccess, ctx: RuleContext): RuleResult {
 	const floorOn = ctx.user.builtinDenyFloor;
-	if (isCommandTool(toolName)) return { base: classifyBash(commandText(input), floorOn), relocatable: false };
+	if (isCommandTool(toolName)) return classifyBash(commandText(input), floorOn);
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
-		const base: RuleResult = access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.cwd, floorOn);
-		return { base, relocatable: false };
+		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.cwd, floorOn);
 	}
-	if (access.direction === "observing") {
-		const readTargets = access.gradedReads.length > 0 ? access.gradedReads : [ctx.cwd];
-		let base = classifyReads(readTargets, ctx.cwd, floorOn);
-		// A scope search below a credential directory's parent walks into it, so the floor's allow
-		// for the parent is not a verdict; a plain read of a directory is not a search.
-		if (base.verdict === "allow" && access.scope && readTargets.some((t) => s0DirectoryBeneath(t, ctx.cwd))) {
-			base = { verdict: "gray", reason: "search scope contains a credential directory" };
-		}
-		// The host reads a missing relative target from a workspace file it finds by suffix, so no rule
-		// may vouch for the spelling; the classifier sees the call instead.
-		const relocatable = toolName === "read" && access.reads.some((t) => readMayRelocate(t, ctx.cwd));
-		if (relocatable && base.verdict === "allow") {
-			base = { verdict: "gray", reason: "relative read target does not exist (the host may open another file)" };
-		}
-		return { base, relocatable };
-	}
+	if (access.direction === "observing") return classifyReads(observedTargets(access, ctx.cwd), ctx.cwd, floorOn);
 	if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.
 		const shellText = pyEvalShellLines(access.command).join("\n");
-		return { base: shellText ? classifyBash(shellText, floorOn) : { verdict: "gray" }, relocatable: false };
+		return shellText ? classifyBash(shellText, floorOn) : { verdict: "gray" };
 	}
-	return { base: { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` }, relocatable: false };
+	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
+}
+
+/** Returns an observing call's read targets; a pathless one reads the cwd. */
+function observedTargets(access: ToolAccess, cwd: string): string[] {
+	return access.gradedReads.length > 0 ? access.gradedReads : [cwd];
+}
+
+/** True when a `read` names a missing relative target: the host then reads a workspace file it finds by
+ *  suffix, so no rule may vouch for the spelling. */
+function readsRelocatable(toolName: string, access: ToolAccess, cwd: string): boolean {
+	return access.direction === "observing" && toolName === "read" && access.reads.some((t) => readMayRelocate(t, cwd));
 }
 
 /** A target in one of the host's internal URL schemes is served by a handler (a remote host, a
@@ -117,10 +107,21 @@ function namesInternalUrl(toolName: string, access: ToolAccess): boolean {
 	);
 }
 
-/** Turns the floor's allow gray for a target it cannot vouch for: an internal URL, or a glob. */
-function withholdFloorAllow(base: RuleResult, toolName: string, access: ToolAccess, internalUrl: boolean, cwd: string): RuleResult {
+/** Turns the floor's allow gray for a call it cannot vouch for, so the classifier sees the call. */
+function withholdFloorAllow(
+	base: RuleResult,
+	toolName: string,
+	access: ToolAccess,
+	shape: { readonly relocatable: boolean; readonly internalUrl: boolean },
+	cwd: string,
+): RuleResult {
 	if (base.verdict !== "allow") return base;
-	if (internalUrl) return { verdict: "gray", reason: "target is an internal URL, not a project path" };
+	// A scope search below a credential directory's parent walks into it; a plain read of a
+	// directory is not a search.
+	if (access.direction === "observing" && access.scope && observedTargets(access, cwd).some((t) => s0DirectoryBeneath(t, cwd)))
+		return { verdict: "gray", reason: "search scope contains a credential directory" };
+	if (shape.relocatable) return { verdict: "gray", reason: "relative read target does not exist (the host may open another file)" };
+	if (shape.internalUrl) return { verdict: "gray", reason: "target is an internal URL, not a project path" };
 	// A glob target names files the prefix grade cannot see, so the floor's allow is not a
 	// verdict for it; the deny-side layers below still run on the prefix. `glob` alone only lists
 	// names, so it keeps the allow while everything it can reach stays inside the project.
