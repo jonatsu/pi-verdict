@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { collectStrings, commandText, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
+import { collectStrings, commandText, isCommandTool, type ToolAccess } from "./access.ts";
 import { escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
 import { baseForms, isWithin, kernelForms, rebuiltForms, relativeBeneath } from "./paths.ts";
@@ -256,15 +256,6 @@ export function isProtectedReadPath(rawPath: string | undefined, cwd: string, pr
 	return false;
 }
 
-/** Returns the check a call gets. The tool name selects only the direction; the paths come from the
- *  call's inputs, so a tool the gate does not know gets the write check. */
-function selfProtectDirection(toolName: string): "write" | "read" | "command" | "unknown" {
-	if (isCommandTool(toolName)) return "command";
-	if (MUTATING_TOOL_NAMES.has(toolName)) return "write";
-	if (OBSERVING_TOOL_NAMES.has(toolName)) return "read";
-	return "unknown";
-}
-
 /** Returns the directories a shell command changes into with `cd` or `pushd`, `$HOME` and
  *  `$PI_CODING_AGENT_DIR` expanded, because `cd <agentDir> && cat verdicts/*.jsonl` names no
  *  protected path the substring check could see. */
@@ -281,27 +272,44 @@ function bashDirectoryTargets(command: string, agentDir: string): string[] {
 }
 
 /** Returns a deny that no configuration exempts when the call's inputs touch the gate's own files, or
- *  null to hand the call to the next layer. */
-export function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
-	const direction = selfProtectDirection(toolName);
-	if (direction === "command") {
+ *  null to hand the call to the next layer. The access direction selects the check; the paths come
+ *  from the call's inputs, so a tool the gate does not know gets the write check. */
+export function selfProtectCheck(
+	toolName: string,
+	input: Record<string, unknown>,
+	access: ToolAccess,
+	cwd: string,
+	prot: ProtectedSet,
+): RuleResult | null {
+	if (isCommandTool(toolName)) {
 		const cmd = commandText(input);
 		const cdHit = bashDirectoryTargets(cmd, prot.agentDir).some((t) => isProtectedReadPath(t, cwd, prot));
 		return prot.bashPatterns.some((re) => re.test(cmd)) || cdHit ? selfDeny(COMMAND_TOUCHES_GATE) : null;
 	}
 	const strings = collectStrings(input);
-	const access = toolAccess(toolName, input);
-	if (direction === "read") {
-		for (const s of [...strings, ...access.gradedReads]) {
-			if (isProtectedReadPath(s, cwd, prot))
-				return selfDeny(
-					`self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`,
-				);
+	switch (access.direction) {
+		case "observing":
+			for (const s of [...strings, ...access.gradedReads]) {
+				if (isProtectedReadPath(s, cwd, prot))
+					return selfDeny(
+						`self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`,
+					);
+			}
+			return null;
+		case "mutating":
+		case "unknown":
+			return selfProtectWrite(strings, access, cwd, prot);
+		default: {
+			const unhandled: never = access.direction;
+			return unhandled;
 		}
-		return null;
 	}
-	// A write or an unknown tool denies on any input string in the protected set. The adapter's
-	// targets count too, because an apply-patch header names its file inside one raw string.
+}
+
+/** The write check, which also covers a tool the gate does not know. */
+function selfProtectWrite(strings: readonly string[], access: ToolAccess, cwd: string, prot: ProtectedSet): RuleResult | null {
+	// Any input string in the protected set denies. The adapter's targets count too, because an
+	// apply-patch header names its file inside one raw string.
 	for (const s of [...strings, ...access.gradedWrites, ...access.gradedReads]) {
 		if (isProtectedWritePath(s, cwd, prot))
 			return selfDeny(

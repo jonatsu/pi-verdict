@@ -51,10 +51,10 @@ interface RuleCall {
  * `docs/layers.md` documents and the probe asserts, or the floor's own grade when none does.
  */
 export function classifyByRules(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleResult {
-	const selfProtected = selfProtectCheck(toolName, input, ctx.cwd, ctx.prot);
+	const call = readCall(toolName, input, ctx);
+	const selfProtected = selfProtectCheck(toolName, input, call.access, ctx.cwd, ctx.prot);
 	if (selfProtected) return selfProtected;
 
-	const call = readCall(toolName, input, ctx);
 	const floorGrade = withholdFloorAllow(gradeBase(call, ctx), call, ctx);
 	if (floorGrade.verdict === "deny") return floorGrade; // the floor's deny beats every user rule
 
