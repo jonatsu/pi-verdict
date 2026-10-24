@@ -4403,6 +4403,8 @@ describe("code-loading ask (ADR-0011)", () => {
 		for (const command of [
 			"echo {} > $PWD/mcp.json",
 			'echo {} > "$' + '{PWD}/mcp.json"',
+			"echo {} > $(pwd)/.mcp.json",
+			'echo {} > "`pwd`/lsp.json"',
 			"cp x $PI_CODING_AGENT_DIR/extensions/x.ts",
 			"cp x $" + "{PI_CODING_AGENT_DIR}/models.yml",
 		]) {

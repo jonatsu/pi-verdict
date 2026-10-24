@@ -270,11 +270,11 @@ function coveredEntry(scope: string, roots: Roots): CodeLoadHit | null {
 	return null;
 }
 
-/** A command with `$PWD` and `$PI_CODING_AGENT_DIR` (bare or braced, with an adjoining double quote)
+/** A command with `$PWD`, `$(pwd)`, `` `pwd` `` and `$PI_CODING_AGENT_DIR` (bare or braced, with an adjoining double quote)
  *  spelled out, so the path tokenizer sees the directory they name. */
 function expandCommandVariables(command: string, cwd: string): string {
 	return command
-		.replace(/"?\$(?:\{PWD\}|PWD\b)"?/g, () => cwd)
+		.replace(/"?(?:\$(?:\{PWD\}|PWD\b)|\$\(\s*pwd\s*\)|`\s*pwd\s*`)"?/g, () => cwd)
 		.replace(/"?\$(?:\{PI_CODING_AGENT_DIR\}|PI_CODING_AGENT_DIR\b)"?/g, () => agentDirPath());
 }
 

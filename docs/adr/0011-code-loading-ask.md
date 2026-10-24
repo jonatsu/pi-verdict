@@ -105,7 +105,8 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
   and the floor already treats `.env` files as S0.
 - **Indirect shell writes.** `cd "$OMP_DIR" && echo … > extensions/x.ts`, where a variable the
   gate does not expand holds the directory, names no path token in the set, the same residual
-  `denyPaths` accepts. OS-level sandboxing is the backstop.
+  `denyPaths` accepts. So is a working directory whose path holds whitespace, where an expanded
+  `"$PWD/mcp.json"` splits into two tokens. OS-level sandboxing is the backstop.
 - **A broad `ast_edit` scope.** A scope tool that writes is matched against the existing locations
   under the agent directories, the plugin roots and the scope's own `.omp/` and `.pi/`, not against
   every directory beneath it, so an `ast_edit` over `~/src` that reaches a project's
@@ -120,6 +121,7 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
 - An agent that legitimately installs an extension or edits host config now needs a human, and a
   headless run cannot do it at all.
 - Edits of `config.yml` and `settings.json` ask even for harmless keys (decision 5).
-- A command that names an agent directory or a `.omp` directory at all, such as
-  `cd ~/.omp/agent`, asks (decision 3).
+- A command that names an agent directory or a `.omp` directory in a path token, such as
+  `cd ~/.omp/agent` or `ls ./.omp`, asks (decision 3); a bare `cd .omp` is not a path token and does
+  not.
 - The probe gains one case per row of the set, and `docs/layers.md` gains layer 4a.
