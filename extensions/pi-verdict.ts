@@ -2320,10 +2320,11 @@ function unbracketEnvelopeMarkers(line: string): string {
 
 /** Unwrap a hashline-wrapped `[path#TAG]` value (`write` may carry one) to the
  *  inner path; anything outside the strict bracket shape returns unchanged —
- *  same contract as omp's `unwrapHashlineHeaderPath`. */
+ *  same contract as omp's `unwrapHashlineHeaderPath` (18.12.6), which trims the end first. */
 function unwrapHashlineHeaderPath(value: string): string {
-	if (!value.startsWith("[") || !value.endsWith("]")) return value;
-	return stripHashlineTagAndQuotes(value.slice(1, -1).trim()) ?? value;
+	const trimmed = value.trimEnd();
+	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return value;
+	return stripHashlineTagAndQuotes(trimmed.slice(1, -1).trim()) ?? value;
 }
 
 /** Parses hashline file headers (`[PATH]`/`[PATH#TAG]`, legacy `¶PATH`) and `MV

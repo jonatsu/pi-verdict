@@ -571,6 +571,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: ".git metadata" },
 		},
 		{
+			label: "write to a bracketed path with trailing whitespace is graded as the .git metadata file it names",
+			family: "tool-access",
+			tool: "write",
+			input: { path: "[.git/config] ", content: "x" },
+			ref: "ADR-0009",
+			expected: { layer: "rule", reasonIncludes: ".git metadata" },
+		},
+		{
 			label: "pathless edit with no parseable header stays opaque",
 			family: "tool-access",
 			tool: "edit",

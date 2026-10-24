@@ -6485,6 +6485,18 @@ describe("hashline header spellings (ADR-0009)", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	test("a bracketed write path with trailing whitespace is graded as the file it names", async () => {
+		const h = session({});
+		for (const p of ["[.git/config] ", "[.git/config#ABCD]\t", `[${dotEnv}] \r`, "[~/.ssh/id_rsa] "]) {
+			expect((await toolCall(h, "write", { path: p, content: "x" }))?.block).toBe(true);
+		}
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const bashrc = await toolCall(h, "write", { path: "[~/.ba" + "shrc] ", content: "x" });
+		expect(bashrc).toBeUndefined();
+		expect(h.calls).toHaveLength(1); // graded as the persistence entry point: the classifier, not a rule allow
+		expect(await toolCall(session({}), "write", { path: "[src/a.ts] ", content: "x" })).toBeUndefined();
+	});
+
 	test("a benign header behind an envelope marker keeps its rule allow", async () => {
 		const h = session({});
 		for (const row of ["[*** Begin Patch] [src/a.ts#1A2B]", "[*** Begin Patch [src/a.ts#1A2B]"]) {
