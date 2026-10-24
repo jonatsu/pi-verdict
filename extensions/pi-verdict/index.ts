@@ -238,6 +238,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}
 			return undefined;
 		}
+		/** A headless ask reaches the agent as a block; saying so tells it a human could have allowed the call. */
+		const headlessAsk = (v: Verdict): string => (v.degraded ? `ask degraded to block in non-interactive mode: ${v.reason}` : v.reason);
 		if (v.verdict === "deny") {
 			if (v.source === "degraded-policy") {
 				// item 6c (Phase 6): the ask this denial came from exists because the user's own
@@ -258,10 +260,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}
 			if (v.source === "rule") {
 				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason("rule", v.reason) };
+				return { block: true, reason: blockReason("rule", headlessAsk(v)) };
 			}
 			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-			return { block: true, reason: blockReason("classifier", v.reason) };
+			return { block: true, reason: blockReason("classifier", headlessAsk(v)) };
 		}
 		// ask → human confirmation; non-interactive calls were degraded inside the pipeline, so reaching here means UI is available
 		if (v.source === "protected-path") {

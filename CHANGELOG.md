@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- In a non-interactive session, a block that came from a rule ask (an opaque write, an over-cap action) or a classifier ask now says `ask degraded to block in non-interactive mode`, as a `denyPaths` block already did, so the agent can tell that a human could have allowed the call.
+
 ### Fixed
 
 - An omp `xd://` tool-device URL is no longer graded as a file path by the built-in floor, which denied a `read` or `write` of a device whose tool name ends in `_history` (such as `xd://mcp__sequential_thinking_get_thinking_history`) as an S0 shell-history file; a device call now reaches the classifier, and the tool it runs is still gated as its own call. A `write` to an `xd://` URL was previously allowed by the floor as an in-project write; it now reaches the classifier too.

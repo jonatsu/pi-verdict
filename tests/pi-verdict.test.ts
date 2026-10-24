@@ -1558,6 +1558,18 @@ describe("denyPaths (ADR-0002)", () => {
 		expect(String(r?.reason)).toContain("non-interactive");
 	});
 
+	test("a headless rule or classifier ask says it was an ask degraded to a block", async () => {
+		const h = session({});
+		h.ctx.hasUI = false;
+		const opaque = await toolCall(h, "write", { content: "x" });
+		expect(String(opaque?.reason)).toContain("ask degraded to block in non-interactive mode");
+		h.responses = [{ text: "<verdict>ask</verdict> needs a human" }];
+		const asked = await toolCall(h, "bash", { command: "make deploy" });
+		expect(String(asked?.reason)).toContain("ask degraded to block in non-interactive mode");
+		const denied = await toolCall(h, "bash", { command: "rm " + "-rf /" });
+		expect(String(denied?.reason)).not.toContain("ask degraded");
+	});
+
 	test("write/edit/grep/find/ls over a denyPath all hit (file names leak too)", async () => {
 		// write/edit use a home-based base: SENS lives under os.tmpdir() → /var/... (S1
 		// system dir), where a write is floor-denied BEFORE denyPaths (ADR-0002 priority:
