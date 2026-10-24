@@ -10,8 +10,7 @@ const MAX_ENTRY_CHARS = 1000;
 /** Strips zero-width characters, which can hide injected text (#22). Separate from `sanitize` because the
  *  action line is exempt from its length cap. */
 function stripZeroWidth(text: string): string {
-	// eslint-disable-next-line no-control-regex
-	return text.replace(/[​-‍⁠﻿]/g, "");
+	return text.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "");
 }
 
 /** Returns the text without zero-width characters, capped at `MAX_ENTRY_CHARS` by keeping its head and tail
