@@ -51,11 +51,9 @@ export interface ExplainGateArgs {
 	defaultPrompt: string | null;
 	/** the human's specific question; null or blank = use the default prompt */
 	question: string | null;
-	/** Transcript redaction predicate (item 6b, Phase 5): the EXPLAIN-GATE transcript also goes
-	 *  to a model provider, so it must be scrubbed exactly like the classifier's own — built by
-	 *  the caller (which owns the session state) from cwd + anchored denyPaths bases; omitted
-	 *  only by tests that don't exercise redaction. */
-	redact?: RedactorFn;
+	/** The session's transcript redactor. The EXPLAIN-GATE transcript goes to a model provider, so it is
+	 *  scrubbed like the classifier's (ADR-0002); required, so no caller can omit it. */
+	redact: RedactorFn;
 }
 
 export type ExplainGateResult = { ok: true; text: string } | { ok: false; error: string };
@@ -66,7 +64,7 @@ export async function explainGate(a: ExplainGateArgs): Promise<ExplainGateResult
 	const task = question
 		? `Answer this specific question from the human about the held action: ${sanitize(question)}`
 		: (a.defaultPrompt ?? EXPLAIN_GATE_DEFAULT_PROMPT);
-	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine, a.redact ?? (() => false))}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
+	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine, a.redact)}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
 	const r = await callClassifierOnce(
 		a.host,
 		a.signal,

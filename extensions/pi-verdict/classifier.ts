@@ -644,11 +644,11 @@ export async function classifyWithModel(
 	complete: CompletionFn,
 	model: NonNullable<ExtensionContext["model"]>,
 	actionLine: string,
-	thinking: ThinkingLevel = "off",
-	denyPathsActive = false,
-	timeoutMs: number = CLASSIFIER_TIMEOUT_MS,
-	rules: readonly string[] = [],
-	redact: RedactorFn = () => false,
+	thinking: ThinkingLevel,
+	denyPathsActive: boolean,
+	timeoutMs: number,
+	rules: readonly string[],
+	redact: RedactorFn,
 	budget?: ClassifierBudget,
 ): Promise<ClassifierOutcome> {
 	const transcript = buildTranscript(host, actionLine, redact);

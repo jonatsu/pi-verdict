@@ -4969,6 +4969,28 @@ describe("EXPLAIN-GATE role and decline explanation", () => {
 		expect(msg).toContain("<protected-path>");
 	});
 
+	test("every model payload of one ask, first layer, fallback and EXPLAIN-GATE, carries the redacted transcript (ADR-0002)", async () => {
+		const base = "/tmp/pv-every-payload";
+		const h = session({ denyPaths: [base], classifierFallbackModel: "mock/fb" });
+		h.findMap = { "mock/fb": { id: "fb-model" } };
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `${base}/secret.txt` } }] },
+		});
+		// Both first-layer attempts fail, the fallback asks, and the human opens Explain.
+		h.responses = [new Error("first layer down"), new Error("first layer down"), ASK, { text: "it runs your build script" }];
+		h.inputs = [""];
+		driveDialogs(h, [[DOWN, DOWN, DOWN, "\r"], ["\r"]], []);
+		await toolCall(h, "bash", { command: "cargo build" });
+		expect(h.calls.map((c) => c.model)).toEqual(["mock/glm", "mock/glm", "fb-model", "mock/glm"]);
+		expect(String(h.calls[3].systemPrompt)).toContain("EXPLAIN-GATE");
+		for (const call of h.calls) {
+			const msg = String(call.messages[0].content);
+			expect(msg).not.toContain(base);
+			expect(msg).toContain("<protected-path>");
+		}
+	});
+
 	test("the EXPLAIN-GATE prompt does not carry a floor reason that names a protected path", async () => {
 		const target = path.join(os.homedir(), ".ssh", "id_rsa");
 		const h = session({ denyPaths: ["~/.ssh/"], autoDeny: false }); // a floor deny becomes an ask

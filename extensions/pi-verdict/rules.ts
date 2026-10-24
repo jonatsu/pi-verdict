@@ -45,7 +45,7 @@ export function classifyByRules(
 	policyDegraded: boolean,
 	/** True when the call names a user-declared protected path through a spelling the denyPaths
 	 *  tokeniser cannot extract, such as a home variable behind a command substitution. */
-	namesProtectedPath: RedactorFn = () => false,
+	namesProtectedPath: RedactorFn,
 ): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
 	if (sp) return sp;
