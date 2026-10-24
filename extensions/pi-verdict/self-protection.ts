@@ -50,7 +50,7 @@ export interface ProtectedSet {
 }
 
 /**
- * Build the protected set. ownFile is this module's path (import.meta.url resolved;
+ * Build the protected set. ownFile is the gate's install location (`OWN_FILE_PATH`;
  * null = unresolvable, config/trust/verdicts still protected). The installed copy is
  * protected only when ownFile sits under one of the install roots (the forms listed
  * with resolveAgentDir, plus pi's `<agentDir>/npm` and `<agentDir>/git` package installs); dev checkouts (source inside the cwd) are NOT protected —
@@ -63,102 +63,20 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict.json"))) exact.add(f);
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"))) exact.add(f);
 
-	// Installed copy target: single-file form → the file itself (exact); module-directory
-	// and package forms → the directory or package root (prefix). Each install root is one
-	// directory in several spellings (lexical, realpath: a symlinked directory or a macOS
-	// /var → /private/var cannot misalign the set), so a match under any spelling protects
-	// the same relative targets under every spelling.
-	const extTargets = new Set<string>();
-	if (ownFile) {
-		type RootKind = "extensions" | "npm" | "git";
-		const agentBases = new Set(baseForms(agentDir));
-		const configRootBases = new Set([...agentBases].map((b) => path.dirname(b)));
-		const layouts: { seg: string[]; kind: RootKind; bases: Set<string> }[] = [
-			{ seg: ["extensions"], kind: "extensions", bases: agentBases },
-			// omp plugin installs, under the agent dir or (omp 18.1+) beside it
-			{ seg: ["plugins", "node_modules"], kind: "npm", bases: new Set([...agentBases, ...configRootBases]) },
-			// pi package installs: `<agentDir>/npm/node_modules/<pkg>` and `<agentDir>/git/<host>/<path>`
-			{ seg: ["npm", "node_modules"], kind: "npm", bases: agentBases },
-			{ seg: ["git"], kind: "git", bases: agentBases },
-		];
-		const families: { kind: RootKind; roots: string[] }[] = [];
-		for (const { seg, kind, bases } of layouts) {
-			for (const base of bases) families.push({ kind, roots: baseForms(path.join(base, ...seg)) });
-		}
-		// Segments of the package root inside an install root. npm scopes are two-segment dirs
-		// (@scope/pkg): protect the package, not the whole scope dir. A git install is
-		// `<host>/<path>/…` with a path of unknown depth, so the package ends where `extensions` starts.
-		const packageDepth = (kind: RootKind, segs: string[]): number => {
-			if (kind === "git") {
-				const at = segs.findIndex((seg, k) => k >= 2 && seg === "extensions");
-				return at > 0 ? at : Math.min(3, segs.length - 1);
-			}
-			return segs[0].startsWith("@") ? 2 : 1;
-		};
-		const ownForms = new Set(baseForms(ownFile));
-		for (const { kind, roots } of families) {
-			for (const extRoot of roots) {
-				for (const own of ownForms) {
-					const rel = pathBeneath(own, extRoot);
-					if (rel === null) continue;
-					const segs = rel.split(path.sep);
-					const singleFile = segs.length === 1;
-					// A single-file copy also protects the sibling adapter module it imports, since rewriting
-					// that changes the gate as surely as rewriting the main file.
-					const targets: { rel: string[]; isExact: boolean }[] = singleFile
-						? [
-								{ rel: segs, isExact: true },
-								{ rel: [JEV_ADAPTER_FILE], isExact: true },
-							]
-						: [{ rel: segs.slice(0, packageDepth(kind, segs)), isExact: false }];
-					// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
-					// imports the adapter from the root beside it, outside the directory prefix. A top-level
-					// `<dir>.ts` or `<dir>.js` is a decoy entry: the host dedupes extensions by name, keeps the
-					// first, and discovers top-level files before `*/index.ts`.
-					if (!singleFile && kind === "extensions" && segs.length === 2 && !segs[0].startsWith("@")) {
-						targets.push(
-							{ rel: [JEV_ADAPTER_FILE], isExact: true },
-							{ rel: [`${segs[0]}.ts`], isExact: true },
-							{ rel: [`${segs[0]}.js`], isExact: true },
-						);
-					}
-					for (const root of roots) {
-						for (const { rel, isExact } of targets) {
-							for (const f of baseForms(path.join(root, ...rel))) {
-								(isExact ? exact : prefixes).add(f);
-								extTargets.add(f);
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	const install = ownFile ? installTargets(agentDir, ownFile) : [];
+	for (const { target, isExact } of install) (isExact ? exact : prefixes).add(target);
+	const extTargets = new Set(install.map((t) => t.target));
 
-	// Gate enablement surface (R5): the plugin workspace manifest/lock and any project
-	// `plugin-overrides.json` (`.omp`/`.pi`) can disable the gate for later sessions
-	// without a verdict. Writes deny; reads may pass. The plugin workspace is derived
-	// from the anchor (dot-dir sibling of `agent/`), not by counting path parents.
-	const pluginRoots = new Set<string>();
-	for (const root of [path.join(agentDir, "plugins"), path.join(path.dirname(agentDir), "plugins")]) {
-		for (const f of baseForms(root)) pluginRoots.add(f);
-	}
-	const enablementFiles = new Set<string>();
-	for (const root of pluginRoots) {
-		for (const name of ["omp-plugins.lock.json", "package.json"]) {
-			for (const f of baseForms(path.join(root, name))) {
-				exact.add(f);
-				enablementFiles.add(f);
-			}
-		}
-	}
+	const plugins = pluginRoots(agentDir);
+	const enablement = enablementFiles(plugins);
+	for (const f of enablement) exact.add(f);
 	const writePatterns = [/(?:^|[\\/])\.(?:omp|pi)[\\/]plugin-overrides\.json$/];
 
 	// bash signatures: the gate filenames (any spelling contains them) + the installed-copy,
 	// enablement and #54 paths
 	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/, /plugin-overrides\.json/];
 	if (extTargets.size > 0) bashPatterns.push(pathAlternation([...extTargets], agentDir));
-	if (enablementFiles.size > 0) bashPatterns.push(pathAlternation([...enablementFiles], agentDir));
+	if (enablement.length > 0) bashPatterns.push(pathAlternation(enablement, agentDir));
 
 	// #54 verdicts dir: gate-owned audit storage. The trust store joins it as read-denied
 	// (R6) — reading it is reconnaissance for the tampering route. Writes ride the normal
@@ -172,11 +90,133 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	// Trees within which an ancestor directory of a read-denied path is itself read-denied
 	// (bounded: a home or root listing must not be caught).
 	const guardRoots = new Set<string>();
-	for (const root of [agentDir, path.dirname(agentDir), ...pluginRoots]) {
+	for (const root of [agentDir, path.dirname(agentDir), ...plugins]) {
 		for (const f of baseForms(root)) if (f !== path.parse(f).root) guardRoots.add(f);
 	}
 
 	return { exact: [...exact], prefixes: [...prefixes], writePatterns, readDenied, guardRoots: [...guardRoots], bashPatterns };
+}
+
+type InstallKind = "extensions" | "npm" | "git";
+
+/** One install root of a host layout, in every spelling `baseForms` gives it. */
+interface InstallRootFamily {
+	readonly kind: InstallKind;
+	readonly roots: readonly string[];
+}
+
+/** A protected path of the installed copy: an exact file, or a directory protected by prefix. */
+interface InstallTarget {
+	readonly target: string;
+	readonly isExact: boolean;
+}
+
+/** A target relative to an install root. */
+interface RelativeTarget {
+	readonly rel: readonly string[];
+	readonly isExact: boolean;
+}
+
+/** Returns every install root the host may load the gate from, grouped by spelling. */
+function installRootFamilies(agentDir: string): InstallRootFamily[] {
+	const agentBases = new Set(baseForms(agentDir));
+	const configRootBases = new Set([...agentBases].map((b) => path.dirname(b)));
+	const layouts: { seg: string[]; kind: InstallKind; bases: Set<string> }[] = [
+		{ seg: ["extensions"], kind: "extensions", bases: agentBases },
+		// omp plugin installs, under the agent dir or (omp 18.1+) beside it
+		{ seg: ["plugins", "node_modules"], kind: "npm", bases: new Set([...agentBases, ...configRootBases]) },
+		// pi package installs: `<agentDir>/npm/node_modules/<pkg>` and `<agentDir>/git/<host>/<path>`
+		{ seg: ["npm", "node_modules"], kind: "npm", bases: agentBases },
+		{ seg: ["git"], kind: "git", bases: agentBases },
+	];
+	const families: InstallRootFamily[] = [];
+	for (const { seg, kind, bases } of layouts) {
+		for (const base of bases) families.push({ kind, roots: baseForms(path.join(base, ...seg)) });
+	}
+	return families;
+}
+
+/** Returns the protected targets of the installed copy at `ownFile`: the single-file form protects the
+ *  file itself (exact), the module-directory and package forms the directory or package root (prefix).
+ *  Each install root is one directory in several spellings (lexical, realpath: a symlinked directory or a
+ *  macOS /var → /private/var cannot misalign the set), so a match under any spelling protects the same
+ *  relative targets under every spelling. Empty for a dev checkout. */
+function installTargets(agentDir: string, ownFile: string): InstallTarget[] {
+	const out: InstallTarget[] = [];
+	const ownForms = new Set(baseForms(ownFile));
+	for (const { kind, roots } of installRootFamilies(agentDir)) {
+		for (const extRoot of roots) {
+			for (const own of ownForms) {
+				const rel = pathBeneath(own, extRoot);
+				if (rel === null) continue;
+				for (const { rel: targetRel, isExact } of relativeInstallTargets(kind, rel.split(path.sep))) {
+					for (const root of roots) {
+						for (const target of baseForms(path.join(root, ...targetRel))) out.push({ target, isExact });
+					}
+				}
+			}
+		}
+	}
+	return out;
+}
+
+/** Returns the targets to protect for the gate file at `segs` inside an install root of `kind`. */
+function relativeInstallTargets(kind: InstallKind, segs: readonly string[]): RelativeTarget[] {
+	// A single-file copy also protects the sibling adapter module it imports, since rewriting
+	// that changes the gate as surely as rewriting the main file.
+	if (segs.length === 1) {
+		return [
+			{ rel: segs, isExact: true },
+			{ rel: [JEV_ADAPTER_FILE], isExact: true },
+		];
+	}
+	const targets: RelativeTarget[] = [{ rel: segs.slice(0, packageDepth(kind, segs)), isExact: false }];
+	// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
+	// imports the adapter from the root beside it, outside the directory prefix. A top-level
+	// `<dir>.ts` or `<dir>.js` is a decoy entry: the host dedupes extensions by name, keeps the
+	// first, and discovers top-level files before `*/index.ts`.
+	if (kind === "extensions" && segs.length === 2 && !segs[0].startsWith("@")) {
+		targets.push(
+			{ rel: [JEV_ADAPTER_FILE], isExact: true },
+			{ rel: [`${segs[0]}.ts`], isExact: true },
+			{ rel: [`${segs[0]}.js`], isExact: true },
+		);
+	}
+	return targets;
+}
+
+/** Segments of the package root inside an install root. npm scopes are two-segment dirs
+ *  (@scope/pkg): protect the package, not the whole scope dir. A git install is
+ *  `<host>/<path>/…` with a path of unknown depth, so the package ends where `extensions` starts. */
+function packageDepth(kind: InstallKind, segs: readonly string[]): number {
+	if (kind === "git") {
+		const at = segs.findIndex((seg, k) => k >= 2 && seg === "extensions");
+		return at > 0 ? at : Math.min(3, segs.length - 1);
+	}
+	return segs[0].startsWith("@") ? 2 : 1;
+}
+
+/** Returns the plugin workspace roots, derived from the anchor (dot-dir sibling of `agent/`), not by
+ *  counting path parents. */
+function pluginRoots(agentDir: string): string[] {
+	const roots = new Set<string>();
+	for (const root of [path.join(agentDir, "plugins"), path.join(path.dirname(agentDir), "plugins")]) {
+		for (const f of baseForms(root)) roots.add(f);
+	}
+	return [...roots];
+}
+
+/** Gate enablement surface (R5): the plugin workspace manifest/lock and any project
+ *  `plugin-overrides.json` (`.omp`/`.pi`) can disable the gate for later sessions
+ *  without a verdict. Writes deny; reads may pass. */
+function enablementFiles(plugins: readonly string[]): string[] {
+	const files = new Set<string>();
+	for (const root of plugins) {
+		for (const name of ["omp-plugins.lock.json", "package.json"]) {
+			for (const f of baseForms(path.join(root, name))) files.add(f);
+		}
+	}
+	return [...files];
 }
 
 /** Regex alternation matching any spelling of the given absolute paths in a shell command:
@@ -262,26 +302,16 @@ export function selfProtectCheck(toolName: string, input: Record<string, unknown
 	if (direction === "command") {
 		const cmd = commandText(input);
 		const cdHit = bashDirectoryTargets(cmd, agentDirPath()).some((t) => isProtectedReadPath(t, cwd, prot));
-		if (prot.bashPatterns.some((re) => re.test(cmd)) || cdHit) {
-			return {
-				verdict: "deny",
-				reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only",
-				selfProtect: true,
-			};
-		}
-		return null;
+		return prot.bashPatterns.some((re) => re.test(cmd)) || cdHit ? selfDeny(COMMAND_TOUCHES_GATE) : null;
 	}
 	const strings = collectStrings(input);
 	const access = toolAccess(toolName, input);
 	if (direction === "read") {
 		for (const s of [...strings, ...access.gradedReads]) {
-			if (isProtectedReadPath(s, cwd, prot)) {
-				return {
-					verdict: "deny",
-					reason: `self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`,
-					selfProtect: true,
-				};
-			}
+			if (isProtectedReadPath(s, cwd, prot))
+				return selfDeny(
+					`self-protection layer (#54): ${s} holds the gate's verdict audit records or trust store — agent reads are denied (untrusted raw model output inside); view them outside the agent`,
+				);
 		}
 		return null;
 	}
@@ -290,22 +320,21 @@ export function selfProtectCheck(toolName: string, input: Record<string, unknown
 	// apply-patch `*** Update File: <agentDir>/config/pi-verdict.json` is a single raw input
 	// string the blind scan above treats as one opaque path, not a patch to parse.
 	for (const s of [...strings, ...access.gradedWrites, ...access.gradedReads]) {
-		if (isProtectedWritePath(s, cwd, prot)) {
-			return {
-				verdict: "deny",
-				reason: `self-protection layer (ADR-0005): ${s} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`,
-				selfProtect: true,
-			};
-		}
+		if (isProtectedWritePath(s, cwd, prot))
+			return selfDeny(
+				`self-protection layer (ADR-0005): ${s} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`,
+			);
 	}
 	// kind "code" (eval): the command-direction substring signatures also run over the code
 	// text — `eval` writing the gate's own files via `!cmd`/`%%bash` must not bypass them.
-	if (access.kind === "code" && access.command !== null && prot.bashPatterns.some((re) => re.test(access.command as string))) {
-		return {
-			verdict: "deny",
-			reason: "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only",
-			selfProtect: true,
-		};
-	}
+	const code = access.kind === "code" ? access.command : null;
+	if (code !== null && prot.bashPatterns.some((re) => re.test(code))) return selfDeny(COMMAND_TOUCHES_GATE);
 	return null;
+}
+
+const COMMAND_TOUCHES_GATE = "self-protection layer (ADR-0005): command touches the permission gate's own files — user-editable only";
+
+/** A self-protection deny, which no configuration exempts (`autoDeny:false` included). */
+function selfDeny(reason: string): RuleResult {
+	return { verdict: "deny", reason, selfProtect: true };
 }
