@@ -684,6 +684,14 @@ describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
 		await denyRule("git push origin -o \\1>/dev/null " + R);
 		await denyRule("git -C '2'>/dev/null push origin " + R);
 	});
+	// bash's `{name}>file` allocates a descriptor into `name`: the prefix belongs to the redirection.
+	test("a {name} descriptor prefix is part of the redirection → floor deny", async () => {
+		const R = "+" + "main";
+		await denyRule("git {fd}>/dev/null push origin " + R);
+		await denyRule("git -C {fd}>/dev/null dir push origin " + R);
+		expect(shellWords("a {fd}>x b")).toEqual(["a", "b"]);
+		expect(shellWords("a '{fd}'>x b")).toEqual(["a", "{fd}", "b"]);
+	});
 	test("&&, a background & and |& still separate commands", () => {
 		expect(gitPushForce("git push origin main & echo --" + "force")).toBe(false);
 		expect(gitPushForce("git push origin main && echo --" + "force")).toBe(false);

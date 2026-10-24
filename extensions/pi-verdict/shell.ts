@@ -100,8 +100,8 @@ export function shellWords(command: string): string[] {
 		curQuoted = false;
 	};
 	const redirection = (length: number, takesFd: boolean) => {
-		if (takesFd && inWord && !curQuoted && /^\d+$/.test(cur)) {
-			cur = ""; // `2>&1`: unquoted digits name a file descriptor, not an argument
+		if (takesFd && inWord && !curQuoted && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(cur)) {
+			cur = ""; // `2>&1`, `{fd}>x`: an unquoted fd number or bash fd variable, not an argument
 			inWord = false;
 			curQuoted = false;
 		} else {
