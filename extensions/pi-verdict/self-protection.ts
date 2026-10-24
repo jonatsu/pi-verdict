@@ -7,54 +7,41 @@ import { baseForms, fold, isWithin, kernelForms, rebuiltForms } from "./paths.ts
 import type { RuleResult } from "./shell.ts";
 
 // ============================================================================
-// Self-protection layer (ADR-0005): gate integrity over configuration exemption
+// Self-protection layer (ADR-0005): the gate cannot be turned off by the thing it gates
 //
-// The gate cannot be turned off by the thing it gates. A hard deny over the gate's
-// own files, immune to builtinDenyFloor:false and to user allow rules; the #54
-// verdicts audit directory additionally denies reads (records carry untrusted raw
-// model output that must not flow back into agent context). Protected scope:
-//   - <agentDir>/config/pi-verdict.json (the gate's decision input)
-//   - <agentDir>/config/pi-verdict-trust.json (project-trust decisions)
-//   - the installed extension copy, with its sibling jev-adapter.ts in the single-file
-//     and module-directory forms (pi under <agentDir>/extensions/, omp under
-//     plugins/node_modules/<pkg>/ in its config root — the install forms listed
-//     with resolveAgentDir; dev checkouts are not in scope)
-//   - <agentDir>/verdicts/ (write + read)
-// Semantics: every in-gate write is by definition agent-initiated → deny (the
-// reason points the user to manual edits); reads pass outside the audit dir; the
-// user's own editor writes never pass through the gate. Deliberately snapshot-free
-// (ADR-0005): no in-memory tamper baseline, so concurrent sessions never fight over
-// one another's legitimate edits. The bash side is a substring match and stays
-// obfuscatable (honest declaration, ADR-0001): it raises the bar, it is not a
-// guarantee against a direct rewrite outside a tool call.
+// A hard deny over the gate's own files that neither `builtinDenyFloor:false` nor a user
+// allow rule exempts; `docs/layers.md` lists the protected scope. Every write that reaches
+// the gate is agent-initiated, so the reason points the user to a manual edit. The audit
+// directory also denies reads, because its records carry raw model output (#54). There is
+// no in-memory tamper baseline, so concurrent sessions never fight over each other's edits.
+// The shell check is a substring match and stays obfuscatable (ADR-0001): it raises the
+// bar for a rewrite, it does not prevent one.
 // ============================================================================
 
 /** The module the gate value-imports from the extensions root beside it (`jev-adapter.ts`). */
 const JEV_ADAPTER_FILE = "jev-adapter.ts";
 
 export interface ProtectedSet {
-	/** exact protected files (lexical absolute + realpath forms) */
+	/** Protected files, in lexical and realpath forms. */
 	exact: string[];
-	/** protected directory prefixes (npm package install form: the whole package dir) */
+	/** Protected directories, matched by prefix: the audit directory and a package or module install. */
 	prefixes: string[];
-	/** path-shaped write guards that name no fixed file (project `plugin-overrides.json`) */
+	/** Write guards for a protected file at no fixed path (a project `plugin-overrides.json`). */
 	writePatterns: RegExp[];
-	/** read-denied paths: the #54 audit dir and the trust store */
+	/** Paths whose reads deny too: the audit directory and the trust store. */
 	readDenied: string[];
-	/** trees within which an ancestor of a read-denied path is itself read-denied
-	 *  (`grep <agentDir>` reads every record through the directory); bounded to the
-	 *  gate's own trees so a home/root listing is not caught */
+	/** Trees within which an ancestor of a read-denied path denies too, since `grep <agentDir>` reads every
+	 *  record; bounded to the gate's own trees, so a home or root listing passes. */
 	guardRoots: string[];
-	/** bash/powershell command-string signatures (substring match, obfuscatable) */
+	/** Shell command signatures, matched as substrings. */
 	bashPatterns: RegExp[];
 }
 
 /**
- * Build the protected set. ownFile is the gate's install location (`OWN_FILE_PATH`;
- * null = unresolvable, config/trust/verdicts still protected). The installed copy is
- * protected only when ownFile sits under one of the install roots (the forms listed
- * with resolveAgentDir, plus pi's `<agentDir>/npm` and `<agentDir>/git` package installs); dev checkouts (source inside the cwd) are NOT protected —
- * in-project development writes are legitimate daily work.
+ * Returns the paths and command signatures self-protection guards. `ownFile` is the gate's install
+ * location (`OWN_FILE_PATH`), or null when it cannot be resolved; the config, trust store and audit
+ * directory stay protected either way. The installed copy is protected only under an install root, so a
+ * dev checkout stays writable.
  */
 export function buildProtectedSet(agentDir: string, ownFile: string | null): ProtectedSet {
 	const exact = new Set<string>();
@@ -70,25 +57,25 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	const plugins = pluginRoots(agentDir);
 	const enablement = enablementFiles(plugins);
 	for (const f of enablement) exact.add(f);
+	// Matches a project `plugin-overrides.json` under `.omp` or `.pi`, which can disable the gate too.
 	const writePatterns = [/(?:^|[\\/])\.(?:omp|pi)[\\/]plugin-overrides\.json$/];
 
-	// bash signatures: the gate filenames (any spelling contains them) + the installed-copy,
-	// enablement and #54 paths
+	// Every spelling of a gate config path contains its file name; the install, enablement and audit
+	// paths need each spelling.
 	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/, /plugin-overrides\.json/];
 	if (extTargets.size > 0) bashPatterns.push(pathAlternation([...extTargets], agentDir));
 	if (enablement.length > 0) bashPatterns.push(pathAlternation(enablement, agentDir));
 
-	// #54 verdicts dir: gate-owned audit storage. The trust store joins it as read-denied
-	// (R6) — reading it is reconnaissance for the tampering route. Writes ride the normal
-	// prefixes; reads are denied separately.
+	// The trust store is read-denied beside the audit directory, because reading it maps the route
+	// to tampering with it.
 	const verdictsForms = baseForms(path.join(agentDir, "verdicts"));
 	const trustForms = baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"));
 	for (const f of verdictsForms) prefixes.add(f);
 	bashPatterns.push(pathAlternation(verdictsForms, agentDir));
 	const readDenied = [...verdictsForms, ...trustForms];
 
-	// Trees within which an ancestor directory of a read-denied path is itself read-denied
-	// (bounded: a home or root listing must not be caught).
+	// A filesystem root is never a guard root, so a root listing stays readable (pinned by the test
+	// `an agent directory directly under the root keeps a root listing readable`).
 	const guardRoots = new Set<string>();
 	for (const root of [agentDir, path.dirname(agentDir), ...plugins]) {
 		for (const f of baseForms(root)) if (f !== path.parse(f).root) guardRoots.add(f);
@@ -196,8 +183,7 @@ function packageDepth(kind: InstallKind, segs: readonly string[]): number {
 	return segs[0].startsWith("@") ? 2 : 1;
 }
 
-/** Returns the plugin workspace roots, derived from the anchor (dot-dir sibling of `agent/`), not by
- *  counting path parents. */
+/** Returns the plugin workspace roots: `plugins/` inside the agent directory and beside it. */
 function pluginRoots(agentDir: string): string[] {
 	const roots = new Set<string>();
 	for (const root of [path.join(agentDir, "plugins"), path.join(path.dirname(agentDir), "plugins")]) {
@@ -206,9 +192,8 @@ function pluginRoots(agentDir: string): string[] {
 	return [...roots];
 }
 
-/** Gate enablement surface (R5): the plugin workspace manifest/lock and any project
- *  `plugin-overrides.json` (`.omp`/`.pi`) can disable the gate for later sessions
- *  without a verdict. Writes deny; reads may pass. */
+/** Returns the plugin workspace manifest and lock files, which can disable the gate for later sessions
+ *  without a verdict; writes to them deny, and reads pass. */
 function enablementFiles(plugins: readonly string[]): string[] {
 	const files = new Set<string>();
 	for (const root of plugins) {
@@ -244,8 +229,9 @@ function pathBeneath(child: string, base: string): string | null {
 	return child.slice(base.endsWith(path.sep) ? base.length : base.length + 1);
 }
 
-/** Does the resolved write path hit the protected set? realpath guards against a symlink
- *  bypass; a nonexistent target rebuilds its real form from the nearest existing ancestor (#20). */
+/** Returns true when a write to `rawPath` lands in the protected set in any form it resolves to. A
+ *  nonexistent target is rebuilt from its nearest existing ancestor (#20), so a symlink cannot route
+ *  around the check. */
 export function isProtectedWritePath(rawPath: string, cwd: string, prot: ProtectedSet): boolean {
 	if (!rawPath) return false;
 	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(rawPath))), ...kernelForms(rawPath, cwd)]) {
@@ -256,12 +242,11 @@ export function isProtectedWritePath(rawPath: string, cwd: string, prot: Protect
 	return false;
 }
 
-/** Read-deny for the #54 audit dir and the trust store, ancestry-aware within the gate's
- *  own trees: `grep <agentDir>` reads every record through the directory, so an ancestor
- *  of a read-denied path denies too (bounded by guardRoots — a home/root listing passes). */
+/** Returns true when a read of `rawPath` reaches the audit directory or the trust store. Inside the
+ *  gate's own trees an ancestor of either counts too, since `grep <agentDir>` reads every record. */
 export function isProtectedReadPath(rawPath: string | undefined, cwd: string, prot: ProtectedSet): boolean {
 	if (prot.readDenied.length === 0) return false;
-	const target = rawPath ?? cwd; // #48: absent path → cwd is the effective target
+	const target = rawPath ?? cwd; // a pathless read reads the cwd (#48)
 	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(target))), ...kernelForms(target, cwd)]) {
 		if (prot.readDenied.some((p) => isWithin(c, p))) return true;
 		if (prot.guardRoots.some((root) => isWithin(c, root)) && prot.readDenied.some((p) => isWithin(p, c))) return true;
@@ -269,9 +254,8 @@ export function isProtectedReadPath(rawPath: string | undefined, cwd: string, pr
 	return false;
 }
 
-/** Direction the self-protection check applies to a call. The tool name only selects
- *  whose semantics apply; the paths come from the call's inputs (R3), so an unenumerated
- *  tool (ast_edit, an MCP filesystem tool, a later-added name) gets the write treatment. */
+/** Returns the check a call gets. The tool name selects only the direction; the paths come from the
+ *  call's inputs, so a tool the gate does not know gets the write check. */
 function selfProtectDirection(toolName: string): "write" | "read" | "command" | "unknown" {
 	if (isCommandTool(toolName)) return "command";
 	if (MUTATING_TOOL_NAMES.has(toolName)) return "write";
@@ -279,9 +263,9 @@ function selfProtectDirection(toolName: string): "write" | "read" | "command" | 
 	return "unknown";
 }
 
-/** Directories a shell command changes into (`cd`/`pushd` targets), with ~/$HOME/
- *  $PI_CODING_AGENT_DIR expanded. `cd <agentDir> && cat verdicts/*.jsonl` is the route
- *  the absolute-path substring check cannot see. */
+/** Returns the directories a shell command changes into with `cd` or `pushd`, `$HOME` and
+ *  `$PI_CODING_AGENT_DIR` expanded, because `cd <agentDir> && cat verdicts/*.jsonl` names no
+ *  protected path the substring check could see. */
 function bashDirectoryTargets(command: string, agentDir: string): string[] {
 	const out: string[] = [];
 	const re = /(?:^|[;&|()\s])(?:cd|pushd)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|()]+))/g;
@@ -294,9 +278,8 @@ function bashDirectoryTargets(command: string, agentDir: string): string[] {
 	return out;
 }
 
-/** Self-protection verdict (layer 0, before everything): a call whose *inputs* touch the
- *  gate's own files → a non-exemptable deny; otherwise null, handing off to the layers
- *  below. Name-keyed routing selects direction; it is not the mechanism. */
+/** Returns a deny that no configuration exempts when the call's inputs touch the gate's own files, or
+ *  null to hand the call to the next layer. */
 export function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
 	const direction = selfProtectDirection(toolName);
 	if (direction === "command") {
@@ -315,18 +298,15 @@ export function selfProtectCheck(toolName: string, input: Record<string, unknown
 		}
 		return null;
 	}
-	// write + unknown: any input string landing in the protected set is a write, fail-safe.
-	// The adapter's own writes/reads are tested too (Claude-review F7, today's gap): an
-	// apply-patch `*** Update File: <agentDir>/config/pi-verdict.json` is a single raw input
-	// string the blind scan above treats as one opaque path, not a patch to parse.
+	// A write or an unknown tool denies on any input string in the protected set. The adapter's
+	// targets count too, because an apply-patch header names its file inside one raw string.
 	for (const s of [...strings, ...access.gradedWrites, ...access.gradedReads]) {
 		if (isProtectedWritePath(s, cwd, prot))
 			return selfDeny(
 				`self-protection layer (ADR-0005): ${s} is part of the permission gate itself; agent-side modification is denied — edit it manually outside the agent if intended`,
 			);
 	}
-	// kind "code" (eval): the command-direction substring signatures also run over the code
-	// text — `eval` writing the gate's own files via `!cmd`/`%%bash` must not bypass them.
+	// An eval cell can run shell lines, so the command signatures run over its code text too.
 	const code = access.kind === "code" ? access.command : null;
 	if (code !== null && prot.bashPatterns.some((re) => re.test(code))) return selfDeny(COMMAND_TOUCHES_GATE);
 	return null;

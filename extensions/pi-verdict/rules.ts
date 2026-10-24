@@ -23,10 +23,8 @@ export interface RuleContext {
 	readonly user: UserRules;
 	readonly prot: ProtectedSet;
 	readonly denyPathBases: readonly string[];
-	/** item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, the user
-	 *  allow loop and the tools exemption are suspended (steps 4/5) — deny-side layers and
-	 *  the floor above them are unchanged, and everything they do not decide falls through
-	 *  to the classifier, whose allow is then withheld by adjudicate. */
+	/** Set while the user's own policy failed to load in whole or part (ADR-0010): user `allow` rules
+	 *  and the `tools` exemption are suspended, and the floor and the deny-side layers still run. */
 	readonly policyDegraded: boolean;
 	/** True when the call names a user-declared protected path through a spelling the denyPaths
 	 *  tokeniser cannot extract, such as a home variable behind a command substitution. */
@@ -50,7 +48,7 @@ export function classifyByRules(toolName: string, input: Record<string, unknown>
 
 	const access = toolAccess(toolName, input);
 	const graded = gradeBase(toolName, input, access, ctx);
-	if (graded.base.verdict === "deny") return graded.base; // Built-in floor: deny takes precedence over all user rules
+	if (graded.base.verdict === "deny") return graded.base; // the floor's deny beats every user rule
 	const internalUrl = namesInternalUrl(toolName, access);
 	const base = withholdFloorAllow(graded.base, toolName, access, internalUrl, ctx.cwd);
 	const flags: VouchFlags = { policyDegraded: ctx.policyDegraded, relocatable: graded.relocatable, internalUrl };
@@ -103,9 +101,8 @@ function gradeBase(
 		return { base, relocatable };
 	}
 	if (access.kind === "code" && access.command !== null && input.language === "py") {
-		// Phase 3 (F13): the bash floor applies to a Python eval cell's extracted shell-out
-		// lines only (pyEvalShellLines) — never the whole code text, which the floor's danger
-		// regexes/tripwire/allowAdmits never see (those stay bash-command-only).
+		// The bash floor grades only the shell lines of a Python cell: its rules are written for
+		// commands, so the code text itself never reaches them.
 		const shellText = pyEvalShellLines(access.command).join("\n");
 		return { base: shellText ? classifyBash(shellText, floorOn) : { verdict: "gray" }, relocatable: false };
 	}
@@ -132,15 +129,16 @@ function withholdFloorAllow(base: RuleResult, toolName: string, access: ToolAcce
 	return base;
 }
 
-/** True when a user `allow` rule or `tools` entry may admit the call. */
+/** True when a user `allow` rule or `tools` entry may admit the call. Neither may while the policy is
+ *  degraded (ADR-0010), nor for a target a rule cannot read as a literal project path (a glob, an
+ *  internal URL, a relocatable read), nor for an opaque call, whose real target is unknown. */
 function canVouch(access: ToolAccess, flags: VouchFlags): boolean {
 	return !flags.policyDegraded && !access.globbed && !access.opaque && !flags.relocatable && !flags.internalUrl;
 }
 
-// User deny (known-tool targets only — R2-2: an unknown tool's shape-inferred fields
-// never reach user rules; Item 10 / F11: deny fires on ANY target match). kind "code"
-// (eval, item 4): the whole code text is also a deny target — user allow stays excluded
-// (targets, reused below for allow, never gains the code text).
+/** Denies when a user `deny` rule matches any target. Only a known tool's targets count, so a rule never
+ *  keys on an unknown tool's payload by accident; an eval cell's code text is a deny target, never an
+ *  allow target. */
 function userDeny(targets: readonly string[], access: ToolAccess, user: UserRules): RuleResult | null {
 	const denyTargets = access.kind === "code" && access.command !== null ? [...targets, access.command] : targets;
 	for (const re of user.deny) {
@@ -149,10 +147,8 @@ function userDeny(targets: readonly string[], access: ToolAccess, user: UserRule
 	return null;
 }
 
-// Forced .omp gate: terminal ask, after user deny, before denyPaths/user allow. Not gated
-// by `targets` — callPathCandidates (which hitOmpDir uses) also covers an unknown tool's
-// adapter-derived fields. Reason carries no path (it travels back into agent context); the
-// path is UI-only detail.
+/** Asks on any `.omp` access while `gateOmpDir` is on, an unknown tool's targets included. The path goes
+ *  to `detail` only, because the reason reaches the agent. */
 function forcedOmpGate(toolName: string, input: Record<string, unknown>, access: ToolAccess, ctx: RuleContext): RuleResult | null {
 	if (!ctx.user.gateOmpDir) return null;
 	const omp = hitOmpDir(toolName, input, ctx.cwd);
@@ -165,12 +161,9 @@ function forcedOmpGate(toolName: string, input: Record<string, unknown>, access:
 	};
 }
 
-// denyPaths hit → terminal ask (ADR-0002): after user deny, before user allow — a
-// protected path is the user's exception to their own allow rules. Also not gated by
-// `targets` (an unknown tool's extracted targets now hit this ask where today nothing
-// grades them — the surviving BREAKING change). The matched path goes to `detail` (confirm
-// dialog only): reasons travel back into the agent context, so plaintext there would leak
-// the declaration.
+/** Asks on a declared protected path, an unknown tool's targets included; a declaration is the user's
+ *  exception to their own allow rules (ADR-0002). The path goes to `detail` only, because the reason
+ *  reaches the agent and would leak the declaration. */
 function denyPathsAsk(toolName: string, input: Record<string, unknown>, access: ToolAccess, ctx: RuleContext): RuleResult | null {
 	const hit = hitDenyPaths(toolName, input, ctx.cwd, ctx.denyPathBases);
 	if (!hit) return null;
@@ -182,8 +175,8 @@ function denyPathsAsk(toolName: string, input: Record<string, unknown>, access: 
 	};
 }
 
-// A model that sees only a marker in place of such a call cannot judge it, and a protected path
-// overrides the user's own allow rules (ADR-0002), so the gate asks without a model call.
+/** Asks on a call the strict redactor matches. A model that sees only a marker in place of such a call
+ *  cannot judge it, and a protected path overrides the user's allow rules (ADR-0002). */
 function protectedSpellingAsk(input: Record<string, unknown>, ctx: RuleContext): RuleResult | null {
 	if (!ctx.namesProtectedPath(input)) return null;
 	return {
@@ -193,10 +186,9 @@ function protectedSpellingAsk(input: Record<string, unknown>, ctx: RuleContext):
 	};
 }
 
-// A write where the host loads code runs in every later session, which is more than the one
-// action a classifier is asked about, so a human decides (ADR-0011). It is a built-in
-// protection and goes off with the floor. Its reason carries the path, so it runs after both
-// protected-path asks: a path the user declared keeps its withheld reason (ADR-0002).
+/** Asks on a write where the host loads code: it runs in every later session, which is more than the
+ *  one action a classifier is asked about (ADR-0011). It goes off with the floor. Its reason carries the
+ *  path, so it runs after both protected-path asks, which withhold theirs. */
 function codeLoadingAsk(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleResult | null {
 	if (!ctx.user.builtinDenyFloor) return null;
 	const code = hitCodeLoadPath(toolName, input, ctx.cwd);
@@ -208,24 +200,16 @@ function codeLoadingAsk(toolName: string, input: Record<string, unknown>, ctx: R
 	};
 }
 
-// Over-cap action → terminal ask (item 6a, Phase 4; Claude-review F8): after the deny-side
-// layers (a dangerous prefix the floor DID read still denies above), before user allow —
-// "the user allow check must never run before the over-cap check" is the literal ordering
-// requirement; deny-side layers running first is safe (they can only narrow, never widen,
-// what happens to an action the floor could not fully read).
+/** Asks on an action longer than the floor reads, before user allow, so no rule allows an unread tail.
+ *  The deny-side layers run first; they can only narrow the outcome. */
 function overCapAsk(toolName: string, input: Record<string, unknown>): RuleResult | null {
 	if (!actionCallLine(toolName, input).overCap) return null;
 	return { verdict: "ask", reason: `action too long to grade safely (over ${ACTION_LINE_MAX_CHARS} chars)`, askSource: "rule" };
 }
 
-// User allow (known-tool targets only, same scope as user deny above). ADR-0008: a user
-// allow admits ONE simple command. A compound command, an unsound parse, a redirection or
-// a write-shaped git invocation is never rule-allowed — it reaches the classifier.
-// Suspended while policyDegraded (ADR-0010): a partially-loaded policy's allow list may
-// still be present while a deny/denyPaths entry was dropped — granting mechanical allows
-// on that basis is the fail-open direction this closes.
-// An opaque call's path/paths are model-supplied while its real target is unknown, so no
-// rule can vouch for it (the same call is denied without an allow rule configured).
+/** Allows when a user `allow` rule matches every target. A command must be one simple command
+ *  (ADR-0008): a compound command, an unsound parse, a redirection or a write-shaped git call reaches
+ *  the classifier instead. */
 function userAllow(
 	toolName: string,
 	input: Record<string, unknown>,
@@ -242,19 +226,14 @@ function userAllow(
 	return null;
 }
 
-// tools exemption: exact-name allowlist, checked AFTER every deny-side layer above and
-// BEFORE the opaque ask / gray fall-through (ADR-0009) — a listed tool carrying a
-// protected-path target now faces the ask above instead of a silent allow here. kind
-// "code" (eval, item 4): leaves the tools exemption family entirely — its documented scope
-// is non-code tools; a user who listed eval here loses the exemption (BREAKING). Suspended
-// with user allow while policyDegraded (ADR-0010).
+/** Allows a tool listed in `tools` by exact name, after every deny-side layer (ADR-0009). An eval cell
+ *  is never exempt, because its code can do anything a command can. */
 function toolsExemption(toolName: string, access: ToolAccess, flags: VouchFlags, user: UserRules): RuleResult | null {
 	if (!user.tools.includes(toolName) || access.kind === "code" || !canVouch(access, flags)) return null;
 	return { verdict: "allow", reason: "user tools allow rule" };
 }
 
-// Opaque ask: a known mutating call (write/edit/ast_edit) with no extractable target at
-// all — deterministic ask, headless → deny (never for an unknown tool: see toolAccess).
+/** Asks on a known mutating call whose payload names no target; an unknown tool is never opaque. */
 function opaqueAsk(access: ToolAccess): RuleResult | null {
 	if (access.direction !== "mutating" || !access.opaque) return null;
 	return { verdict: "ask", reason: "mutating call with no extractable target", askSource: "rule" };
