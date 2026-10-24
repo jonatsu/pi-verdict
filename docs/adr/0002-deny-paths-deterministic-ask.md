@@ -184,10 +184,10 @@ decisions (deterministic ask on a denyPaths hit, the existence hint,
 bidirectional scope-tool matching) are unaffected — only the passages above
 that assumed the now-removed layer's existence are stale.
 
-**Superseded 2026-10-05 by [ADR-0005](0005-self-protection-layer-restored.md):** the layer is restored
-(snapshot-free), so the priority chain again starts at the self-protection deny and reads/writes to
-`<agentDir>/verdicts/` are denied — the passages this amendment marked stale are current again, except
-where ADR-0005 states otherwise.
+**Superseded by [ADR-0005](0005-self-protection-layer-restored.md)** (restored 2026-10-04; this pointer was added
+2026-10-05): the layer is restored (snapshot-free), so the priority chain again starts at the
+self-protection deny and reads/writes to `<agentDir>/verdicts/` are denied — the passages this amendment
+marked stale are current again, except where ADR-0005 states otherwise.
 
 ## Amendment (2026-10-05): kernel-true spelling tier (path-layer review item 10, plan-review F11)
 
@@ -256,3 +256,17 @@ caller — F10):
 Audit records stay local + full-fidelity (the boundary note above is
 unchanged: they never leave the machine, so their `actionLine`/`transcript`
 fields keep the plaintext the classifier prompt now redacts).
+
+## Amendment (2026-10-24): the tool-name dispatch became the tool-access adapter
+
+The scope-tool section above (point 3 of the 2026-09-09 amendment) says the tool-name enumeration
+mirrors pi's closed built-in registry and shares the `toolKind` dispatch, and that a tool outside it
+lands in the gray zone with the existence hint. The `toolKind` dispatch no longer exists. The
+tool-access adapter `toolAccess` ([ADR-0009](0009-tool-access-adapter.md)) replaced it: scope tools
+are the names in `SCOPE_TOOL_NAMES`, and the adapter extracts targets by payload shape for every
+tool, known or not.
+
+An unknown tool's path-shaped payload fields (for example `path` and `paths`) therefore reach the
+`denyPaths` ask today. The `tools` exemption runs only after that ask, so a listed tool with a protected
+target still asks (`CHANGELOG.md`, 0.18.0). Only an unknown tool whose payload names no path-shaped field
+still falls through to the classifier with the existence hint. This ADR's decisions are unchanged.
