@@ -1154,6 +1154,13 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "read of an existing non-JSON project file with a query= suffix is not a rule allow (the host reads it literally)",
+			family: "host-path",
+			tool: "read",
+			input: { path: "README.md?query=x" },
+			expected: { layer: "classifier" },
+		},
+		{
 			label: "read of an existing project file with an image question is still a rule allow",
 			family: "host-path",
 			tool: "read",

@@ -6307,6 +6307,40 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("hostReadPath peels ?query= only for a JSON file, as the host does", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				expect(hostReadPath("data.json?query=.a", cwd)).toBe("data.json");
+				expect(hostReadPath("data.jsonl?query=.a", cwd)).toBe("data.jsonl");
+				expect(hostReadPath("data.ndjson?raw=1&query=.", cwd)).toBe("data.ndjson");
+				expect(hostReadPath("a.txt?query=x", cwd)).toBe("a.txt?query=x");
+				expect(hostReadPath("a.txt?q=x", cwd)).toBe("a.txt");
+				// grading still widens: both spellings are graded for every file
+				expect(hostPathForms("a.txt?query=x", { peelImageQuestion: true })).toContain("a.txt");
+			},
+			home,
+		);
+	});
+
+	test("a read of an existing file with a ?query= suffix is not a rule allow unless it is JSON", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, "a.txt"), "x");
+				fs.writeFileSync(path.join(cwd, "data.json"), "{}");
+				const h = session({}, { cwd });
+				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				expect(await toolCall(h, "read", { path: "data.json?query=." })).toBeUndefined();
+				expect(await toolCall(h, "read", { path: "a.txt?q=x" })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+				expect((await toolCall(h, "read", { path: "a.txt?query=x" }))?.block).toBe(true);
+				expect(h.calls).toHaveLength(1);
+			},
+			home,
+		);
+	});
+
 	test("a target in a registered internal scheme is never a rule allow, even under a user allow", async () => {
 		await withTempDir(
 			"pv-hps-",

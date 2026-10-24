@@ -2062,13 +2062,17 @@ function wslDriveAlias(target: string): string | null {
 
 /** The path with an image question or JSON filter (`?q=<text>` or `?query=<text>`) removed, or null when
  *  the text carries none; mirrors omp's splitImageQuestionTarget and parseJsonSelector (18.12.6). The
- *  host opens the file before the question, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query. */
-function peelImageQuestion(target: string): string | null {
+ *  host opens the file before the question, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query.
+ *  Grading peels `query` for every file, since an extra form only widens it; `jsonOnlyQuery` peels it
+ *  only in front of a `.json`, `.jsonl` or `.ndjson` name, the files the host treats it as a filter for. */
+function peelImageQuestion(target: string, jsonOnlyQuery = false): string | null {
 	if (target.includes("://")) return null;
 	const queryIndex = target.indexOf("?");
 	if (queryIndex === -1) return null;
 	const params = new URLSearchParams(target.slice(queryIndex + 1));
-	return params.get("q") || params.get("query") ? target.slice(0, queryIndex) : null;
+	const file = target.slice(0, queryIndex);
+	const filter = params.get("query") && (!jsonOnlyQuery || /\.(?:jsonl?|ndjson)$/i.test(file));
+	return params.get("q") || filter ? file : null;
 }
 
 /** A text the host opens as a filesystem path that is relative to the project. */
@@ -2099,7 +2103,7 @@ function readMayRelocate(entry: string, cwd: string): boolean {
  *  trailing selector is cut unless the whole text names an existing file (a list that repeats its colon
  *  keeps the shorter split when that one exists), then the path is expanded. */
 export function hostReadPath(entry: string, cwd: string): string {
-	const asked = peelImageQuestion(entry) ?? entry;
+	const asked = peelImageQuestion(entry, true) ?? entry;
 	const folded = peelHostSelector(asked);
 	const unfolded = peelHostSelector(asked, false);
 	const exists = (p: string): boolean => fs.existsSync(path.resolve(cwd, expandHostPath(p)));
