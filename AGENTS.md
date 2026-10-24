@@ -141,7 +141,7 @@ Keep docs in sync with functional changes:
 
 Spawn a sub-instance that loads only the repo copy, against a throwaway agent dir (never the live `~/.omp/agent`):
 
-- Create a temp agent dir containing `config/pi-verdict.json` (test config) plus copies of `agent.db`, `config.yml`, `models.db` from `~/.omp/agent` for model auth.
+- Create a temp agent dir containing `config/pi-verdict.json` (test config) plus copies of `agent.db`, `config.yml`, `models.db` and `models.yml` from `~/.omp/agent`; `models.yml` fetches the OpenRouter key from OpenBao (`bao kv get`), so the key reaches only the omp process.
 - Run from a throwaway project dir: `PI_CODING_AGENT_DIR=<tmp> omp -p --no-session --no-title --no-extensions -e <repo>/extensions/pi-verdict.ts --tools read,bash --no-lsp "<prompt>"`. `-p` has no UI, so asks degrade to deny — this exercises the headless path only; interactive dialogs and `/verdict` are covered by the stub tests.
 - Delete the temp dir afterwards.
 
