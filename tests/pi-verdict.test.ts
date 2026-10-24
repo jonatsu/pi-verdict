@@ -19,6 +19,7 @@ import autoMode, {
 	bashPathTokens,
 	bindCompletion,
 	budgetedTimeoutMs,
+	buildProtectedSet,
 	type CompletionFn,
 	computeTmpdirBases,
 	declineDetail,
@@ -28,6 +29,7 @@ import autoMode, {
 	gitPushForce,
 	hostPathForms,
 	hostReadPath,
+	isProtectedWritePath,
 	mentionsSpelling,
 	redactorFor,
 	renderFooter,
@@ -3691,6 +3693,30 @@ describe("self-protection layer (ADR-0005)", () => {
 		const h = session({});
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		expect(await toolCall(h, "write", { path: path.join(TMP_AGENT, "proj", "src", "a.ts"), content: "x" })).toBeUndefined();
+	});
+
+	test("a single-file install also protects the jev-adapter.ts the gate imports", async () => {
+		await withTempDir("pv-sp-copy-", async (agentDir) => {
+			const ext = path.join(agentDir, "extensions");
+			const gate = path.join(ext, "pi-verdict.ts");
+			const adapter = path.join(ext, "jev-adapter.ts");
+			const prot = buildProtectedSet(agentDir, gate);
+			expect(isProtectedWritePath(gate, "/proj", prot)).toBe(true);
+			expect(isProtectedWritePath(adapter, "/proj", prot)).toBe(true);
+			expect(prot.bashPatterns.some((re) => re.test(`cp x ${adapter}`))).toBe(true);
+			// only the sibling the gate imports, not every file beside it
+			expect(isProtectedWritePath(path.join(ext, "other.ts"), "/proj", prot)).toBe(false);
+		});
+	});
+
+	test("a directory install protects the package, adapter included; a dev checkout protects no adapter", async () => {
+		await withTempDir("pv-sp-copy-", async (agentDir) => {
+			const pkg = path.join(agentDir, "plugins", "node_modules", "@jonatsu", "pi-verdict");
+			const prot = buildProtectedSet(agentDir, path.join(pkg, "extensions", "pi-verdict.ts"));
+			expect(isProtectedWritePath(path.join(pkg, "extensions", "jev-adapter.ts"), "/proj", prot)).toBe(true);
+			const dev = buildProtectedSet(agentDir, "/proj/extensions/pi-verdict.ts");
+			expect(isProtectedWritePath("/proj/extensions/jev-adapter.ts", "/proj", dev)).toBe(false);
+		});
 	});
 
 	test("reads of the trust store are denied; the policy still reads (R6)", async () => {

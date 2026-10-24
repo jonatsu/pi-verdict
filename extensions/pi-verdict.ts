@@ -2741,7 +2741,8 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 // model output that must not flow back into agent context). Protected scope:
 //   - <agentDir>/config/pi-verdict.json (the gate's decision input)
 //   - <agentDir>/config/pi-verdict-trust.json (project-trust decisions)
-//   - the installed extension copy (pi under <agentDir>/extensions/, omp under
+//   - the installed extension copy, with its sibling jev-adapter.ts in the single-file
+//     form (pi under <agentDir>/extensions/, omp under
 //     plugins/node_modules/<pkg>/ in its config root — the install forms listed
 //     with resolveAgentDir; dev checkouts are not in scope)
 //   - <agentDir>/verdicts/ (write + read)
@@ -2753,6 +2754,9 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 // obfuscatable (honest declaration, ADR-0001): it raises the bar, it is not a
 // guarantee against a direct rewrite outside a tool call.
 // ============================================================================
+
+/** The module `pi-verdict.ts` value-imports from its own directory (`./jev-adapter`). */
+const JEV_ADAPTER_FILE = "jev-adapter.ts";
 
 interface ProtectedSet {
 	/** exact protected files (lexical absolute + realpath forms) */
@@ -2806,9 +2810,13 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 				if (!own.startsWith(extRoot + path.sep)) continue;
 				const segs = path.relative(extRoot, own).split(path.sep);
 				const singleFile = segs.length === 1;
-				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir
-				const target = singleFile ? own : path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1));
-				for (const f of baseForms(target)) {
+				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir.
+				// A single-file copy also protects the sibling adapter module it imports, since rewriting
+				// that changes the gate as surely as rewriting the main file.
+				const targets = singleFile
+					? [own, path.join(path.dirname(own), JEV_ADAPTER_FILE)]
+					: [path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1))];
+				for (const f of targets.flatMap((target) => baseForms(target))) {
 					(singleFile ? exact : prefixes).add(f);
 					extTargets.add(f);
 				}
