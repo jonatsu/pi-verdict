@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-24
+
 ### Added
 
 - **BREAKING (headless runs that install extensions or edit host config)**: the code-loading ask ([ADR-0011](docs/adr/0011-code-loading-ask.md)), a built-in rule-layer ask after the `denyPaths` asks and before the over-cap ask and user `allow` (layer 4a in `docs/layers.md`). A write where omp or pi loads code in a later session asks a human: an agent directory's `extensions/`, `hooks/`, `tools/`, `commands/` (omp) or `extensions/`, `npm/`, `git/`, `bin/` (pi), its `mcp.json`, `.mcp.json`, `models.yml`, LSP and DAP config (`{,.}{lsp,dap}.{json,yaml,yml}`), `models.json` and `trust.json`, and its general config files `config.yml` and `settings.json`; the omp plugin roots `~/.omp/plugins/` and `~/.omp/profiles/<name>/plugins/` (and the same under `$XDG_DATA_HOME/omp/` when that variable is absolute); any project's `.omp/{extensions,hooks,tools,commands,plugins}/`, `.omp/{mcp.json,.mcp.json,config.yml,settings.json}`, the LSP and DAP config in `.omp/`, `.pi/{extensions,npm,git}/` and `.pi/settings.json`; `mcp.json`, `.mcp.json` or an LSP or DAP config file directly in the call's working directory; and the LSP and DAP config files in the home directory. The agent directory is the resolved `<agentDir>` (honouring `PI_CODING_AGENT_DIR`) and any `.omp/agent`, `.omp/profiles/<name>/agent` or `.pi/agent` path. A target naming a directory that holds such locations (an agent directory itself, a `.omp` or `.pi` directory, `~/.omp`) asks too, so `tar -C ~/.omp/agent`, `cp -r x ./.omp/` and `ln -s ~/.omp/agent a` ask. A file tool's write targets count, also in the form rebuilt from the nearest existing ancestor (a new file under a symlink to an agent directory), and a read does not; a shell command or eval cell asks on any path token in the set or a bare working-directory launcher name, a shell command with `$PWD`, `$(pwd)` and `$PI_CODING_AGENT_DIR` expanded, so a command that only reads such a path asks too; `ast_edit` also asks when such a location exists inside the subtree it edits. A path that is also a `denyPaths` declaration keeps the protected-path ask with its path withheld. A user `allow` rule or `tools` entry cannot skip the ask, and a non-interactive session or an unanswered subagent ask denies it, so a headless run can no longer install an extension or edit `config.yml`, `settings.json` or `mcp.json`. The reason names the location class and the path, and the dialog keeps the Explain option. `builtinDenyFloor: false` turns the ask off with the floor; self-protection still denies writes to the gate's own files first.
@@ -444,7 +446,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/jonatsu/pi-verdict/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jonatsu/pi-verdict/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/jonatsu/pi-verdict/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/jonatsu/pi-verdict/compare/v0.17.0...v0.18.0
