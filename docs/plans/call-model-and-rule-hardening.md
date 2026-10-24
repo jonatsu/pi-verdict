@@ -2,7 +2,7 @@
 
 **Status.** Approved by the user on 2026-10-05, not yet executed: items 1-8, item 1's shell-expansion amendment
 (1a), and items 9-12. On 2026-10-07 the user reordered delivery: item 12 (the file split) now comes first, along
-the file's existing sections, and item 9 follows the small Part A fixes; see "Delivery" and decision 11. Item 9's
+the file's existing sections, and item 9 follows items 3-6, 1-2 and 11; see "Delivery" and decision 11. Item 9's
 ADR is reviewed by the user before any of its code is written; see "Decisions". The plan is
 independent of `docs/plans/archive/tool-access-hardening.md` for items 1-8 and 11, and builds on it for items 9, 10
 and 12; see "Interaction with the tool-access plan".
@@ -10,7 +10,8 @@ and 12; see "Interaction with the tool-access plan".
 Written 2026-10-05 against HEAD `c7f9d2e` (`v0.17.0`), and extended the same day against HEAD `3215e89` (the
 extension source is unchanged between the two). This file was first committed as
 `docs/plans/allow-operands-and-floor-gaps.md`; it was renamed when items 9-12 joined, before any item was executed.
-Line references are to `extensions/pi-verdict.ts` at those commits.
+Line references are to `extensions/pi-verdict.ts` at those commits. The file has grown to 6,285 lines since, so
+locate code by symbol name.
 
 ## Purpose
 
@@ -26,7 +27,8 @@ The plan has three parts:
 - **Part B, one reading of each call (items 9-10).** One shared *call model* replaces the per-layer readings, and
   uses it to follow code the agent wrote this session into its execution.
 - **Part C, evidence and structure (items 11-12).** These add a replay tool that measures the effect of rule changes
-  on recorded decisions, and split the single 4,788-line file along the seams Part B creates.
+  on recorded decisions, and split the single 6,285-line file along its existing sections, ahead of Part B
+  (decision 11).
 
 Items 9 and 12 take over two items that the tool-access plan defers: the path-resolution service and the file split
 (`docs/plans/archive/tool-access-hardening.md`, "Deferred").
@@ -293,15 +295,15 @@ can be admitted soundly. So adopt a fast path **behind the same guard**, never b
   `allow` rules are evaluated: after the floor, user `deny`, the `.omp` gate and `denyPaths`, and only when
   `allowAdmits(command, cwd)` is true. It can therefore never override a deny or an ask, and it never sees a compound
   command, a secret operand or an operand the gate cannot expand (item 1a).
-- **Ordering with the over-cap ask.** Once the tool-access plan's Phase 4 lands, its "too long to judge" ask runs
-  before every allow path, built-in or user. An over-cap command is never fast-path-allowed (tool-access plan,
-  "Interaction with the call-model plan").
+- **Ordering with the over-cap ask.** The tool-access plan's Phase 4 has landed (`f3b47a5`): its "too long to
+  judge" ask runs before every allow path, built-in or user. An over-cap command is never fast-path-allowed
+  (tool-access plan, "Interaction with the call-model plan").
 - **Config.** A new key, `fastPath` (boolean). **It defaults to `true`; this is the recommendation, agreed with the
   user on 2026-10-05.** The list is read-only and sits behind the same guard as user allows, so it is sound for
   everyone, and the speed gain matters most to users who never write an allow rule. A user turns it off with
   `"fastPath": false`. A trusted project override may only set it to `false` (narrowing, in line with ADR-0006 and
   the tool-access plan's direction table). Add the key to `USER_CONFIG_TEMPLATE`, its `_hint` copy, `KNOWN_USER_KEYS`,
-  `PROJECT_OVERRIDABLE_KEYS` with the narrowing direction, `docs/configuration.md` and the `/verdict` editor if it
+  `PROJECT_OVERRIDE_DIRECTION` with the narrowing direction, `docs/configuration.md` and the `/verdict` editor if it
   edits booleans. The CHANGELOG entry is not BREAKING, but it is a visible default change: commands on the list stop
   reaching the classifier. Say so in the entry.
 - **Verdict.** `allow/rule` with the reason `built-in fast path`. Keep the rule id visible, so the probe and the
@@ -329,9 +331,9 @@ The executable-code rejections are the important part. A fast path that admits `
 regex to their own `allow` list, where ADR-0008's rule that the user endorses the claim applies. Item 10 narrows that
 user-side trade as well.
 
-**ADR.** This partly reverses the project's "no built-in allowlist" position (#12, `docs/layers.md:146-147`,
-`research/rule-layer-security-audit.md` V3). Write a new ADR, taking the next free number at landing time, since the
-tool-access plan reserves ADR-0009 and ADR-0010. It records three things:
+**ADR.** This partly reverses the project's "no built-in allowlist" position (#12, `docs/layers.md`,
+`research/rule-layer-security-audit.md` V3). Write a new ADR, taking the next free number at landing time (ADR-0009
+and ADR-0010 now exist, so the next is ADR-0011). It records three things:
 
 - why V3's objection no longer holds: the guard is shape-checked and operand-graded, and the list is fixed and
   read-only;
@@ -569,11 +571,11 @@ how many recorded classifier allows the rule would have denied.
 **Tests.** A synthetic audit fixture under `tests/` drives the replay end to end. The fixture includes a record whose
 cwd is missing.
 
-### 12. Split the single file along the call model's seams (size L in M steps)
+### 12. Split the single file into modules (size L in M steps)
 
-**Problem.** `extensions/pi-verdict.ts` holds about eleven concerns in 4,788 lines: shell lexing, path resolution,
-configuration and trust, the floor, self-protection, `denyPaths`, the classifier transport, the cascade, the dialog,
-the footer and the wiring (`research/2026-10-04-architecture-review.md`, F11). Module-level state that tests cannot
+**Problem.** `extensions/pi-verdict.ts` holds about eleven concerns in 6,285 lines (4,788 when the finding was
+written): shell lexing, path resolution, configuration and trust, the floor, self-protection, `denyPaths`, the
+classifier transport, the cascade, the dialog, the footer and the wiring (`research/2026-10-04-architecture-review.md`, F11). Module-level state that tests cannot
 vary, such as `HOME_RULE_ROOTS` and `CASE_INSENSITIVE_FS`, lives at import time.
 
 **Loader facts, verified 2026-10-05.** Both hosts load every `.ts` or `.js` file directly inside `extensions/` as a
@@ -610,7 +612,7 @@ This settles the tool-access plan's open loader question.
 
 **What must change with the layout:**
 
-- **Self-protection.** `buildProtectedSet` (`:1879`) protects the installed copy as a single exact file when
+- **Self-protection.** `buildProtectedSet` protects the installed copy as a single exact file when
   `ownFile` is a file under `extensions/`. After the split, `ownFile` is `index.ts`, and the sibling modules would be
   unprotected. The protected target must become the module directory. Pin it with a test before the first move.
 - **Publishing and provenance.** Update the `package.json` `files` whitelist to the directory. `tools/provenance.ts`
@@ -637,8 +639,9 @@ met.
 - **Item 10** needs that plan's Phase 4 (content excerpt) and Phase 5 (redaction).
 - **Item 12** takes over that plan's deferred file split, and answers its open loader question (item 12, "Loader
   facts").
-- **ADR numbers.** That plan reserves ADR-0009 and ADR-0010. Items 7 and 9 take the next free numbers at landing
-  time. Items 1-2 amend ADR-0008. Item 10's limits go into item 9's ADR or into their own, decided at landing.
+- **ADR numbers.** That plan's ADR-0009 and ADR-0010 exist, so the next free number is ADR-0011. Items 7 and 9 take
+  the next free numbers at landing time. Items 1-2 amend ADR-0008. Item 10's limits go into item 9's ADR or into
+  their own, decided at landing.
 
 ## Delivery
 
@@ -689,8 +692,9 @@ Approved by the user on 2026-10-05:
 
 Approved by the user later on 2026-10-05, after the merge:
 
-6. **Item 1a, in commit 1.** Expand only `~`, `$HOME` and `${HOME}`; refuse every other variable, `~user`, braces
-   and globs, except a top-level non-hidden glob. Add the `HOME` reassignment guard. **Approved.**
+6. **Item 1a, in the commit that lands items 1-2** (commit 1 when approved; delivery step 5 after decision 11).
+   Expand only `~`, `$HOME` and `${HOME}`; refuse every other variable, `~user`, braces and globs, except a top-level
+   non-hidden glob. Add the `HOME` reassignment guard. **Approved.**
 7. **Items 9-12 into scope**, in the delivery order above. Item 11 outright. Items 9 and 10 as the direction, with
    item 9's ADR reviewed by the user before any of its code. Item 12 last. **Approved.**
 8. **Item 11's rule-verdict records: compact, with no input.** **Approved.** Full records would let the replay
