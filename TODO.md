@@ -15,6 +15,10 @@ Open work for pi-verdict, in the priority order the user set on 2026-10-07. Work
 8. [ ] **Follow code the agent wrote into its execution** (plan item 10, delivery step 9), after item 9.
 9. [ ] **OS-level sandboxing** (`docs/plans/os-level-sandboxing-draft.md`), a separate track. Under the user's 80/20 rule for gate hardening (2026-10-06), the sandbox contains the obfuscation residuals the gate accepts (ADR-0009). Its first branch, documenting how to run omp inside an existing sandbox, can land at any point; a built-in sandbox waits for item 9.
 
+## Later
+
+- [ ] **Evaluate Kev as a local classifier backend** (noted 2026-10-24). Kev (`jaredpalmer/kev-4b` on Hugging Face, Apache-2.0) is an open decision model in the jev family: a LoRA adapter on `Qwen/Qwen3.5-4B-Base` for typed multiple-choice decisions with calibrated confidence. A 4-bit quantized build would run on a local GPU, which could cut gray-zone latency, remove the per-call cost, and keep transcripts on the machine. Open questions: whether a local server can speak the decisions wire contract that `jev-adapter.ts` already uses (then `PI_VERDICT_JEV_URL` may be enough), how its verdicts and confidence compare with jev on recorded audit cases (item 11's replay), and its latency on the user's GPU.
+
 ## Ongoing
 
 - [ ] **Catch the intermittent test failure.** `bun test` failed one test twice on 2026-10-06/07, both times while other work loaded the machine; the name was not captured, and 10 idle plus 9 concurrent runs on 2026-10-07 did not reproduce it. Suspects are the real-clock assertions: the deadline tests (`elapsed < 450`, `elapsed < 1_000`) and the `#32` performance tests (`< 250` ms). Next time it fails, capture the name with `bun test 2>&1 | rg "\(fail\)"`, then assert on call counts or widen that test's margin.
