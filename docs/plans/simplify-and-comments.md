@@ -36,9 +36,9 @@ flowchart LR
 | 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
 | 3. `adjudicate.ts` and the `Verdict` union | `C20`, `C25`, `C26`, `C37`, `C34`, `C42` |
 | 4. `state.ts` | `C32` |
-| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17` |
+| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state) |
 | 6. UI modules | `C29`, `C31` |
-| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C35`, `C36`, `C38`-`C41`, `C43`, `C44` |
+| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C35`, `C36`, `C38`-`C41`, `C43`, `C44`, `C45`, `C46`, `C47` |
 
 ## Findings
 
@@ -190,3 +190,33 @@ flowchart LR
   `gradeBase` compares `input.language` with a bare `"py"`; and `packageDepth` carries the magic
   numbers `2` and `3` for the npm scope and git host depths. Fix: a `codeText(access)` accessor that
   returns the code or null, a named eval-language constant, and named depth constants.
+- **C45 Plan and finding ids in tests and probe cases.** The comment pass covers shipped modules only, yet
+  `tests/pi-verdict.test.ts` carries about 59 plan or finding ids, many in `describe` titles such as
+  `policyDegraded (item 6c, Phase 6)`, and `probe/cases.ts` carries about 21. The probe's `ref` field mixes two
+  review namespaces under bare ids (`F3`, `F5`, `F6`, `F8`, `F15`), and `docs/coverage.md` renders them. Fix: title
+  tests by the behavior they pin, and replace probe refs with an ADR or a qualified id.
+- **C46 Smaller structure items.** `deny-paths.ts` mixes the path tokenizer (a `path-tokens.ts` candidate),
+  `denyPaths` matching and the `hitOmpDir` gate. `renderFooter` restates the `"full" | "compact"` union instead of
+  deriving it from `UserRules["footer"]`. Module-level mutable state remains outside `floor.ts`: `rootUi`,
+  `dialogTail`, `dialogModules`, `completionCache` and the temperature-rejection set. Shared arrays outside the
+  model-call modules lack `readonly`.
+- **C47 `code-loading.ts` expands `$PI_CODING_AGENT_DIR` through the global agent directory,** the seam slice 2
+  closed for self-protection: a session built with an explicit agent directory grades the variable against another
+  directory. Pass the session's agent directory in.
+
+### Details carried from the reviews
+
+These belong to the findings above and must close with them:
+
+- `C1`: `coerceSingleStringLists` mutates its input; several `as` casts in `loadUserRules` lack a why-safe comment.
+- `C6`: a redundant condition in `markReparsers`; name the shell options that take an argument.
+- `C7`: `allowAdmits`' lettered comments are out of order; consider named predicates.
+- `C12`: `agentDbS0()` recomputes the agent directory on every call.
+- `C14`: five `fs.existsSync(path.resolve(cwd, …))` copies; a redundant `isWrite &&` in `classifyPath`.
+- `C15`: `trust.ts` recomputes `baseForms` for every entry.
+- `C18`: drop `describeAction`, which only calls `toolCallLine`.
+- `C20`: `first!` in `runConfidenceCascade`; the `FallbackAudit` assembly repeated in `resolveAskWithoutHuman`;
+  `WITHHELD_ALLOW_PREFIX` used before its declaration; `degraded` computed in five places.
+- `C32`: `RulesLoadReport` hand-copies four `LoadedRules` fields; `FallbackCascade.summary` builds UI text inside
+  state.
+- `C33`: `AdjudicateEnv.redact` is optional, with a second redactor construction path.
