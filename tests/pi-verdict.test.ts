@@ -6610,6 +6610,20 @@ describe("host path spelling (ADR-0009)", () => {
 		}
 	});
 
+	test("an xd:// device URL is not graded as a file path, so a tool name ending in _history reaches the classifier", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> device" }];
+		for (const [tool, input] of [
+			["read", { path: "xd://mcp__sequential_thinking_get_thinking_history" }],
+			["write", { path: "xd://mcp__sequential_thinking_get_thinking_history", content: "{}" }],
+			["read", { path: "XD://tool_credentials" }],
+		] as const) {
+			h.calls.length = 0;
+			expect(await toolCall(h, tool, input)).toBeUndefined();
+			expect(h.calls).toHaveLength(1);
+		}
+	});
+
 	test("hostPathForms removes shell escapes for read paths only", () => {
 		const forms = hostPathForms("~/Tax\\ Returns/a\\(1\\).pdf", { unescapeShell: true });
 		expect(forms).toContain(`${home}/Tax Returns/a(1).pdf`);

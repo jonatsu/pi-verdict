@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An omp `xd://` tool-device URL is no longer graded as a file path by the built-in floor, which denied a `read` or `write` of a device whose tool name ends in `_history` (such as `xd://mcp__sequential_thinking_get_thinking_history`) as an S0 shell-history file; a device call now reaches the classifier, and the tool it runs is still gated as its own call. A `write` to an `xd://` URL was previously allowed by the floor as an in-project write; it now reaches the classifier too.
+
 ## [0.19.0] - 2026-10-24
 
 ### Changed

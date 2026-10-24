@@ -187,7 +187,13 @@ const S2_USER_RC = [
 const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitmodules$/i];
 
 /** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
+/** omp's `xd://` URLs name a tool device: a read returns its usage text and a write runs the tool, which
+ *  the host dispatches as its own tool call through the gate. The name is not a file, so the path grades
+ *  do not apply; the call stays gray for the classifier. */
+const DEVICE_URL = /^xd:\/\//i;
+
 function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
+	if (DEVICE_URL.test(rawPath)) return { verdict: "gray", reason: "host tool device URL, not a file path" };
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
