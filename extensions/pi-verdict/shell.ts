@@ -276,14 +276,75 @@ function envSplitsString(args: readonly string[]): boolean {
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
  *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the
  *  classifier (an audit boundary: the unbounded lookahead `--force(?![-\w])` exempted unknown
- *  spellings). Short flags are accepted in a bundle (`-f`, `-fu`, `-uf`). */
+ *  spellings). Short flags are accepted in a bundle (`-f`, `-fu`, `-uf`), but not after an `o`,
+ *  which takes the rest of the bundle as its value (`-of`). */
 export function isForceFlag(word: string): boolean {
 	const t = word.toLowerCase();
-	if (/^-[a-z]*f[a-z]*$/.test(t)) return true;
+	if (/^-[a-np-z]*f[a-z]*$/.test(t)) return true;
 	if (/^--force-with-lease(?:=|$)/.test(t)) return false;
 	if (t === "--force-if-includes") return false; // no-op without a lease (git documents it)
 	if (/^\+./.test(t)) return true; // a `+` refspec forces the update (F24)
 	return /^--force(?![-\w])/.test(t) || t.startsWith("--force-");
+}
+
+/** git's global options that take the next word as their value (or an attached `=value`). */
+const GIT_GLOBAL_WITH_VALUE = new Set(["-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source"]);
+/** git's global options that take no separate value. */
+const GIT_GLOBAL_FLAGS = new Set([
+	"-p",
+	"--paginate",
+	"--no-pager",
+	"--bare",
+	"--no-replace-objects",
+	"--no-lazy-fetch",
+	"--no-optional-locks",
+	"--no-advice",
+	"--literal-pathspecs",
+	"--glob-pathspecs",
+	"--noglob-pathspecs",
+	"--icase-pathspecs",
+	"--exec-path",
+	"--list-cmds",
+	"--html-path",
+	"--man-path",
+	"--info-path",
+	"-v",
+	"--version",
+	"-h",
+	"--help",
+]);
+
+/** Index of the subcommand word for the `git` at `seg[at]`, read past git's global options
+ *  (compared case-folded, so `-C` and `-c`, `-P` and `-p` share an entry); -1 when none follows.
+ *  Fails closed: an option it does not model returns `undefined`, since it may take a value. */
+function gitSubcommandIndex(seg: readonly string[], at: number): number | undefined {
+	for (let k = at + 1; k < seg.length; k++) {
+		const word = seg[k].toLowerCase();
+		if (!word.startsWith("-")) return k;
+		const eq = word.startsWith("--") ? word.indexOf("=") : -1;
+		const name = eq === -1 ? word : word.slice(0, eq);
+		if (GIT_GLOBAL_WITH_VALUE.has(name)) {
+			if (eq === -1) k++;
+		} else if (!GIT_GLOBAL_FLAGS.has(name)) {
+			return undefined;
+		}
+	}
+	return -1;
+}
+
+/** `git push` options whose value is the next word, so a `+word` there is not a refspec. */
+const PUSH_OPTIONS_WITH_VALUE = new Set(["--push-option", "--receive-pack", "--exec", "--repo"]);
+
+/** Whether the words after `git push` force the update. Options may follow arguments, as git's
+ *  option parser allows, until `--`; a short bundle ending in `o` (`-o`, `-uo`) takes the next word. */
+function pushArgsForce(args: readonly string[]): boolean {
+	for (let k = 0; k < args.length; k++) {
+		const word = args[k].toLowerCase();
+		if (word === "--") return args.slice(k + 1).some((arg) => arg.startsWith("+") && arg.length > 1);
+		if (isForceFlag(word)) return true;
+		if (PUSH_OPTIONS_WITH_VALUE.has(word) || /^-[a-np-z0-9]*o$/.test(word)) k++;
+	}
+	return false;
 }
 
 function commandSegments(words: string[]): string[][] {
@@ -342,12 +403,9 @@ function gitPushInWords(words: string[], depth: number): boolean {
 	for (const seg of commandSegments(words)) {
 		for (let i = 0; i + 1 < seg.length; i++) {
 			if (wordBasename(seg[i]) !== "git") continue;
-			let pushed = false;
-			for (let k = i + 1; k < seg.length; k++) {
-				const word = seg[k];
-				if (word.toLowerCase() === "push") pushed = true;
-				else if (pushed && isForceFlag(word)) return true;
-			}
+			const sub = gitSubcommandIndex(seg, i);
+			if (sub === undefined) return true; // an unmodelled git option may hide the subcommand: unsound
+			if (sub !== -1 && seg[sub].toLowerCase() === "push" && pushArgsForce(seg.slice(sub + 1))) return true;
 		}
 		for (let i = 0; i < seg.length; i++) {
 			if (SHELL_NAMES[wordBasename(seg[i])] !== true) continue;

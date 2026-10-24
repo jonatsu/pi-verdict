@@ -173,6 +173,13 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { command: "git commit -m 'note git " + "push --force here'" },
 			expected: { layer: "classifier" },
 		},
+		{
+			label: "push option value starting with +",
+			family: "force-push",
+			tool: "bash",
+			input: { command: "git push -o +x origin main" },
+			expected: { layer: "classifier" },
+		},
 	);
 
 	// ---- path-tier --------------------------------------------------------------------

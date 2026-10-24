@@ -508,6 +508,36 @@ describe("git push force-flag precision (fork)", () => {
 		expect(String(r?.reason)).toContain("git-push-force");
 		expect(h.calls.length).toBe(0);
 	});
+	// A `+` word is a forced refspec only as a push argument: an option's value or another
+	// subcommand's argument is not one.
+	const NOT_FORCED: Array<[string, string]> = [
+		["-o value", "git push -o +x origin main"],
+		["-o in a bundle", "git push -uo +x origin main"],
+		["-o with an attached f", "git push -of origin main"],
+		["--push-option value", "git push --push-option +x origin main"],
+		["--receive-pack value", "git push --receive-pack +x origin main"],
+		["--exec value", "git push --exec +x origin main"],
+		["--repo value", "git push --repo +x main"],
+		["stash push", "git stash push -- +file"],
+		["stash push after -C", "git -C /tmp/r stash push -- +file"],
+	];
+	for (const [label, cmd] of NOT_FORCED) {
+		test(`${label}: not a force push (gray → classifier)`, async () => {
+			const h = session({});
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			const r = await toolCall(h, "bash", { command: cmd });
+			expect(r).toBeUndefined();
+			expect(h.calls.length).toBe(1);
+		});
+	}
+	test("a forced refspec after an option value, and push after git's global options, still deny", () => {
+		expect(gitPushForce("git push -o ci.skip origin +main")).toBe(true);
+		expect(gitPushForce("git push --push-option=x origin +main")).toBe(true);
+		expect(gitPushForce("git -C /tmp/r -c a=b --git-dir /r/.git --no-pager push -" + "f")).toBe(true);
+		expect(gitPushForce("git submodule foreach git push --" + "force")).toBe(true);
+		// an unmodelled global option may take a value that hides the subcommand: the deny stands
+		expect(gitPushForce("git --some-new-option x push --" + "force")).toBe(true);
+	});
 	// Item 2 converse: a quoted argument the shell never runs is not a command.
 	test("commit message quoting the pattern → not a rule match (gray → classifier)", async () => {
 		const h = session({});
