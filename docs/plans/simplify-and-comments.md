@@ -1,6 +1,6 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
-Status: in progress. Slice 1 landed on 2026-10-24 (after v0.20.0). This plan defines the finding ids
+Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0). This plan defines the finding ids
 `C1`-`C41` that commits and the CHANGELOG may cite; code comments never do (`pv-comments`).
 
 ## Goal
@@ -22,7 +22,7 @@ Each slice runs its comment pass (`C9`, `C28`) on the modules it touched before 
 
 ```mermaid
 flowchart LR
-  S1[1 classifier split, done] --> S2[2 rules and self-protection]
+  S1[1 classifier split, done] --> S2[2 rules and self-protection, done]
   S2 --> S3[3 adjudicate and the Verdict union]
   S3 --> S4[4 state]
   S4 --> S5[5 index.ts breakup]
@@ -33,7 +33,7 @@ flowchart LR
 | Slice | Findings |
 | --- | --- |
 | 1. Classifier split (done) | `C21`, `C27`, `C28` for the four model-call modules, plus `C26`'s `ModelChoice` |
-| 2. `rules.ts` and `self-protection.ts` | `C22`, `C30`, `C11` (`isWithin`) |
+| 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
 | 3. `adjudicate.ts` and the `Verdict` union | `C20`, `C25`, `C26`, `C37`, `C34` |
 | 4. `state.ts` | `C32` |
 | 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17` |
@@ -52,6 +52,17 @@ flowchart LR
   any call site drops it.
 - The `/verdict` menu's wrong `gateOmpDir` default label (part of `C24`) was fixed in v0.19.0, and
   the invisible characters in `stripZeroWidth` are spelled as escapes.
+- `C22` `classifyByRules` takes a `RuleContext` and reads as one chain of named layer steps;
+  `gradeBase` grades the floor, `canVouch` gates both allow layers, and `commandText` replaces the
+  command coercion in every module.
+- `C30` `buildProtectedSet` builds through `installRootFamilies`, `installTargets`, `pluginRoots`
+  and `enablementFiles`; `selfProtectCheck` builds its denies through `selfDeny`.
+- `C11`, the `isWithin` part: one containment helper in `paths.ts`, correct for the filesystem root
+  and case-folded on macOS and Windows, used by `deny-paths.ts` and `self-protection.ts`. It fixed a
+  `denyPaths` miss for a search of `/`, and self-protection's directory checks now fold case on
+  macOS and Windows. The other containment copies (`samePath`, `redaction.ts`, `floor.ts`,
+  `code-loading.ts`'s `strictlyUnder`) stay open for their slices.
+- `C28` for `rules.ts` and `self-protection.ts`.
 
 ### Open
 
@@ -86,11 +97,13 @@ flowchart LR
 - **C9 Plan and review ids and narrated history** in `shell`, `paths`, `agent-dir`, `trust`,
   `config`, `floor` and `access` (about 70 lines): the `pyEvalShellLines` and `kernelWalk` docs, the
   `DEFAULT_ALLOWED_TOOLS` essay, "research report" citations. Rewrite per `pv-comments`.
-- **C11 Duplicated path knowledge:** three tilde expansions that disagree on `~name`; several
-  containment checks (`samePath`, `pathEquals`, inline `startsWith(b + sep)`), all wrong for the
-  base `/`; the project-config stop rule written three times; "parse JSON, require an object" in
-  three places. Fix: `expandTilde`, `isWithin`, `lexicalAndRealForms` in `paths.ts`;
-  `projectLayout`; `readJsonObject`.
+- **C11 Duplicated path knowledge:** three tilde expansions that disagree on `~name`; the
+  remaining containment checks (`samePath`, inline `startsWith(b + sep)` in `floor.ts` and
+  `redaction.ts`, `strictlyUnder` in `code-loading.ts`), which should use `isWithin`, and
+  self-protection's `exact` files and `writePatterns`, which still compare case-sensitively on
+  macOS and Windows while its directories fold case; the
+  project-config stop rule written three times; "parse JSON, require an object" in three places.
+  Fix: `expandTilde`, `lexicalAndRealForms` in `paths.ts`; `projectLayout`; `readJsonObject`.
 - **C12 Module-level mutable state and test setters in `floor.ts`** (`anchoredS0`, `agentDbRule`,
   `tmpdirExemptBases`, the `set…ForTests` functions). Fix: a `FloorContext` built once and injected.
 - **C13 Boolean flag parameters** (`classifyPath(t, cwd, true, floorOn)`, `redactorFor(…, true)`,
@@ -116,9 +129,6 @@ flowchart LR
   `AUTO_DENY_OFF_SUFFIX`, and `blockedReason` beside a closure `blockReason`. Fix: one `settleAsk`,
   `adjudicateRuleAsk`, `adjudicateWithoutModel`, `adjudicateGrayZone`, an `autoResolveFor` in place
   of the four-deep ternary; `buildRecord` as a module function.
-- **C22 `classifyByRules` (167 lines, 8 parameters):** the four vouch-blocking flags are ANDed by
-  hand in two places; `String(input.command ?? "")` appears in four modules. Fix: `gradeBase`,
-  `canVouch`, a `RuleContext`, `commandText(input)`; one flat body that calls named steps.
 - **C23 Model-role resolution is copied four times** with five warn-once latches outside
   `SessionState.reset()`; the classifier shares one latch between two warnings. Fix:
   `model-roles.ts` with `resolveModelRole`, latches registered in `reset()`, `THINKING_LEVELS` as a
@@ -132,12 +142,10 @@ flowchart LR
 - **C26 Positional-parameter lists:** `classifyWithModel` 11, `callModelOnce` 9,
   `runConfidenceCascade` 8. Fix: an `interface ModelCall` built once per adjudication.
 - **C28 Plan ids and history in the remaining modules:** `adjudicate.ts` (`item 6b`, `item 7`,
-  `#67`/`#71` prose), `index.ts`, `rules.ts`, `self-protection.ts`, `state.ts`, `deny-paths.ts`
+  `#67`/`#71` prose), `index.ts`, `state.ts`, `deny-paths.ts`
   (the 23-line `bashPathTokens` derivation), `footer.ts`, `audit.ts`, `explain.ts`.
 - **C29 Wrong-home helpers:** `subagent.ts` mixes the subagent bridge with dialog helpers;
   `resolveAskWithoutHuman` lives in `adjudicate.ts`; `declineDetail` in `explain.ts`.
-- **C30 `buildProtectedSet` is 120 lines at depth 7;** `selfProtectCheck` builds the deny literal four
-  times; its doc still names the old `ownFile`; one `as string` lacks a why-safe comment.
 - **C31 `ui/dialog.ts` holds five concerns,** including the security-relevant `displaySafe`;
   `fencedBlock` uses bare sizes tied implicitly to the caps; two `as` casts lack a why-safe comment.
 - **C32 `SessionState`'s constructor** loads the config from disk even when rules are passed;
