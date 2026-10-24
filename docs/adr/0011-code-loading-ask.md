@@ -33,20 +33,29 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
    denied (`resolveAskWithoutHuman` denies every non-classifier ask). No model is consulted, and
    a user `allow` regex or `tools` entry cannot skip it.
 
-2. **Pipeline position.** After the user `deny` rules and the forced `.omp` gate, before
-   `denyPaths`. The floor and self-protection still deny first: a write into the gate's own
-   install directory stays a hard deny.
+2. **Pipeline position.** After the forced `.omp` gate, `denyPaths` and the redactor's
+   protected-path ask, before the over-cap ask and user `allow`. The floor and self-protection
+   still deny first: a write into the gate's own install directory stays a hard deny. Both
+   protected-path asks come first because this ask's reason carries the path (decision 7): a
+   path the user declared in `denyPaths` keeps its withheld reason (ADR-0002).
 
    ```mermaid
    flowchart LR
      SP[0 self-protection] --> F[1 floor] --> UD[2 user deny] --> OG[3 forced .omp gate]
-     OG --> CL[3a code-loading ask] --> DP[4 denyPaths] --> REST[5.. over-cap, allow, classifier]
+     OG --> DP[4 denyPaths] --> CL[4a code-loading ask] --> REST[5.. over-cap, allow, classifier]
    ```
 
 3. **Writes only.** A file tool's write targets count, and so does every target of a tool the
    adapter cannot classify (ADR-0009). A read does not ask. A shell command or an `eval` cell
    asks when one of its path tokens falls in the set, as with `denyPaths`, because a token's
    direction is unknown; a command that only lists or reads such a path therefore asks too. A
+   bare working-directory launcher name in a command or cell (`> mcp.json`) counts as a token,
+   and a command's `$PWD` and `$PI_CODING_AGENT_DIR` are expanded first. A target that names a
+   directory holding locations of the set asks as well, because a command aimed at it (`tar -C`,
+   `cp -r`, `mv`, `ln -s`) writes into them: an agent directory itself, a `.omp` or `.pi`
+   directory, an omp profile directory, `~/.omp` and `$XDG_DATA_HOME/omp`. Each target is also
+   graded in the form rebuilt from its nearest existing ancestor, so a new file under a symlink
+   to an agent directory is matched where it lands; `denyPaths` keeps its own no-rebuild rule. A
    scope tool that writes (`ast_edit`) is matched in both directions, so an edit over an
    ancestor of an extensions directory asks.
 
@@ -54,15 +63,19 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
 
    | Scope | omp | pi |
    | --- | --- | --- |
-   | Agent directory (`<agentDir>`, every spelling the gate resolves, and `.omp/agent`, `.omp/profiles/<name>/agent`, `.pi/agent` anywhere) | `extensions/`, `hooks/`, `tools/`, `commands/`, `mcp.json`, `.mcp.json`, `models.yml`, `config.yml`, `settings.json`, `lsp.*`, `.lsp.*`, `dap.*` | `extensions/`, `npm/`, `git/`, `bin/`, `settings.json`, `models.json`, `trust.json` |
-   | Plugin root | `~/.omp/plugins/` (and `$XDG_DATA_HOME/omp/plugins/`) | none |
-   | Any project | `.omp/{extensions,hooks,tools,commands,plugins}/`, `.omp/{mcp.json,.mcp.json,config.yml,settings.json}`, `.omp/{lsp,dap}.*` | `.pi/{extensions,npm,git}/`, `.pi/settings.json` |
-   | The call's working directory | `mcp.json`, `.mcp.json`, `lsp.*`, `.lsp.*`, `dap.*` | none |
+   | Agent directory (`<agentDir>`, every spelling the gate resolves, and `.omp/agent`, `.omp/profiles/<name>/agent`, `.pi/agent` anywhere) | `extensions/`, `hooks/`, `tools/`, `commands/`, `mcp.json`, `.mcp.json`, `models.yml`, `config.yml`, `settings.json`, the LSP and DAP names | `extensions/`, `npm/`, `git/`, `bin/`, `settings.json`, `models.json`, `trust.json` |
+   | Plugin root | `~/.omp/plugins/`, `~/.omp/profiles/<name>/plugins/`, and the same two under `$XDG_DATA_HOME/omp/` | none |
+   | Any project | `.omp/{extensions,hooks,tools,commands,plugins}/`, `.omp/{mcp.json,.mcp.json,config.yml,settings.json}`, the LSP and DAP names in `.omp/` | `.pi/{extensions,npm,git}/`, `.pi/settings.json` |
+   | The call's working directory | `mcp.json`, `.mcp.json`, the LSP and DAP names | none |
+   | The home directory | the LSP and DAP names | none |
 
-   The directory entries and the `.omp/` and `.pi/` files match as path segments wherever they
-   sit, because a subagent or a worktree session runs in another directory than the root
-   session. The generic names in the last row (`mcp.json`, `lsp.json`) match only directly in the
-   working directory, since the host reads them nowhere else and the names are common.
+   The LSP and DAP names are exactly the files omp reads, `{,.}{lsp,dap}.{json,yaml,yml}`
+   (`lsp.json`, `.lsp.yaml`, `dap.yml` and so on). omp reads them in the home directory from any
+   working directory. The directory entries and the `.omp/` and `.pi/` files match as path
+   segments wherever they sit, because a subagent or a worktree session runs in another directory
+   than the root session. The generic names in the working-directory row (`mcp.json`, `lsp.json`)
+   match only directly in the working directory, since the host reads them nowhere else and the
+   names are common.
 
 5. **General config files ask on any write.** `config.yml` and `settings.json` hold launch keys
    (`extensions`, `shellPath`, `python.interpreter`, `packages`, `npmCommand`) among unrelated
@@ -75,6 +88,8 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
 
 7. **Reason text.** The ask's reason names the location class and the path. These paths are not
    user secrets, so ADR-0002's withholding does not apply, and the Explain option stays offered.
+   A path that is also a `denyPaths` declaration is decided by the protected-path ask before
+   this one (decision 2), so its plaintext stays withheld.
 
 ## Accepted residuals
 
@@ -88,8 +103,9 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
 - **Shell rc files and dotenv files.** `~/.bashrc` and the like run in omp's shell snapshot; they
   are the user's own files outside the host trees. Dotenv files can redirect the agent directory,
   and the floor already treats `.env` files as S0.
-- **Indirect shell writes.** `cd ~/.omp/agent && echo … > extensions/x.ts` names no path token in
-  the set, the same residual `denyPaths` accepts. OS-level sandboxing is the backstop.
+- **Indirect shell writes.** `cd "$OMP_DIR" && echo … > extensions/x.ts`, where a variable the
+  gate does not expand holds the directory, names no path token in the set, the same residual
+  `denyPaths` accepts. OS-level sandboxing is the backstop.
 - **A broad `ast_edit` scope.** A scope tool that writes is matched against the existing locations
   under the agent directories, the plugin roots and the scope's own `.omp/` and `.pi/`, not against
   every directory beneath it, so an `ast_edit` over `~/src` that reaches a project's
@@ -104,4 +120,6 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
 - An agent that legitimately installs an extension or edits host config now needs a human, and a
   headless run cannot do it at all.
 - Edits of `config.yml` and `settings.json` ask even for harmless keys (decision 5).
-- The probe gains one case per row of the set, and `docs/layers.md` gains layer 3a.
+- A command that names an agent directory or a `.omp` directory at all, such as
+  `cd ~/.omp/agent`, asks (decision 3).
+- The probe gains one case per row of the set, and `docs/layers.md` gains layer 4a.
