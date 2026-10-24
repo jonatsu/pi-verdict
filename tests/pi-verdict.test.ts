@@ -44,7 +44,27 @@ import autoMode, {
 
 // ── Stub utilities ───────────────────────────────────────
 
-const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-verdict-test-"));
+/** Every temporary directory this file makes. The last `afterAll` removes what is left and fails the run if a
+ *  test left one behind, so a fixture that leaks (in a run filtered by `-t`, too) cannot go unnoticed. */
+const TEMP_DIRS = new Set<string>();
+
+/** Creates a temporary directory under `parent` and registers it for the leak check. A fixture that needs a real
+ *  home path passes `os.homedir()`: a tmp dir under `/var` collides with the S1 system-path floor on macOS. */
+function makeTempDir(parent: string, prefix: string): string {
+	const dir = fs.mkdtempSync(path.join(parent, prefix));
+	TEMP_DIRS.add(dir);
+	return dir;
+}
+
+/** Names a directory that a `beforeAll` creates later, and registers it for the leak check. A `describe` body runs
+ *  even when a filter skips the group, so a directory it created directly would leak. */
+function plannedTempDir(parent: string, prefix: string): string {
+	const dir = path.join(parent, `${prefix}${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+	TEMP_DIRS.add(dir);
+	return dir;
+}
+
+const TMP_AGENT = makeTempDir(os.tmpdir(), "pi-verdict-test-");
 let config: { allow: string[]; deny: string[] } = { allow: [], deny: [] };
 
 interface Harness {
@@ -237,6 +257,16 @@ beforeAll(() => {
 });
 afterAll(() => {
 	delete process.env.PI_CODING_AGENT_DIR;
+	fs.rmSync(TMP_AGENT, { recursive: true, force: true });
+	const leaked = [...TEMP_DIRS].filter((dir) => fs.existsSync(dir));
+	for (const dir of leaked) fs.rmSync(dir, { recursive: true, force: true });
+	expect(leaked).toEqual([]);
+});
+
+test("tests make temporary directories only through makeTempDir and plannedTempDir", () => {
+	const source = fs.readFileSync(new URL(import.meta.url), "utf8");
+	const direct = source.split(`fs.${"mkdtemp"}Sync(`).length - 1;
+	expect(direct).toBe(1); // the one call inside makeTempDir
 });
 
 function setConfig(
@@ -324,7 +354,7 @@ function session(
 /** Temporary-directory fixture: create → fn(dir) → unconditional cleanup; base defaults to os.tmpdir(), and home-directory fixtures pass os.homedir().
  *  fn may be async: cleanup runs after it completes. */
 async function withTempDir(prefix: string, fn: (dir: string) => void | Promise<void>, base: string = os.tmpdir()): Promise<void> {
-	const dir = fs.mkdtempSync(path.join(base, prefix));
+	const dir = makeTempDir(base, prefix);
 	try {
 		await fn(dir);
 	} finally {
@@ -761,7 +791,8 @@ describe("XDG config root (item 9)", () => {
 	// The seam rebuilds the two anchored S0 entries, so these tests drive the same builder the
 	// probe's process-env path takes. The root is a plain directory: S0 matches the spelling,
 	// no fixture files are needed.
-	const xdg = fs.mkdtempSync(path.join(os.tmpdir(), ".pv-xdg-"));
+	const xdg = plannedTempDir(os.tmpdir(), ".pv-xdg-");
+	beforeAll(() => fs.mkdirSync(xdg, { recursive: true }));
 	afterAll(() => fs.rmSync(xdg, { recursive: true, force: true }));
 	afterEach(() => setXdgConfigRootsForTests(null));
 
@@ -968,8 +999,7 @@ describe("security audit regression (all payloads must NOT be rule-allowed)", ()
 describe("path floor dual-form matching (#20)", () => {
 	// Fixtures live under the real home: macOS TMPDIR sits under /var/folders,
 	// which collides with the S1 system-prefix rule and contaminates the cases.
-	// Named here but created in beforeAll, so a run that skips this group leaves nothing behind.
-	const root = path.join(os.homedir(), `.pv-t20-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+	const root = plannedTempDir(os.homedir(), ".pv-t20-");
 	const proj = path.join(root, "proj");
 	const secrets = path.join(root, "secrets", ".ssh");
 	const gitMeta = path.join(proj, ".git");
@@ -1044,8 +1074,7 @@ describe("kernel walk (path-layer items 7–8)", () => {
 	// symlink(); win32 skips. The dangling link points at a never-created file under the
 	// write-protected verdicts prefix, so the protected-set hit does not depend on any
 	// other test's filesystem state.
-	// Named here but created in beforeAll, so a run that skips this group leaves nothing behind.
-	const root = path.join(os.homedir(), `.pv-walker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+	const root = plannedTempDir(os.homedir(), ".pv-walker-");
 	const proj = path.join(root, "proj");
 	const dangling = path.join(proj, "dangling");
 	const DANGLING_TARGET = path.join(TMP_AGENT, "verdicts", "pv-walker-dangling.jsonl");
@@ -1902,8 +1931,7 @@ describe("denyPaths + user rules kernel tier (item 10)", () => {
 	// Fixtures under the real home (macOS /var TMPDIR would hit S1 before the rule layer).
 	// `<proj>/link/../secret.md` opens `<root>/protected/secret.md` in the kernel — omp
 	// returns an absolute input verbatim — while path.resolve names `<proj>/secret.md`.
-	// Named here but created in beforeAll, so a run that skips this group leaves nothing behind.
-	const root = path.join(os.homedir(), `.pv-item10-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+	const root = plannedTempDir(os.homedir(), ".pv-item10-");
 	const proj = path.join(root, "proj");
 	const outside = path.join(root, "outside");
 	const protectedDir = path.join(root, "protected");
@@ -2059,7 +2087,7 @@ describe("bash path-token extraction (#32: linear tokenizer, regex as oracle)", 
 describe("macOS tmpdir S1 exemption (#83)", () => {
 	const fixtureDirs: string[] = [];
 	const mkBase = (prefix: string): string => {
-		const dir = fs.mkdtempSync(path.join(TMP_AGENT, prefix));
+		const dir = makeTempDir(TMP_AGENT, prefix);
 		fixtureDirs.push(dir);
 		return dir;
 	};
@@ -5405,7 +5433,7 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 	});
 
 	test("a call only the wide redactor matches reaches the classifier as the marker, not the path", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-wide-"));
+		const cwd = makeTempDir(os.homedir(), ".pv-wide-");
 		try {
 			const h = session({ denyPaths: [path.join(cwd, "secrets")] }, { cwd });
 			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
@@ -5748,7 +5776,7 @@ describe("scope-tool glob paths", () => {
 	});
 
 	test("the same call without a metacharacter still takes the user allow", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-glob-"));
+		const cwd = makeTempDir(os.homedir(), ".pv-glob-");
 		try {
 			const h = session({ allow: ["^.*$"] }, { cwd });
 			expect(await toolCall(h, "ast_grep", { pat: "$K", lang: "yaml", path: "src" })).toBeUndefined();
@@ -5766,7 +5794,7 @@ describe("scope-tool glob paths", () => {
 	});
 
 	test("a recursive glob grades as the cwd, so a declared base inside the cwd asks", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-glob-"));
+		const cwd = makeTempDir(os.homedir(), ".pv-glob-");
 		try {
 			const h = session({ denyPaths: [path.join(cwd, "secrets")] }, { cwd });
 			h.confirmAnswer = false;
@@ -5800,7 +5828,7 @@ describe("type-invalid deny and denyPaths values degrade the policy", () => {
 	});
 
 	test("a single string is treated as a one-element list with a note and keeps its protection", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.homedir(), ".pv-str-"));
+		const cwd = makeTempDir(os.homedir(), ".pv-str-");
 		try {
 			for (const key of ["deny", "denyPaths"]) {
 				const r = reload({ [key]: "x" });
@@ -5877,7 +5905,7 @@ describe("redactor platform spellings", () => {
 	const windows = { caseInsensitive: true, win32: true };
 
 	test("a case-insensitive platform redacts a differently cased spelling of a declared base", () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pv-redact-case-"));
+		const cwd = makeTempDir(os.tmpdir(), "pv-redact-case-");
 		try {
 			const bases = [path.join(cwd, "Secrets")];
 			expect(redactorFor(cwd, bases, darwin)({ path: "SECRETS/n.txt" })).toBe(true);
@@ -5908,7 +5936,7 @@ describe("redactor platform spellings", () => {
 
 describe("redactor spellings", () => {
 	test("a root denyPaths base does not redact a call that names no path", () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pv-redact-"));
+		const cwd = makeTempDir(os.tmpdir(), "pv-redact-");
 		try {
 			const redact = redactorFor(cwd, [path.parse(cwd).root]);
 			expect(redact({ note: "no path here" })).toBe(false);
