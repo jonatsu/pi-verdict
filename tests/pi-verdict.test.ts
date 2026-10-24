@@ -572,6 +572,19 @@ describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
 		await denyRule("env -S'git " + P + "'");
 		await denyRule("env -iS 'git " + P + "'");
 	});
+	test("env split-string after an option that takes an argument → floor deny", async () => {
+		await denyRule("env -u HOME -S 'git " + P + "'");
+		await denyRule("env -C /tmp -S 'git " + P + "'");
+		await denyRule("env --unset HOME -S 'git " + P + "'");
+		await denyRule("env --chdir /tmp --split-string='git " + P + "'");
+		await denyRule("env --unset=HOME -S 'git " + P + "'");
+		await denyRule("env --chdir=/tmp -S'git " + P + "'");
+		await denyRule("env -iu HOME -S 'git " + P + "'");
+		await denyRule("env -uHOME -C /tmp -S 'git " + P + "'");
+	});
+	test("an env option argument spelled like -S is not a split string", () => {
+		expect(gitPushForce("env -u -S git push origin main && echo --" + "force")).toBe(false);
+	});
 	// item 4: positional references forwarded into a `-c` template
 	test("sh -c positional references → floor deny", async () => {
 		await denyRule("sh -c '$1' _ 'git " + P + "'");

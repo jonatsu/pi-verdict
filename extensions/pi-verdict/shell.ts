@@ -234,25 +234,43 @@ function markReparsers(words: string[]): void {
 			const base = wordBasename(first);
 			if (base === "eval") {
 				words[segStart] = UNSOUND;
-			} else if (base === "env") {
-				for (let j = segStart + 1; j < i; j++) {
-					const opt = words[j].toLowerCase();
-					if (!opt.startsWith("-")) break;
-					if (
-						opt === "-s" ||
-						/^-[a-z]*s[a-z]*$/.test(opt) ||
-						opt.startsWith("-s") ||
-						opt === "--split-string" ||
-						opt.startsWith("--split-string=")
-					) {
-						words[segStart] = UNSOUND;
-						break;
-					}
-				}
+			} else if (base === "env" && envSplitsString(words.slice(segStart + 1, i))) {
+				words[segStart] = UNSOUND;
 			}
 		}
 		segStart = i + 1;
 	}
+}
+
+/** env options that take the next word as their argument (GNU coreutils and uutils). */
+const ENV_SHORT_WITH_ARG = "uCaf";
+const ENV_LONG_WITH_ARG = ["unset", "chdir", "argv0", "file"];
+
+/** Whether env's options, scanned left to right as env parses them, include a split-string form
+ *  (`-S`, a bundle reaching `S`, `-S…`, `--split-string[=…]` or a prefix of it). An option that
+ *  takes an argument consumes it, so `env -u HOME -S '…'` is found and `env -u -S cmd` is not.
+ *  A lowercase `s` also counts: env rejects it, so reading it as a split string only adds a deny. */
+function envSplitsString(args: readonly string[]): boolean {
+	for (let j = 0; j < args.length; j++) {
+		const word = args[j];
+		if (word === "--" || word === "-" || !word.startsWith("-")) return false;
+		if (word.startsWith("--")) {
+			const eq = word.indexOf("=");
+			const name = (eq === -1 ? word.slice(2) : word.slice(2, eq)).toLowerCase();
+			if ("split-string".startsWith(name)) return true;
+			if (eq === -1 && ENV_LONG_WITH_ARG.some((option) => option.startsWith(name))) j++;
+			continue;
+		}
+		for (let k = 1; k < word.length; k++) {
+			const c = word[k];
+			if (c === "S" || c === "s") return true;
+			if (ENV_SHORT_WITH_ARG.includes(c)) {
+				if (k === word.length - 1) j++; // the argument is the next word, not attached
+				break;
+			}
+		}
+	}
+	return false;
 }
 
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping

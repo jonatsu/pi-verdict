@@ -110,6 +110,8 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["env --split-string=", "env --split-string='git push --force origin main'", { item: 3 }],
 		["env -S attached", "env -S'git push --force origin main'", { item: 3 }],
 		["env -iS bundle", "env -iS 'git push --force origin main'", { item: 3 }],
+		["env -S after -u NAME", "env -u HOME -S 'git push --force origin main'", {}],
+		["env -S after -C DIR", "env -C /tmp -S 'git push --force origin main'", {}],
 		["positional operand", "sh -c '$1' _ 'git push --force origin main'", { item: 4 }],
 		["positional $0", "sh -c '$0' 'git push --force origin main'", { item: 4 }],
 		["positional brace form", `sh -c '\${1}' _ 'git push --force origin main'`, { item: 4 }],
