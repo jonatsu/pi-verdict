@@ -1,10 +1,10 @@
 import { isCommandTool, isHostInternalUrl, multiTargetDetailSuffix, readMayRelocate, toolAccess, userRuleTargets } from "./access.ts";
 import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
-import type { RedactorFn } from "./classifier.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, s0DirectoryBeneath } from "./floor.ts";
+import type { RedactorFn } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./shell.ts";
 

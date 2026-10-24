@@ -9,14 +9,11 @@ import {
 	type CompletionFn,
 	classifyWithModel,
 	FALLBACK_TIMEOUT_MS,
-	HOST_REDACTION_PLATFORM,
 	type PipelineHost,
-	PROTECTED_PATH_MARKER,
-	type RedactorFn,
-	redactorFor,
 	type ThinkingLevel,
 } from "./classifier.ts";
 import type { UserRules } from "./config.ts";
+import { HOST_REDACTION_PLATFORM, PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
 import type { SessionState } from "./state.ts";
 

@@ -1,13 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sanitize } from "./action-line.ts";
-import {
-	buildTranscript,
-	type CompletionFn,
-	callClassifierOnce,
-	type PipelineHost,
-	type RedactorFn,
-	type ThinkingLevel,
-} from "./classifier.ts";
+import { buildTranscript, type CompletionFn, callClassifierOnce, type PipelineHost, type ThinkingLevel } from "./classifier.ts";
+import type { RedactorFn } from "./redaction.ts";
 
 // ============================================================================
 // EXPLAIN-GATE role

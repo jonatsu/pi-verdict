@@ -4,6 +4,7 @@ import { isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } 
 import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
 import { baseForms, kernelForms, rebuiltForms } from "./paths.ts";
+import { inputStrings } from "./redaction.ts";
 import type { RuleResult } from "./shell.ts";
 
 // ============================================================================
@@ -235,17 +236,6 @@ function selfProtectDirection(toolName: string): "write" | "read" | "command" | 
 	if (MUTATING_TOOL_NAMES.has(toolName)) return "write";
 	if (OBSERVING_TOOL_NAMES.has(toolName)) return "read";
 	return "unknown";
-}
-
-/** Every string value in a tool input, recursively — the candidates the protected-path
- *  test runs over. A false positive on a legitimately-named path is visible and safe;
- *  a missed write is not. */
-export function inputStrings(value: unknown, out: string[] = [], depth = 0): string[] {
-	if (depth > 6 || value === null || value === undefined) return out;
-	if (typeof value === "string") out.push(value);
-	else if (Array.isArray(value)) for (const v of value) inputStrings(v, out, depth + 1);
-	else if (typeof value === "object") for (const v of Object.values(value)) inputStrings(v, out, depth + 1);
-	return out;
 }
 
 /** Directories a shell command changes into (`cd`/`pushd` targets), with ~/$HOME/
