@@ -68,16 +68,13 @@
  *               research/pi-model-call-and-ref-implementations.md
  */
 
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import type * as PiAgent from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type * as PiTui from "@earendil-works/pi-tui";
 import { type JevReason, parseJevReason } from "../jev-adapter.ts";
 import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } from "./access.ts";
 import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
-import { agentDirPath, findProjectConfig, projectDotDir, samePath, userConfigPath } from "./agent-dir.ts";
+import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
 import {
 	type AutoModeDeps,
@@ -94,7 +91,6 @@ import {
 	type ThinkingLevel,
 	toolCallLine,
 } from "./classifier.ts";
-import { USER_CONFIG_TEMPLATE } from "./config.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";
 import {
 	NEVER_CHOICE,
@@ -107,6 +103,19 @@ import {
 	TRUST_CHOICE,
 	trustStorePath,
 } from "./trust.ts";
+import {
+	EDITABLE_LIST_KEYS,
+	type EditableListKey,
+	entryLabel,
+	FOOTER_DESC,
+	GATE_OMP_DIR_DESC,
+	LIST_KEY_DESC,
+	LIST_KEY_PLACEHOLDER,
+	normalizeEntry,
+	projectConfigTarget,
+	readConfigObject,
+	writeConfigObject,
+} from "./ui/config-editor.ts";
 
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
@@ -128,86 +137,6 @@ export { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests }
 export { buildProtectedSet, isProtectedReadPath, isProtectedWritePath } from "./self-protection.ts";
 export { allowAdmits, BASH_MAX_MATCH_LEN, gitPushForce, isForceFlag, shellWords } from "./shell.ts";
 export { type RulesLoadReport, SessionState } from "./state.ts";
-
-// ============================================================================
-// Config editor helpers (/verdict)
-// ============================================================================
-
-const EDITABLE_LIST_KEYS = ["allow", "deny", "denyPaths", "tools", "rules"] as const;
-type EditableListKey = (typeof EDITABLE_LIST_KEYS)[number];
-const LIST_KEY_DESC: Record<EditableListKey, string> = {
-	allow: "regexes that auto-allow",
-	deny: "regexes that auto-deny",
-	denyPaths: "protected paths (always ask)",
-	tools: "MCP/custom tool names that auto-allow",
-	rules: "free-text classifier rules",
-};
-const LIST_KEY_PLACEHOLDER: Record<EditableListKey, string> = {
-	allow: "regex, e.g. ^git status\\b",
-	deny: "regex, e.g. ^git push --force",
-	denyPaths: "path, e.g. ~/.aws/",
-	tools: "exact tool name, e.g. ask",
-	rules: "free-text rule for the classifier",
-};
-const GATE_OMP_DIR_DESC = "forced ask on any .omp directory access";
-const FOOTER_DESC = "footer status style";
-
-/** Where a project config would be written for `cwd`: the existing one if discovered, else `<cwd>/<dotdir>/pi-verdict.json`.
- *  null when `findProjectConfig`'s stop rule (home dir / agent tree root) would never discover a file there. */
-function projectConfigTarget(cwd: string, agentDir: string): string | null {
-	const found = findProjectConfig(cwd, agentDir);
-	if (found) return found;
-	if (samePath(cwd, os.homedir()) || samePath(cwd, path.dirname(path.dirname(agentDir)))) return null;
-	return path.join(path.resolve(cwd), projectDotDir(agentDir), "pi-verdict.json");
-}
-
-/** Parse a config file into its top-level object. A missing file yields the first-run template (user) or `{}` (local). */
-function readConfigObject(file: string, kind: "user" | "local"): { raw: Record<string, unknown> } | { error: string } {
-	if (!fs.existsSync(file)) return { raw: kind === "user" ? (JSON.parse(USER_CONFIG_TEMPLATE) as Record<string, unknown>) : {} };
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-	} catch (e) {
-		return { error: `${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}) — fix it by hand` };
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		return { error: `${file}: top level must be a JSON object — fix it by hand` };
-	}
-	return { raw: parsed as Record<string, unknown> };
-}
-
-/** Write the config object back as pretty JSON; null on success, the error message otherwise */
-function writeConfigObject(file: string, raw: Record<string, unknown>): string | null {
-	try {
-		fs.mkdirSync(path.dirname(file), { recursive: true });
-		fs.writeFileSync(file, JSON.stringify(raw, null, 2) + "\n");
-		return null;
-	} catch (e) {
-		return e instanceof Error ? e.message : String(e);
-	}
-}
-
-/** Validate and canonicalize a typed list entry; null = blank input (treated as cancel) */
-function normalizeEntry(key: EditableListKey, input: string): { value: string } | { error: string } | null {
-	const text = input.replace(/[\r\n]+$/, ""); // editor dialogs may append a trailing newline
-	if (text.trim() === "") return null;
-	if (key !== "rules" && /[\r\n]/.test(text)) return { error: "must be a single line" };
-	if (key === "allow" || key === "deny") {
-		// verbatim: patterns like "rm " rely on their spaces
-		try {
-			new RegExp(text);
-		} catch (e) {
-			return { error: `invalid regex: ${e instanceof Error ? e.message : String(e)}` };
-		}
-		return { value: text };
-	}
-	return { value: text.trim() }; // matches loadUserRules trimming
-}
-
-/** Display form of a list entry; non-strings stay visible as JSON so they can be removed or fixed */
-function entryLabel(x: unknown): string {
-	return typeof x === "string" ? x : JSON.stringify(x);
-}
 
 // ============================================================================
 // EXPLAIN-GATE role
