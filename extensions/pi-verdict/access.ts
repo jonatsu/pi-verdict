@@ -357,7 +357,8 @@ export function isCommandTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "powershell";
 }
 
-/** Returns a command tool's command line as text; a missing command is the empty string. */
+/** Returns a command tool's command line as text; a missing command is the empty string. A non-string
+ *  command is coerced to text so it is still graded, which fails toward over-grading. */
 export function commandText(input: Readonly<Record<string, unknown>>): string {
 	return String(input.command ?? "");
 }
