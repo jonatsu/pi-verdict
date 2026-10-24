@@ -4112,6 +4112,12 @@ describe("/verdict config editor", () => {
 		expect(h.confirms).toBe(1);
 	});
 
+	test("gateOmpDir: an unset user value is labeled off, the default", async () => {
+		const h = session({});
+		await run(h, "user", { picks: ["gateOmpDir (off, default)"] });
+		expect(h.selectMsgs.some((t) => t.startsWith("gateOmpDir — "))).toBe(true);
+	});
+
 	test("gateOmpDir: local file can set and unset (inherit global)", async () => {
 		await withTempDir("pv-verdict-gate-", async (dir) => {
 			const h = session({}, { cwd: dir });

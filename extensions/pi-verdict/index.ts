@@ -711,7 +711,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 					gv === undefined
 						? kind === "local"
 							? "not set: global applies"
-							: "on, default"
+							: "off, default"
 						: typeof gv === "boolean"
 							? gv
 								? "on"
