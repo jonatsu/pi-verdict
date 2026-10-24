@@ -49,12 +49,14 @@ Decision point 5 says write-deny itself no longer exists. [ADR-0005](0005-self-p
 restored the self-protection layer on 2026-10-04, so agent writes to the installed extension copy are
 denied again. The coverage differs by install form, as `buildProtectedSet` derives it:
 
-- **Directory install** (the git spec, or a package under `plugins/node_modules/`): the whole package
-  directory is protected by prefix, so `jev-adapter.ts` is covered.
-- **Single-file copy install** (`cp extensions/pi-verdict.ts extensions/jev-adapter.ts <agentDir>/extensions/`):
-  only `pi-verdict.ts` is protected, as an exact path. `jev-adapter.ts` is not write-protected, although
-  `pi-verdict.ts` imports it, so an agent could change the gate by rewriting the adapter. This gap is
-  open.
+- **Package install** (the git spec, a package under `plugins/node_modules/`, or pi's `<agentDir>/npm`
+  and `<agentDir>/git` installs): the whole package directory is protected by prefix, so `jev-adapter.ts`
+  is covered.
+- **Copy install** (copy the `extensions/pi-verdict/` directory and `extensions/jev-adapter.ts` into
+  `<agentDir>/extensions/`): the module directory is protected by prefix, and the sibling `jev-adapter.ts`,
+  which the gate imports, is protected as an exact path and in bash commands. An agent could otherwise
+  change the gate by rewriting the adapter. v0.18.1 closed this gap for the single-file copy of
+  `pi-verdict.ts`, and the module-directory layout keeps it closed.
 
 This ADR's decisions are unchanged.
 
@@ -63,5 +65,5 @@ This ADR's decisions are unchanged.
 The limitation "omp hosts are unaffected (no `registerProvider`)" no longer holds. omp exposes
 `registerProvider` with its own signature, and the adapter registers `typesafe/jev-latest` there so that
 `classifierModel` resolves. The host does not dispatch the completion: `completeForClassifier` in
-`pi-verdict.ts` calls `streamDecisions` directly, with the key from the host's OpenRouter credential or the
+`pi-verdict/classifier.ts` calls `streamDecisions` directly, with the key from the host's OpenRouter credential or the
 transport's environment variable. Without a key the setting falls back to the session model with a warning.

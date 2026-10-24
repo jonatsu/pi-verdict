@@ -30,9 +30,10 @@ They condense the global `coding-standards` skill for this repository and win wh
 
 ## Architecture & Data Flow
 
-Two independent extensions in `extensions/` (no `src/`, no build step; TypeScript is shipped as-is). `package.json` → `"pi": {"extensions": ["./extensions"]}` makes the host auto-load **both**: it scans one level and loads `jev-adapter.ts` and `pi-verdict/index.ts`, never a sibling module. `pi-verdict/index.ts` is one large file; splitting it into sibling modules is plan item 12, next in `TODO.md`. Never add `extensions/index.ts` or a `package.json` inside `extensions/pi-verdict/`.
+Two independent extensions in `extensions/` (no `src/`, no build step; TypeScript is shipped as-is). `package.json` → `"pi": {"extensions": ["./extensions"]}` makes the host auto-load **both**: it scans one level and loads `jev-adapter.ts` and `pi-verdict/index.ts`, never a sibling module. The gate is split into sibling modules under `extensions/pi-verdict/`, one concern each (the module map below). Never add `extensions/index.ts` or a `package.json` inside `extensions/pi-verdict/`.
 
-- `extensions/pi-verdict/index.ts`. Default export `autoMode(pi, deps: AutoModeDeps = {})`.
+- `extensions/pi-verdict/index.ts`. Default export `autoMode(pi, deps: AutoModeDeps = {})`, `rootUi`, the extension body, and explicit re-exports of the public names (never `export *`).
+- Modules, leaves first (each imports only modules above it, never `index.ts`): `shell` (bash rule layer), `paths` (canonical forms), `agent-dir` (anchor), `trust`, `config` (user rules and template), `floor` (path sensitivity), `access` (host path spelling, tool-access adapter), `deny-paths`, `self-protection`, `classifier`, `rules` (`classifyByRules`), `audit`, `state` (`SessionState`), `adjudicate`, `explain`, `subagent`, and `ui/` (`config-editor`, `dialog`, `footer`). `agent-dir.ts` names the gate's install location (`OWN_FILE_PATH`), so it MUST stay directly in `extensions/pi-verdict/` beside `index.ts`; a test pins that.
 - `extensions/jev-adapter.ts`. Default export `jevAdapter(pi)`. Registers provider `typesafe` / model `typesafe/jev-latest` (non-generative "typed decision" classifier backend, ADR-0003). Inert if `pi.registerProvider` is absent. `pi-verdict/index.ts` value-imports helpers from it (`../jev-adapter.ts`) but does not load it as an extension.
 
 **Host hooks** (all inside `autoMode`): flags `auto-mode` (default on), `auto-mode-model`, `auto-mode-debug` (also env `PI_AUTO_MODE_DEBUG=1`); `session_start` (project-trust prompt, `SessionState.reset()`, shortcut registration, audit prune); `tool_call` (the gate); commands `/automode` (on|off|status) and `/verdict` (interactive config editor, needs UI); toggle shortcut (default `ctrl+shift+a`).
@@ -96,7 +97,7 @@ bun run release-check       # package.json version == annotated tag v<version> (
 
 ## Important Files
 
-- `extensions/pi-verdict/index.ts` — gate: `adjudicate`, `classifyByRules`, `toolAccess`, `hostPathForms`, `SessionState`, `presentVerdict`, `USER_CONFIG_TEMPLATE`, `DEFAULT_ALLOWED_TOOLS`, `autoMode`.
+- `extensions/pi-verdict/` — gate: `index.ts` (`autoMode`, `presentVerdict`), `adjudicate.ts` (`adjudicate`), `rules.ts` (`classifyByRules`), `access.ts` (`toolAccess`, `hostPathForms`), `state.ts` (`SessionState`), `config.ts` (`USER_CONFIG_TEMPLATE`, `DEFAULT_ALLOWED_TOOLS`).
 - `extensions/jev-adapter.ts` — jev provider/transport (env `PI_VERDICT_JEV_TRANSPORT` = `openrouter|typesafe`, `PI_VERDICT_JEV_URL`, keys `OPENROUTER_API_KEY` / `TYPESAFE_API_KEY`).
 - `package.json` — `files` whitelist (a new runtime file under `extensions/` MUST be added or it won't publish), version, peer dep `@earendil-works/pi-coding-agent >=0.84.0` (optional; dev-pinned 0.84.3).
 - `tsconfig.json` — `paths` maps the pi package to `node_modules/.../dist/index.d.ts`.

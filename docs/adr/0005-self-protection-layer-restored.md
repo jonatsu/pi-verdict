@@ -89,3 +89,26 @@ session's legitimate edit is never reverted by another that never touched the fi
   the gate for later sessions with no trust prompt and no verdict. Writes deny; reads pass.
 - **R6 — the trust store is read-denied** alongside the audit dir: its contents are
   reconnaissance for the tampering route and the agent has no legitimate use for it.
+
+## Amendment (2026-10-24): module-directory layout and package installs
+
+The gate now ships as the module directory `extensions/pi-verdict/` beside `extensions/jev-adapter.ts`.
+`buildProtectedSet` covers that layout and three install forms the single-file design missed:
+
+- **Directory prefix and the sibling adapter.** A copy install protects `<root>/pi-verdict/` by prefix
+  and the sibling `<root>/jev-adapter.ts` as an exact path and in bash commands; the prefix does not
+  reach the adapter.
+- **Decoy entry file.** The host dedupes extensions by name, keeps the first, and discovers top-level
+  files before `*/index.ts`, so a planted `<root>/pi-verdict.ts` or `<root>/pi-verdict.js` would replace
+  the gate. Both names are protected beside the module directory.
+- **Root spellings.** Each install root counts as one family of spellings (lexical and realpath). A match
+  under any spelling protects the same relative targets under all of them, so a symlinked `extensions`
+  directory under another name no longer drops the adapter.
+- **pi package installs.** pi installs user-scope packages at `<agentDir>/npm/node_modules/<pkg>` and
+  `<agentDir>/git/<host>/<path>`. The package root is protected by prefix; for a git install it ends at
+  the package's `extensions` directory, since the path depth varies. Project-scope pi installs
+  (`<project>/.pi/npm`, `<project>/.pi/git`) and the legacy global npm root sit outside the agent
+  directory and, like a dev checkout, are not protected.
+
+`OWN_FILE_PATH` now resolves to `agent-dir.ts`, not the entry module. This is equivalent only while that
+module stays directly in `extensions/pi-verdict/`; a test pins the placement.

@@ -9,9 +9,9 @@ next reader does not have to reverse-engineer the plugin-compatibility path.
 | Specifier | Kind | Used in | Declaration |
 |---|---|---|---|
 | `@earendil-works/pi-ai` | value (`createAssistantMessageEventStream`, types) | `extensions/jev-adapter.ts` | peer (optional) + dev |
-| `@earendil-works/pi-ai/compat` | dynamic import (default `complete` loader) | `extensions/pi-verdict.ts` (`bindCompletion`) | covered by the `pi-ai` peer (subpath remapped on omp) |
-| `@earendil-works/pi-coding-agent` | type import (both extensions); dynamic import of the `ui.custom` dialog modules (`loadDialogModules`, `extensions/pi-verdict.ts` only) | both extensions | peer (optional) + dev |
-| `@earendil-works/pi-tui` | type + dynamic import (`loadDialogModules`) | `extensions/pi-verdict.ts` | peer (optional) + dev |
+| `@earendil-works/pi-ai/compat` | dynamic import (default `complete` loader) | `extensions/pi-verdict/classifier.ts` (`bindCompletion`) | covered by the `pi-ai` peer (subpath remapped on omp) |
+| `@earendil-works/pi-coding-agent` | type import (both extensions); dynamic import of the `ui.custom` dialog modules (`loadDialogModules`, `extensions/pi-verdict/ui/dialog.ts` only) | both extensions | peer (optional) + dev |
+| `@earendil-works/pi-tui` | type + dynamic import (`loadDialogModules`) | `extensions/pi-verdict/ui/dialog.ts` | peer (optional) + dev |
 
 All three packages are declared in `peerDependencies` with
 `peerDependenciesMeta.<pkg>.optional = true`, and again in `devDependencies` (pinned to
@@ -44,7 +44,7 @@ omp 18.12.6 (`@oh-my-pi/pi-ai@18.12.6`, `@oh-my-pi/pi-coding-agent@18.12.6`,
 omp 18.12.6 does not re-export `DynamicBorder`, `keyHint` or `rawKeyHint` from
 `@earendil-works/pi-coding-agent` (they live under `@oh-my-pi/pi-tui/chrome`, not re-exported
 by its index), so the rich approve dialog uses local, theme-aware substitutes
-(`extensions/pi-verdict.ts`, `DialogBorder`/`dialogKeyHint`/`dialogRawKeyHint`) rather than
+(`extensions/pi-verdict/ui/dialog.ts`, `DialogBorder`/`dialogKeyHint`/`dialogRawKeyHint`) rather than
 depend on a host export that may not exist.
 
 ## Mouse clicks and the status widget
