@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
 import autoMode, {
 	type AdjudicateEnv,
 	adjudicate,
@@ -3891,6 +3892,15 @@ describe("self-protection layer (ADR-0005)", () => {
 			expect(git.bashPatterns.some((re) => re.test(`cp x ${path.join(gitPkg, "extensions", "pi-verdict", "shell.ts")}`))).toBe(true);
 			expect(isProtectedWritePath(path.join(agentDir, "git", "github.com", "jonatsu", "other", "index.ts"), "/proj", git)).toBe(false);
 		});
+	});
+
+	test("the anchor module sits in the gate directory beside the entry module", () => {
+		// OWN_FILE_PATH feeds the installed-copy protection and the agent-dir anchor; both assume it shares the
+		// entry module's directory, so moving agent-dir.ts out of extensions/pi-verdict/ must fail here.
+		const gateDir = path.join(import.meta.dir, "..", "extensions", "pi-verdict");
+		expect(OWN_FILE_PATH).not.toBeNull();
+		expect(path.dirname(String(OWN_FILE_PATH))).toBe(fs.realpathSync(gateDir));
+		expect(fs.existsSync(path.join(path.dirname(String(OWN_FILE_PATH)), "index.ts"))).toBe(true);
 	});
 
 	test("a write into the module directory is denied when the agent dir's extensions is a symlink to the repo", async () => {

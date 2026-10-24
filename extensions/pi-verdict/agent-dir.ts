@@ -4,7 +4,10 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { baseForms } from "./paths.ts";
 
-/** This module's own file location (import.meta.url resolved; null = unresolvable). */
+/** The location of this module (`import.meta.url` resolved; null = unresolvable), which stands in for the gate's
+ *  entry file when self-protection and agent-dir anchoring read where the gate is installed. That holds only
+ *  because this module sits directly in `extensions/pi-verdict/`, beside `index.ts`, so both share one install
+ *  root and one protected directory prefix (pinned by the test `the anchor module sits in the gate directory`). */
 export const OWN_FILE_PATH: string | null = (() => {
 	try {
 		return fileURLToPath(import.meta.url);
