@@ -4,8 +4,8 @@
 (1a), and items 9-12. On 2026-10-07 the user reordered delivery: item 12 (the file split) now comes first, along
 the file's existing sections, and item 9 follows the small Part A fixes; see "Delivery" and decision 11. Item 9's
 ADR is reviewed by the user before any of its code is written; see "Decisions". The plan is
-independent of `docs/plans/tool-access-hardening.md` for items 1-8 and 11, and builds on it for items 9, 10 and 12;
-see "Interaction with the tool-access plan".
+independent of `docs/plans/archive/tool-access-hardening.md` for items 1-8 and 11, and builds on it for items 9, 10
+and 12; see "Interaction with the tool-access plan".
 
 Written 2026-10-05 against HEAD `c7f9d2e` (`v0.17.0`), and extended the same day against HEAD `3215e89` (the
 extension source is unchanged between the two). This file was first committed as
@@ -29,7 +29,7 @@ The plan has three parts:
   on recorded decisions, and split the single 4,788-line file along the seams Part B creates.
 
 Items 9 and 12 take over two items that the tool-access plan defers: the path-resolution service and the file split
-(`docs/plans/tool-access-hardening.md`, "Deferred").
+(`docs/plans/archive/tool-access-hardening.md`, "Deferred").
 
 ```mermaid
 flowchart LR
@@ -624,8 +624,9 @@ This settles the tool-access plan's open loader question.
 
 ## Interaction with the tool-access plan
 
-`docs/plans/tool-access-hardening.md` has been executed (its round outcome landed in `a0cbd2f`). Its "Interaction
-with the call-model plan" section covers this plan from its side. Every dependency below is therefore met.
+`docs/plans/archive/tool-access-hardening.md` has been executed (its round outcome landed in `a0cbd2f`). Its
+"Interaction with the call-model plan" section covers this plan from its side. Every dependency below is therefore
+met.
 
 - **Items 1-8 and 11** are independent of it. Its Phase 2 reworks `userRuleTargets` and the user allow loop, and item
   1 changes the same loop's `allowAdmits` call. Whichever lands second rebases onto the other; there is no logical
