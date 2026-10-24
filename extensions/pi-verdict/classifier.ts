@@ -80,20 +80,23 @@ export function buildTranscript(host: PipelineHost, actionLine: string, redact: 
 	return lines.join("\n");
 }
 
+/** The three verdicts a model may return. */
+export type VerdictWord = "allow" | "ask" | "deny";
+
 /** Parses the verdict prefix contract. Any other shape returns null, which counts as a failed attempt. */
-function parseVerdict(text: string): { verdict: "allow" | "ask" | "deny"; reason: string } | null {
+function parseVerdict(text: string): { verdict: VerdictWord; reason: string } | null {
 	const m = text.match(/^\s*<verdict>\s*(allow|ask|deny)\s*<\/verdict>\s*(.*)$/is);
 	if (!m) return null;
 	// Safe: the regex admits only these three words, and the `i` flag is undone by `toLowerCase`.
-	return { verdict: m[1].toLowerCase() as "allow" | "ask" | "deny", reason: (m[2] ?? "").trim().slice(0, 300) };
+	return { verdict: m[1].toLowerCase() as VerdictWord, reason: (m[2] ?? "").trim().slice(0, 300) };
 }
 
 export interface ClassifierOutcome {
-	verdict: "allow" | "ask" | "deny";
+	verdict: VerdictWord;
 	reason: string;
 	source: "model" | "fail-closed";
 	/** Audit material (#54): the transcript sent and the last attempt's raw output, on both outcomes. */
-	auditRaw?: { transcript: string; rawResponse: string; modelId: string; thinking: ThinkingLevel };
+	auditRaw: { transcript: string; rawResponse: string; modelId: string; thinking: ThinkingLevel };
 }
 
 /** Per-attempt cap of the first layer, set above the measured classifier latency p90 (research/cache-sim). */
