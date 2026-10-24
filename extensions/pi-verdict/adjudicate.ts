@@ -1,9 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseJevConfidence } from "../jev-adapter.ts";
+import { actionCallLine } from "./action-line.ts";
 import type { AuditRecord, FallbackAudit } from "./audit.ts";
 import {
 	ADJUDICATION_BUDGET_MS,
-	actionCallLine,
 	CLASSIFIER_TIMEOUT_MS,
 	type ClassifierOutcome,
 	type CompletionFn,

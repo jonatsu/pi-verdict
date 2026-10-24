@@ -71,18 +71,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseJevReason } from "../jev-adapter.ts";
 import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } from "./access.ts";
+import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
 import {
 	type AutoModeDeps,
-	actionCallLine,
 	completeForClassifier,
 	PROTECTED_PATH_MARKER,
 	type RedactorFn,
 	redactorFor,
 	type ThinkingLevel,
-	toolCallLine,
 } from "./classifier.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";

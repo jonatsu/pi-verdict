@@ -1,11 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sanitize } from "./action-line.ts";
 import {
 	buildTranscript,
 	type CompletionFn,
 	callClassifierOnce,
 	type PipelineHost,
 	type RedactorFn,
-	sanitize,
 	type ThinkingLevel,
 } from "./classifier.ts";
 

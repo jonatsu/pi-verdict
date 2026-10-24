@@ -1,5 +1,6 @@
 import { isCommandTool, isHostInternalUrl, multiTargetDetailSuffix, readMayRelocate, toolAccess, userRuleTargets } from "./access.ts";
-import { ACTION_LINE_MAX_CHARS, actionCallLine, type RedactorFn } from "./classifier.ts";
+import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
+import type { RedactorFn } from "./classifier.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
