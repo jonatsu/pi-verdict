@@ -39,8 +39,8 @@ case fails.
 - `protected-path` — a `denyPaths`/`gateOmpDir` match. Run A asserts `protected-path/deny` (the ask
   degraded headless); run B asserts `protected-path/ask`.
 - `rule-ask` — a rule-layer ask that is not a `denyPaths`/`gateOmpDir` match (e.g. the tool-access
-  adapter's opaque ask: a known mutating call naming no target at all, ADR-0009; or the over-cap
-  ask). Run B asserts `rule/ask`; runs A and C assert `rule/deny` **with `degraded: true`** — a
+  adapter's opaque ask: a known mutating call naming no target at all, ADR-0009; the code-loading
+  ask, ADR-0011; or the over-cap ask). Run B asserts `rule/ask`; runs A and C assert `rule/deny` **with `degraded: true`** — a
   plain rule deny must never pass as a degraded rule-ask.
 - `degraded-policy` — a model-originated allow withheld because the user's own policy failed to
   load (parse/load/trusted-project failure or a skipped `deny`/`denyPaths` entry, ADR-0010). Only

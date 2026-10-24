@@ -103,7 +103,8 @@ The first run writes this file from a template that holds every key with its def
 - `allow`/`deny` are JS regex arrays; **`deny` wins over `allow`**, and both beat the classifier. An `allow` regex admits **one simple command**: a compound command, a redirection, a re-parser, or a write-shaped `git` invocation reaches the classifier instead ([ADR-0008](docs/adr/0008-simple-command-allow.md)). The regexes see bash commands and the targets of known file tools; the payload of an MCP or custom tool never feeds them.
 - `tools` is an exact-name list of tools that skip the classifier (`ignoreTools` is its deprecated alias). It is checked after every deny-side layer, so a listed tool whose payload names a protected path still asks.
 - `denyPaths` are plain paths you declare **protected**: a touch triggers a terminal ask you adjudicate (non-interactive → deny), and the classifier learns only that protected paths exist, never the paths. Scope tools (`grep`, `find`, `ls`, `glob`, `ast_grep`, `ast_edit`) compare their whole **search scope**. A fresh install pre-fills a **starter list** (`~/.ssh/`, `~/.gnupg`, `~/.mc`, shell rc/profile files) as a user declaration, not a built-in floor.
-- `builtinDenyFloor: false` turns off the built-in danger and path floor, but not the self-protection layer.
+- `builtinDenyFloor: false` turns off the built-in danger and path floor and the code-loading ask, but not the self-protection layer.
+- The **code-loading ask** ([ADR-0011](docs/adr/0011-code-loading-ask.md)) is built in: a write where omp or pi loads code in a later session (an agent directory's `extensions/`, `hooks/`, `tools/`, `commands/`, `npm/`, `git/` or `bin/`; `mcp.json`, `models.yml`, `config.yml` or `settings.json` there; `~/.omp/plugins/`; a project's `.omp/` and `.pi/` code directories and config files; `mcp.json`, `lsp.*` or `dap.*` in the working directory) asks you, and a headless run denies it. A read does not ask; a shell command that names such a path does. Neither an `allow` regex nor a `tools` entry skips it.
 - `gateOmpDir` (default `false`) forces a terminal ask for `.omp` directory accesses; it runs after the built-in floor and your `deny` rules and before `denyPaths` and `allow`, so an `allow` regex cannot skip it.
 - `classifierModel` pins the classifier model (default: the session model with thinking off); `"typesafe/jev-latest"` selects the bundled jev decisions adapter described below.
 - `explainGateModel` / `explainGatePrompt` configure the **EXPLAIN-GATE role** behind the **Explain…** option of the ask dialog. It is never offered for protected-path asks, because their path plaintext must not reach a model provider ([ADR-0002](docs/adr/0002-deny-paths-deterministic-ask.md)). The dialog's **No, with explanation…** option declines and tells the agent why.
@@ -169,6 +170,10 @@ tool_call
   │     │   target is unresolvable (symlink loop) fails closed → deny
   │     ├─ your deny rules: any matching target form denies; deny beats allow
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
+  │     ├─ code-loading ask (ADR-0011): a write where the host loads code in later
+  │     │   sessions (agent dir extensions/hooks/tools/commands, mcp.json, models.yml,
+  │     │   config.yml, the plugin root, a project's .omp/.pi trees) → terminal ask;
+  │     │   reads do not ask; off with builtinDenyFloor:false
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
   │     │   before user allow; classifier sees an existence hint only; a call the
   │     │   redactor matches by a spelling the tokeniser misses (${HOME}) asks here too;

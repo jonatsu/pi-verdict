@@ -46,7 +46,7 @@ Path matching compares lexical and realpath forms (#20), with case folding on ca
 
 ### 8. User policy may weaken only the built-in floor by explicit opt-in
 
-User rules are the user's own security declarations (deny beats allow; denyPaths are the stronger declaration channel). The built-in deny floor can be turned off only with an explicit `builtinDenyFloor: false` in the user's config. Self-protection is separate and remains enforced.
+User rules are the user's own security declarations (deny beats allow; denyPaths are the stronger declaration channel). The built-in protections, the deny floor and the code-loading ask ([ADR-0011](./adr/0011-code-loading-ask.md)), can be turned off only with an explicit `builtinDenyFloor: false` in the user's config. Self-protection is separate and remains enforced.
 
 ### 9. Platform differences are documented, not silently weaker
 

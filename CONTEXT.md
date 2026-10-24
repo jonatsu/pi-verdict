@@ -80,6 +80,10 @@ A fixed background sentence injected into the classifier's system prompt: it tel
 
 Optional rule-layer gate (`gateOmpDir`, default off): when enabled, a tool call whose file path or bash command resolves into a `.omp` path segment (lexical or realpath form, base tier) ends in a terminal ask (non-interactive → deny). It is a built-in declaration, not a user-listed path: it ranks after the built-in floor and user deny, before denyPaths and user allow. Unlike denyPaths it leaves no existence hint for the classifier (the ask is terminal) and scope tools compare their own target only, not their subtree. Switchable from `/verdict`.
 
+### code-loading ask
+
+A built-in rule-layer ask (ADR-0011) for a write into a host code-loading location: a place where omp or pi loads or launches code at the start of a later session, such as an agent directory's `extensions/`, a launcher file such as `mcp.json` or `models.yml`, the omp plugin root, or a project's `.omp` or `.pi` code directories. A read does not ask. It belongs to the built-in protections, so `builtinDenyFloor: false` turns it off. _Avoid_: calling these locations protected paths; the ask's reason names the path, and the Explain option stays offered.
+
 ### transcript redaction
 
 Replacing a past tool call in a model's transcript with the fixed marker `<protected-path>` when its arguments name a `denyPaths` path, so no protected-path plaintext reaches the classifier, the fallback classifier or the EXPLAIN-GATE role. It matches widely, because over-redaction is harmless and under-redaction leaks; user messages are never redacted. A stricter form of the same match, with path-word boundaries, also raises the `denyPaths` ask for a call that names a declared path in a spelling the path extractor misses, such as `${HOME}`.
