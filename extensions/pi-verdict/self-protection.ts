@@ -23,20 +23,20 @@ const JEV_ADAPTER_FILE = "jev-adapter.ts";
 
 export interface ProtectedSet {
 	/** Protected files, in lexical and realpath forms. */
-	exact: string[];
+	readonly exact: readonly string[];
 	/** Protected directories, matched by prefix: the audit directory and a package or module install. */
-	prefixes: string[];
+	readonly prefixes: readonly string[];
 	/** Write guards for a protected file at no fixed path (a project `plugin-overrides.json`). */
-	writePatterns: RegExp[];
+	readonly writePatterns: readonly RegExp[];
 	/** Paths whose reads deny too: the audit directory and the trust store. */
-	readDenied: string[];
+	readonly readDenied: readonly string[];
 	/** Trees within which an ancestor of a read-denied path denies too, since `grep <agentDir>` reads every
 	 *  record; bounded to the gate's own trees, so a home or root listing passes. */
-	guardRoots: string[];
+	readonly guardRoots: readonly string[];
 	/** Shell command signatures, matched as substrings. */
-	bashPatterns: RegExp[];
+	readonly bashPatterns: readonly RegExp[];
 	/** The agent directory the set was built for; `$PI_CODING_AGENT_DIR` in a command expands to it. */
-	agentDir: string;
+	readonly agentDir: string;
 }
 
 /**
@@ -237,6 +237,7 @@ function pathAlternation(forms: string[], agentDir: string): RegExp {
 export function isProtectedWritePath(rawPath: string, cwd: string, prot: ProtectedSet): boolean {
 	if (!rawPath) return false;
 	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(rawPath))), ...kernelForms(rawPath, cwd)]) {
+		// TODO(TODO.md: Simplify the gate's modules): compare case-folded like the prefixes on macOS and Windows.
 		if (prot.exact.includes(c)) return true;
 		if (prot.prefixes.some((p) => isWithin(c, p))) return true;
 		if (prot.writePatterns.some((re) => re.test(toRuleForm(c)))) return true;
