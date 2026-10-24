@@ -9,7 +9,7 @@ next reader does not have to reverse-engineer the plugin-compatibility path.
 | Specifier | Kind | Used in | Declaration |
 |---|---|---|---|
 | `@earendil-works/pi-ai` | value (`createAssistantMessageEventStream`, types) | `extensions/jev-adapter.ts` | peer (optional) + dev |
-| `@earendil-works/pi-ai/compat` | dynamic import (default `complete` loader) | `extensions/pi-verdict/classifier.ts` (`bindCompletion`) | covered by the `pi-ai` peer (subpath remapped on omp) |
+| `@earendil-works/pi-ai/compat` | dynamic import (default `complete` loader) | `extensions/pi-verdict/completion.ts` (`bindCompletion`) | covered by the `pi-ai` peer (subpath remapped on omp) |
 | `@earendil-works/pi-coding-agent` | type import (both extensions); dynamic import of the `ui.custom` dialog modules (`loadDialogModules`, `extensions/pi-verdict/ui/dialog.ts` only) | both extensions | peer (optional) + dev |
 | `@earendil-works/pi-tui` | type + dynamic import (`loadDialogModules`) | `extensions/pi-verdict/ui/dialog.ts` | peer (optional) + dev |
 

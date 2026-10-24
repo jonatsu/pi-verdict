@@ -412,7 +412,7 @@ export function createJevProvider(openRouterKey: OpenRouterKeyResolver | undefin
  *  pi's single-argument Provider object. `streamSimple`/`api` are deliberately
  *  omitted: this registration exists only so `ctx.modelRegistry.find()` /
  *  `hasConfiguredAuth()` resolve `typesafe/jev-latest`; the actual completion
- *  rides `streamDecisions` directly from pi-verdict/classifier.ts (see the omp branch). */
+ *  rides `streamDecisions` directly from pi-verdict/completion.ts (see the omp branch). */
 type OmpProviderConfig = { baseUrl: string; apiKey?: string; models: Model<typeof API_ID>[] };
 type OmpRegisterProvider = (name: string, config: OmpProviderConfig) => void;
 
@@ -450,9 +450,9 @@ export default function jevAdapter(pi: ExtensionAPI): void {
 		// "typesafe/jev-latest" only so `classifierModel` selection resolves via
 		// ctx.modelRegistry.find()/hasConfiguredAuth() — the actual completion
 		// call never goes through omp's own dispatch. omp's compat completion
-		// bridge (bindCompletion in pi-verdict/classifier.ts) has no visibility into
+		// bridge (bindCompletion in pi-verdict/completion.ts) has no visibility into
 		// extension-registered providers (it talks to the bundled pi-ai
-		// package's own, unrelated provider registry), so pi-verdict/classifier.ts's
+		// package's own, unrelated provider registry), so pi-verdict/completion.ts's
 		// completeForClassifier() calls streamDecisions() directly for jev,
 		// resolving auth fresh via ctx.modelRegistry.getApiKeyForProvider on
 		// every call instead. The registration below only feeds the sync
