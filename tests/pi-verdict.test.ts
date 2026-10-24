@@ -6519,6 +6519,25 @@ describe("hashline header spellings (ADR-0009)", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	test("whitespace that Rust trims but JavaScript does not (U+0085) does not hide a header target", async () => {
+		const h = session({});
+		const nel = "\u0085";
+		for (const row of [
+			`[${nel}.git/config#ABCD]`,
+			`[.git/config#ABCD${nel}]`,
+			`[.git/config#ABCD]${nel}`,
+			`[${nel}*** Begin Patch${nel}]${nel}[.git/config#ABCD]`,
+			`[.git/config${nel}#AUTO${nel}]`,
+			`[.git/config${nel}#ABCD]`,
+		]) {
+			expect((await toolCall(h, "edit", { input: `[src/a.ts#1A2B]\n1:x\n${row}\n1:y\n` }))?.block).toBe(true);
+		}
+		for (const p of [`[${nel}.git/config]`, `[.git/config]${nel}`]) {
+			expect((await toolCall(h, "write", { path: p, content: "x" }))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
 	test("a bracketed write path with trailing whitespace is graded as the file it names", async () => {
 		const h = session({});
 		for (const p of ["[.git/config] ", "[.git/config#ABCD]\t", `[${dotEnv}] \r`, "[~/.ssh/id_rsa] "]) {

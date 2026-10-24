@@ -2253,7 +2253,7 @@ const HASHLINE_TAG_RE = /#[0-9a-fA-F]{4}$/;
 function stripHashlineTagAndQuotes(trimmedBody: string): string | null {
 	if (!trimmedBody) return null;
 	const tag = HASHLINE_TAG_RE.exec(trimmedBody);
-	return unquoteHashlinePath(tag ? trimmedBody.slice(0, tag.index) : trimmedBody);
+	return unquoteHashlinePath(tag ? hostTrim(trimmedBody.slice(0, tag.index)) : trimmedBody);
 }
 
 /** One layer of matching quotes removed; null for an empty text. */
@@ -2286,7 +2286,7 @@ function hashlineHeaderPaths(trimmedBody: string): string[] {
 		const tagless = stripHashlineTagAndQuotes(body);
 		if (tagless) forms.add(tagless);
 		const placeholder = HASHLINE_PLACEHOLDER_TAG_RE.exec(body);
-		const untagged = placeholder ? unquoteHashlinePath(body.slice(0, placeholder.index).trim()) : null;
+		const untagged = placeholder ? unquoteHashlinePath(hostTrim(body.slice(0, placeholder.index))) : null;
 		if (untagged) forms.add(untagged);
 	};
 	addTagForms(trimmedBody);
@@ -2296,6 +2296,22 @@ function hashlineHeaderPaths(trimmedBody: string): string[] {
 		if (clean) forms.add(clean);
 	}
 	return [...forms];
+}
+
+/** Whitespace as Rust's `trim` counts it, which omp's header parser uses: JavaScript's `\s` plus U+0085
+ *  (NEL). Scanned by index, so trimming is linear. */
+const isHostSpace = (ch: string | undefined): boolean => ch !== undefined && (ch === "\u0085" || /\s/.test(ch));
+
+function hostTrimEnd(text: string): string {
+	let end = text.length;
+	while (end > 0 && isHostSpace(text[end - 1])) end--;
+	return text.slice(0, end);
+}
+
+function hostTrim(text: string): string {
+	let start = 0;
+	while (start < text.length && isHostSpace(text[start])) start++;
+	return hostTrimEnd(text.slice(start));
 }
 
 /** The patch envelope markers omp consumes around a hashline header. */
@@ -2310,13 +2326,13 @@ function unbracketEnvelopeMarkers(line: string): string {
 	for (;;) {
 		if (line[at] !== "[") return line.slice(at);
 		let inner = at + 1;
-		while (inner < line.length && /\s/.test(line[inner])) inner++;
+		while (inner < line.length && isHostSpace(line[inner])) inner++;
 		const marker = HASHLINE_ENVELOPE_MARKERS.find((m) => line.startsWith(m, inner));
 		if (marker === undefined) return line.slice(at);
 		let tail = inner + marker.length;
-		while (tail < line.length && /\s/.test(line[tail])) tail++;
+		while (tail < line.length && isHostSpace(line[tail])) tail++;
 		if (line[tail] === "]") tail++;
-		while (tail < line.length && /\s/.test(line[tail])) tail++;
+		while (tail < line.length && isHostSpace(line[tail])) tail++;
 		if (tail >= line.length) return marker;
 		at = tail;
 	}
@@ -2326,9 +2342,9 @@ function unbracketEnvelopeMarkers(line: string): string {
  *  inner path; anything outside the strict bracket shape returns unchanged —
  *  same contract as omp's `unwrapHashlineHeaderPath` (18.12.6), which trims the end first. */
 function unwrapHashlineHeaderPath(value: string): string {
-	const trimmed = value.trimEnd();
+	const trimmed = hostTrimEnd(value);
 	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return value;
-	return stripHashlineTagAndQuotes(trimmed.slice(1, -1).trim()) ?? value;
+	return stripHashlineTagAndQuotes(hostTrim(trimmed.slice(1, -1))) ?? value;
 }
 
 /** Parses hashline file headers (`[PATH]`/`[PATH#TAG]`, legacy `¶PATH`) and `MV
@@ -2343,13 +2359,13 @@ function parseHashlineTargets(text: string): string[] {
 	const stripped = text.startsWith("\uFEFF") ? text.slice(1) : text;
 	for (const raw of stripped.split("\n")) {
 		// omp trims the line end before it reads a header, so `[path#TAG] ` is still a header.
-		const line = raw.trimEnd();
+		const line = hostTrimEnd(raw);
 		// A header behind bracketed envelope markers is graded peeled and as written.
 		const peeled = unbracketEnvelopeMarkers(line);
 		let isHeader = false;
 		for (const row of peeled === line ? [line] : [peeled, line]) {
 			if (!row.startsWith("[") || !row.endsWith("]")) continue;
-			targets.push(...hashlineHeaderPaths(row.slice(1, -1).trim()));
+			targets.push(...hashlineHeaderPaths(hostTrim(row.slice(1, -1))));
 			isHeader = true;
 		}
 		if (isHeader) continue;
