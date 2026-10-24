@@ -1124,6 +1124,13 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "read of the omp agent database is denied like the plain credential files",
+			family: "host-path",
+			tool: "read",
+			input: { path: "~/.omp/agent/age" + "nt.db" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
 			label: "read of a home credential file with a JSON query= filter is denied like the plain name",
 			family: "host-path",
 			tool: "read",

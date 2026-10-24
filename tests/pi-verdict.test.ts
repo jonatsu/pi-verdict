@@ -657,6 +657,44 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 			expect(h.calls.length).toBe(0);
 		});
 	}
+	// omp keeps its settings and auth store in a SQLite database under the agent dir, which its
+	// own `read` opens (with table selectors) and whose write-ahead files hold the same pages.
+	const AGENT_DB = "age" + "nt.db";
+	const AGENT_DB_CASES: Array<[string, string]> = [
+		[`~/.omp/agent/${AGENT_DB}`, "omp agent database"],
+		[`~/.pi/agent/${AGENT_DB}`, "pi agent database"],
+		[`~/.omp/agent/${AGENT_DB}-wal`, "agent database write-ahead log"],
+		[`~/.omp/agent/${AGENT_DB}-shm`, "agent database shared memory"],
+		[`~/.omp/agent/${AGENT_DB}-journal`, "agent database rollback journal"],
+		[`~/.omp/agent/${AGENT_DB}:1-5`, "agent database with a line selector"],
+		[`~/.omp/agent/${AGENT_DB}:settings`, "agent database with a table selector"],
+		[`~/.omp/agent/${AGENT_DB}?q=select 1`, "agent database with a query"],
+		[path.join(TMP_AGENT, AGENT_DB), "agent database in a custom agent dir"],
+		[path.join(TMP_AGENT, `${AGENT_DB}-wal`), "write-ahead log in a custom agent dir"],
+		[path.join(TMP_AGENT, `${AGENT_DB}:settings`), "custom agent dir database with a table selector"],
+	];
+	for (const [p, label] of AGENT_DB_CASES) {
+		test(`read ${label} → S0 deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "read", { path: p });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("S0");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	test("a project file that merely shares the name keeps its rule allow", async () => {
+		await withTempDir(
+			".pv-s0db-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, AGENT_DB), "x");
+				fs.writeFileSync(path.join(cwd, `${AGENT_DB}.bak`), "x");
+				const h = session({}, { cwd });
+				for (const p of [AGENT_DB, `${AGENT_DB}.bak`]) expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				expect(h.calls.length).toBe(0);
+			},
+			os.homedir(),
+		);
+	});
 	test("write under the XDG gnupg home → S0 deny", async () => {
 		const h = session({});
 		const r = await toolCall(h, "write", { path: "~/.config/gnupg/private-keys-v1.d/x.key", content: "x" });

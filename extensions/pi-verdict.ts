@@ -1581,6 +1581,21 @@ const buildAnchoredS0 = (xdgRoots: string[]): [RegExp, RegExp] => {
 };
 let anchoredS0 = buildAnchoredS0(XDG_CONFIG_ROOTS);
 
+/** The settings and auth database inside the agent dir this session is anchored to (and its SQLite
+ *  sidecar files), matched where the dir is custom (`PI_CODING_AGENT_DIR`) and the static
+ *  `.omp/agent` entry in `S0_SECRET` cannot see it. Rebuilt only when the agent dir changes. */
+let agentDbRule: { dir: string; re: RegExp } | null = null;
+function agentDbS0(): RegExp[] {
+	const dir = agentDirPath();
+	if (agentDbRule?.dir !== dir) {
+		agentDbRule = {
+			dir,
+			re: new RegExp(`^(?:${xdgRootForms(path.resolve(dir)).join("|")})/agent\\.db(?:-wal|-shm|-journal)?(?::|\\?|$)`, "i"),
+		};
+	}
+	return [agentDbRule.re];
+}
+
 /** Test seam; null restores the production roots (mirrors `setTmpdirBasesForTests`). Takes raw
  *  dirs and derives their rule forms, so a test needs no regex escaping; empty and relative
  *  values are ignored exactly as the production `XDG_CONFIG_HOME` guard does. */
@@ -1608,6 +1623,9 @@ const S0_SECRET = [
 	/_history$/i,
 	/\.config\/gh(\/|$)/i,
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
+	// omp's settings and auth store; the SQLite sidecar files hold the same pages, and a `:table` or
+	// `?q=` suffix is the host's own read selector on the database.
+	/\.(?:pi|omp)\/agent\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
 	/(^|\/)\.npmrc$/i,
@@ -1683,7 +1701,7 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 
 	// S0: the static entries plus the two home/XDG-anchored credential-home entries
 	// (`anchoredS0`, item 9) — the seam rebuilds those at test time.
-	if (hit(S0_SECRET) || hit(anchoredS0)) return D(`S0 secrets/credential path: ${rawPath}`);
+	if (hit(S0_SECRET) || hit(anchoredS0) || hit(agentDbS0())) return D(`S0 secrets/credential path: ${rawPath}`);
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
@@ -1731,7 +1749,7 @@ function globStaysInProject(targets: string[], cwd: string): boolean {
 		if (/^[a-z][a-z0-9+.-]+:/i.test(t)) return false;
 		const { forms, ruleForms, walk } = canonicalPathForms(t, cwd);
 		const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
-		return !walk.unresolved && !hit(S0_SECRET) && !hit(anchoredS0) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
+		return !walk.unresolved && !hit(S0_SECRET) && !hit(anchoredS0) && !hit(agentDbS0()) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
 	});
 }
 
