@@ -17,7 +17,7 @@ Open work for pi-verdict, in the priority order the user set on 2026-10-07. Work
 
 ## Later
 
-- [ ] **Evaluate Kev as a local classifier backend** (noted 2026-10-24). Kev (`jaredpalmer/kev-4b` on Hugging Face, Apache-2.0) is an open decision model in the jev family: a LoRA adapter on `Qwen/Qwen3.5-4B-Base` for typed multiple-choice decisions with calibrated confidence. A 4-bit quantized build would run on a local GPU, which could cut gray-zone latency, remove the per-call cost, and keep transcripts on the machine. Open questions: whether a local server can speak the decisions wire contract that `jev-adapter.ts` already uses (then `PI_VERDICT_JEV_URL` may be enough), how its verdicts and confidence compare with jev on recorded audit cases (item 11's replay), and its latency on the user's GPU.
+- [ ] **Evaluate Kev as a local classifier backend** (noted 2026-10-24). Kev (`jaredpalmer/kev-4b` on Hugging Face, Apache-2.0) is an open decision model in the jev family: a LoRA adapter on `Qwen/Qwen3.5-4B-Base` for typed multiple-choice decisions with calibrated confidence. Quantized GGUF builds for llama.cpp exist (`turintech/Kev-4B-Artemis-GGUF`, tagged `systemone`, the TypeSafe API's name); a 4-bit build would run on a local GPU, which could cut gray-zone latency, remove the per-call cost, and keep transcripts on the machine. Open questions: whether a local server can speak the decisions wire contract that `jev-adapter.ts` already uses (then `PI_VERDICT_JEV_URL` may be enough), how its verdicts and confidence compare with jev on recorded audit cases (item 11's replay), and its latency on the user's GPU.
 
 ## Ongoing
 
