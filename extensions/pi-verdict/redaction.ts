@@ -8,38 +8,20 @@ import { baseForms, CASE_INSENSITIVE_FS } from "./paths.ts";
 // Protected-path redaction of model payloads (ADR-0002)
 // ============================================================================
 
-/** Transcript redaction predicate (item 6b, Phase 5): true when this tool call's arguments
- *  name a user-declared protected path — the caller then substitutes the whole line for the
- *  fixed `<protected-path>` marker (see redactorFor). */
+/** True when a tool call's arguments name a protected path; the caller then replaces the whole payload line
+ *  with `PROTECTED_PATH_MARKER`. */
 export type RedactorFn = (args: Record<string, unknown>) => boolean;
 
-/** The one fixed marker a redacted payload line becomes (plan item 6b) — a neutral
- *  privacy marker, never an injection framing. Named once so every substitution
- *  site in the pipeline and the presentation layer shares it. */
+/** The fixed text a redacted payload line becomes: a neutral privacy marker, not an instruction to the model. */
 export const PROTECTED_PATH_MARKER = "<protected-path>";
 
-/** Builds the redaction predicate from env.cwd and the session's anchored denyPaths bases
- *  (item 6b, Phase 5; Claude-review F10). Detection is deliberately conservative — two
- *  independent checks, either one redacts: (1) the structured adapter extraction
- *  (toolAccess → reads/writes, which covers a known tool's path/paths/patch text and an
- *  unknown tool's extracted targets too, F10), tested against the same dual-form set a
- *  denyPaths comparison uses (`denyPathForms`, anchored here once with `cwd`), and (2) the
- *  raw JSON of the arguments containing any base's spelling — absolute, `~/`, `$HOME`/`${HOME}`
- *  (the denyPaths tokeniser reads `$HOME`, `"$HOME"` and a braced `${HOME}` before a `/`, but no
- *  other expansion, so this raw check covers what the tokeniser cannot), or the home-relative tail (e.g. a
- *  `~/.ssh/` declaration's `.ssh/` tail), in both its literal and `cwd`-resolved spellings so
- *  a relative declaration still catches an absolute spelling of the same path. In transcript
- *  use (the default), over-redaction is harmless and under-redaction is a leak, so the
- *  conservative direction is wholesale. With `strict`, the raw spelling check also needs path-word
- *  boundaries and leaves out the bare home-relative tail (`~/`, `$HOME` and `${HOME}` spellings stay),
- *  because the verdict's protected-path ask uses that form and a false positive there blocks a
- *  legitimate call. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
- *  privacy marker, not an injection framing (PC-review F9). Detected only literally:
- *  obfuscated spellings (command substitution, base64, archiving — ADR-0002's documented
- *  holes) are NOT redacted here; the classifier's existence hint stays the backstop for those
- *  calls (recorded residual, ADR-0002 amendment — PC-review F5b). User-message lines are
- *  deliberately never redacted — the user's own disclosure in their own message is theirs
- *  (PC-review F5c). */
+/** Returns a predicate that is true when a tool call names one of the `denyPaths` bases, anchored at `cwd`.
+ *  It matches a call's extracted targets the way a `denyPaths` hit does, and any spelling of a base in its
+ *  string values: absolute, cwd-relative, `~/`, `$HOME`, `${HOME}`, and the bare home-relative tail.
+ *  It fails toward redaction, since an extra marker is harmless and a missed path leaks it to a model
+ *  provider (ADR-0002); obfuscated spellings such as command substitution are the recorded residual.
+ *  `strict` is the protected-path ask's form: spellings must sit on path-word boundaries and the bare
+ *  tail is left out, because a false positive there blocks a legitimate call. */
 export function redactorFor(
 	cwd: string,
 	bases: readonly string[],
@@ -59,25 +41,20 @@ export function redactorFor(
 		if (relativeToHome !== null && relativeToHome !== "") {
 			const prefixedForms = [`~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`];
 			for (const form of strict ? prefixedForms : [relativeToHome, ...prefixedForms]) {
-				spellings.add(form); // `{HOME}` + tail produces the literal ${HOME}… — F10's missed tokeniser form
-				for (const resolved of denyPathForms(form, cwd)) spellings.add(resolved); // literal + cwd-resolved, both ways
+				spellings.add(form); // `{HOME}` + tail also matches inside a literal `${HOME}` spelling
+				for (const resolved of denyPathForms(form, cwd)) spellings.add(resolved); // its cwd-resolved forms too
 			}
 		}
 		// Prefix form without a trailing separator. A root base strips to "", which would match every string.
 		const withoutSep = base.endsWith(path.sep) ? base.slice(0, -path.sep.length) : "";
 		if (withoutSep) spellings.add(withoutSep);
-		// The cwd-relative spelling of an in-cwd base — a past call may spell the
-		// same path relatively ("secrets/a.txt"), which neither the absolute form nor its
-		// raw-JSON substring can catch.
+		// The cwd-relative spelling of an in-cwd base, which a past call may use ("secrets/a.txt").
 		const relToCwd = fold(base).startsWith(fold(cwd + path.sep)) ? path.relative(cwd, base) : null;
 		if (relToCwd) spellings.add(relToCwd);
 	}
 	if (spellings.size === 0) return () => false;
-	// The structured half mirrors a real denyPaths hit: the candidate runs
-	// through denyPathForms (cwd-resolved + kernel forms, same as hitDenyPaths) and matches a
-	// spelling exactly or beneath it (single-directional: the leak direction; over-redaction is
-	// the accepted side). Command/code payloads tokenize through bashPathTokens first, so an
-	// alias/kernel spelling a denyPaths hit would catch is redacted here too.
+	// A target hits when one of its `denyPathForms` equals a spelling or lies beneath it, as a `denyPaths`
+	// hit does; a command is tokenized first, so every spelling the `denyPaths` layer catches redacts here.
 	const hits = (text: string): boolean => {
 		for (const form of denyPathForms(text, cwd)) {
 			const folded = fold(form);
@@ -107,16 +84,17 @@ export interface RedactionPlatform {
 	caseInsensitive: boolean;
 	win32: boolean;
 }
+/** The platform this process runs on. */
 export const HOST_REDACTION_PLATFORM: RedactionPlatform = { caseInsensitive: CASE_INSENSITIVE_FS, win32: path.sep === "\\" };
 
-/** Characters that end or begin a path word in a command or argument. */
+/** A character that may precede a path word in a command or argument. */
 const LEFT_BOUNDARY = /[\s/\\'"`=~$({;,|&:]/;
+/** A character that may follow a path word in a command or argument. */
 const RIGHT_BOUNDARY = /[\s/\\'"`;,|&)<>:]/;
 
-/** Does any text contain any spelling, comparing case-insensitively and across both separator
- *  styles where the platform does? Over-matching is the safe direction for transcript redaction.
- *  `strict` additionally requires the spelling to sit on path-word boundaries, so `secrets` does not
- *  match inside `secrets-loader.test.ts`; the verdict uses it, because a match there is a hard ask. */
+/** True when any text contains any spelling, compared without case and across both separator styles where
+ *  the platform does. `strict` also requires path-word boundaries, so `secrets` does not match inside
+ *  `secrets-loader.test.ts`; the protected-path ask uses it because a match there is a hard ask. */
 export function mentionsSpelling(
 	texts: readonly string[],
 	spellings: Iterable<string>,
@@ -145,9 +123,8 @@ export function mentionsSpelling(
 	return false;
 }
 
-/** Every string value in a tool input, recursively — the candidates the protected-path
- *  test runs over. A false positive on a legitimately-named path is visible and safe;
- *  a missed write is not. */
+/** Returns every string value in a tool input, down to a fixed nesting depth: the candidates the redactor
+ *  and the self-protection scan test for a protected path. */
 export function inputStrings(value: unknown, out: string[] = [], depth = 0): string[] {
 	if (depth > 6 || value === null || value === undefined) return out;
 	if (typeof value === "string") out.push(value);

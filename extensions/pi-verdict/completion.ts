@@ -6,21 +6,12 @@ import { activeTransport, PROVIDER_ID as JEV_PROVIDER_ID, streamDecisions, TRANS
 // Host completion binding: one model-call function on both hosts
 // ============================================================================
 
-// Models whose provider rejected a temperature-bearing request ("`temperature`
-// is deprecated for this model" — current-gen Anthropic models, #47). Filled
-// adaptively and cached for the extension's lifetime: pi's model registry has
-// no sampling-capability metadata and the reject/accept split follows neither
-// `api` nor `reasoning`, so the provider's own error is the only reliable
-// signal. Later calls for a cached model omit the parameter upfront.
+/** Models whose provider rejected a request carrying `temperature` (#47), keyed `api|id` for the process
+ *  lifetime. The registry has no sampling metadata, so the provider's error is the only signal. */
 export const TEMPERATURE_REJECTED_MODELS = new Set<string>();
 
-/**
- * Minimal structural shape of a completion call (#35). pi exposes it as
- * ModelRegistry.complete; omp 18 does not, but the pi-ai compat module exports
- * a functionally identical `complete`. Options pass through verbatim on both
- * hosts (thinkingEnabled/effort/cacheRetention included — see
- * research/thinking-param-blackhole.md for why API-native fields matter).
- */
+/** The completion call both hosts provide (#35): pi's `ModelRegistry.complete`, or `complete` from the pi-ai
+ *  compat module on omp. Options pass through unchanged. */
 export type CompletionFn = (
 	model: NonNullable<ExtensionContext["model"]>,
 	context: { systemPrompt?: string; messages: unknown[] },
@@ -34,32 +25,20 @@ type ApiKeyAndHeadersResolver = (
 	model: NonNullable<ExtensionContext["model"]>,
 ) => Promise<{ ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }>;
 
-/**
- * Bind the host runtime's completion capability (#35): registry.complete when
- * present (pi), else the pi-ai compat module (omp 18). The literal dynamic
- * import specifier must stay inline — omp's legacy compat rewrites exactly
- * this literal to its bundled pi-ai; the ./compat subpath also exists on pi,
- * so resolution is safe on both hosts. The loader promise is cached; any
- * rejection propagates to the caller (the classifier's fail-closed path owns it).
+/** Returns the host's completion call: `registry.complete` on pi, else the lazily loaded pi-ai compat module
+ *  on omp. The import specifier stays a literal because omp rewrites exactly that literal to its bundled pi-ai.
+ *  A load or call error propagates, and the classifier fails closed on it.
  *
- * [pi-verdict local patch: omp 18.3.0 compat auth gap] The bundled pi-ai
- * `complete` re-derives credentials from its own internal AuthStorage, which
- * has no visibility into omp's OAuth-backed session credentials (Claude Code
- * subscription tokens, etc.) — every call failed closed with
- * `MissingApiKeyError: No API key for provider: X` even on a fully
- * authenticated session. `registry.getApiKeyAndHeaders` is omp's own
- * documented bridge ("Resolve request authentication through the historical
- * Pi extension facade") returning the exact credential the live session
- * already uses — forward it explicitly so the compat call skips its broken
- * internal resolution. Falls through to the unauthenticated call (and its
- * original fail-closed error) when the registry lacks this method (real pi
- * never takes this branch) or when auth genuinely isn't configured.
- */
+ *  [pi-verdict local patch: omp 18.3.0 compat auth gap] The compat `complete` cannot see omp's session
+ *  credentials, so the credential from `registry.getApiKeyAndHeaders` is forwarded with each call. Without that
+ *  method or a key, the call goes out unauthenticated and the classifier fails closed on its error. */
 export function bindCompletion(
 	registry: { complete?: unknown; getApiKeyAndHeaders?: ApiKeyAndHeadersResolver },
+	// Safe: the compat module exports `complete` with this call shape on both hosts; a mismatch throws, failing closed.
 	compatLoader: CompatLoader = () => import("@earendil-works/pi-ai/compat") as Promise<{ complete: CompletionFn }>,
 ): CompletionFn {
 	if (typeof registry.complete === "function") {
+		// Safe: checked to be a function above, and pi's `ModelRegistry.complete` has this signature.
 		const complete = registry.complete as CompletionFn;
 		return (m, c, o) => complete.call(registry, m, c, o);
 	}
@@ -70,6 +49,7 @@ export function bindCompletion(
 		if (typeof registry.getApiKeyAndHeaders === "function") {
 			const auth = await registry.getApiKeyAndHeaders(m).catch(() => undefined);
 			if (auth?.ok && auth.apiKey) {
+				// Safe: the gate's own callers pass no headers, and a host header option is a string record.
 				return complete(m, c, {
 					...o,
 					apiKey: auth.apiKey,
@@ -81,7 +61,7 @@ export function bindCompletion(
 	};
 }
 
-// Session-lifetime cache keyed by registry instance: resolve once per registry.
+// One bound completion per registry instance.
 const completionCache = new WeakMap<object, CompletionFn>();
 function completionFor(registry: { complete?: unknown }, compatLoader?: CompatLoader): CompletionFn {
 	let fn = completionCache.get(registry);
@@ -92,29 +72,14 @@ function completionFor(registry: { complete?: unknown }, compatLoader?: CompatLo
 	return fn;
 }
 
-/** Minimal shape `completeForClassifier` needs from `ctx.modelRegistry` beyond
- *  what `bindCompletion` already requires: omp's real `getApiKeyForProvider`,
- *  used only on the jev/omp branch below (absent on real pi's ModelRegistry,
- *  which never takes that branch). */
+/** The registry members `completeForClassifier` reads; `getApiKeyForProvider` exists only on omp. */
 type ClassifierRegistry = { complete?: unknown; getApiKeyForProvider?: (provider: string) => Promise<string | undefined> };
 
-/**
- * [pi-verdict local patch: omp 18.3.0 jev/TypeSafe support] omp's compat
- * completion bridge (`bindCompletion`'s fallback branch) talks to the bundled
- * pi-ai package's own, unrelated provider registry — it has no visibility
- * into providers extensions register on `ctx.modelRegistry` (see
- * jev-adapter.ts's omp registration comment), so a `classifierModel:
- * "typesafe/jev-latest"` selection would 404 there even though
- * `ctx.modelRegistry.find()`/`hasConfiguredAuth()` correctly resolve it.
- * Detect the omp-compat case (`registry.complete` absent) targeting jev's
- * provider id and call `streamDecisions()` directly, resolving the OpenRouter
- * (or TypeSafe-direct) API key fresh via `getApiKeyForProvider` on every call
- * — not the static snapshot `registerProvider` uses only for the sync
- * `hasConfiguredAuth` check. Real pi never takes this branch: `registry.complete`
- * exists there, so `generic` already dispatches to jev's registered
- * `provider.api.streamSimple` (auth via `provider.auth.apiKey.resolve`)
- * unmodified.
- */
+/** Returns the completion call the gate's model calls use, with the same failure behavior as `bindCompletion`.
+ *
+ *  [pi-verdict local patch: omp 18.3.0 jev/TypeSafe support] omp's compat call cannot see providers that
+ *  extensions register, so a jev model on omp is called through `streamDecisions` directly, with its key
+ *  resolved on every call. pi dispatches jev through its registry and never takes this branch. */
 export function completeForClassifier(registry: ClassifierRegistry, deps: AutoModeDeps): CompletionFn {
 	const generic = completionFor(registry, deps.compatLoader);
 	const isOmpCompat = typeof registry.complete !== "function";
@@ -127,6 +92,7 @@ export function completeForClassifier(registry: ClassifierRegistry, deps: AutoMo
 			apiKey = await registry.getApiKeyForProvider(jevConfig.loginProvider).catch(() => undefined);
 		}
 		apiKey ||= process.env[jevConfig.keyEnv]?.trim();
+		// Safe: `callModelOnce` builds the context with a system prompt and timestamped user messages, as `Context` needs.
 		const result = await streamDecisions(transport, m, c as Context, { ...o, apiKey }).result();
 		return {
 			content: result.content.filter((part): part is { type: "text"; text: string } => part.type === "text"),
