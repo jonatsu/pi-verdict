@@ -23,7 +23,7 @@ a write into `<project>/.omp/extensions/` runs the next time anyone starts omp i
 directory. pi gates its project directory behind a trust store, but a trusted project, or one
 under a trusted parent, loads a new extension silently.
 
-The inventory of loaders this decision rests on was read from omp 18.12.6 (tag `v18.12.6`) and
+The inventory of loaders this decision rests on ([research/2026-10-24-host-code-loading-paths.md](../../research/2026-10-24-host-code-loading-paths.md)) was read from omp 18.12.6 (tag `v18.12.6`) and
 pi 0.84.3 (`dist/`) on 2026-10-24.
 
 ## Decision
