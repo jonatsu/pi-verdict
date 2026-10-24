@@ -32,13 +32,14 @@ classifier sees the call: a target holding a glob metacharacter (an in-project `
 allow), a target in a registered internal URL scheme, a `read` of a relative path that does not exist (the
 host may open another file), and a scope-tool search whose directory contains a credential directory.
 
-An omp `xd://` device URL is not graded as a file. A `read` of one returns documentation the host
+On omp, an `xd://` device URL is not graded as a file. A `read` of one returns documentation the host
 generates, and a `write xd://<tool>` runs the tool as its own gated `tool_call`, so the floor grades both as
 allow and the internal-URL shape does not withhold it. The floor grades these gray instead: a write to
 `xd://resolve`, `xd://reject`, `xd://propose` or `xd://report_issue` (host code with no nested call), to the
-root `xd://` or to a topic URL, a name outside letters, digits, `_` and `-`, and a spelling whose path would
-leave the project. A device URL given to any tool other than `read` and `write` is held back like every
-internal URL ([research/2026-10-25-xd-device-dispatch.md](../research/2026-10-25-xd-device-dispatch.md)).
+root `xd://` or to a topic URL, and a name holding `/`, `?` or `#`. A device URL given to any tool other than
+`read` and `write` is held back like every internal URL. On pi, which has no `xd` scheme, the text is a
+relative path and takes the path grades, S0 included
+([research/2026-10-25-xd-device-dispatch.md](../research/2026-10-25-xd-device-dispatch.md)).
 
 ## Three consequences the probe encodes
 

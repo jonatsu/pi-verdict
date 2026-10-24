@@ -77,6 +77,7 @@ import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts"
 import type { AuditRecord } from "./audit.ts";
 import { type CompatLoader, completionForHost } from "./completion.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
+import { hostKindOf } from "./floor.ts";
 import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";
@@ -196,6 +197,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	// Session state: reset list belongs to SessionState.reset
 	const state = new SessionState(undefined, agentDirPath());
 	const hostHandlerBudget = deps.hostHandlerBudget ?? ((ctx: ExtensionContext) => readHostHandlerBudget(pi, ctx.cwd));
+	const hostKind = hostKindOf(pi);
 
 	/** One construction point for this session's redactor: the presentation and
 	 *  handler sites build their per-call predicate through this helper instead of repeating
@@ -981,6 +983,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			getModel: () => resolveClassifier(ctx),
 			complete: completionForHost(ctx.modelRegistry, deps.compatLoader),
 			host: ctx.sessionManager,
+			hostKind,
 			signal: ctx.signal,
 			getFallbackModel: () => resolveFallbackClassifier(ctx),
 			...(onPhase ? { onPhase } : {}),

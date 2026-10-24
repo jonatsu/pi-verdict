@@ -116,6 +116,8 @@ interface InstallOpts {
 	modelFlag?: string;
 	compatLoader?: () => Promise<{ complete: any }>;
 	hostBudget?: HostBudgetFixture;
+	/** Presents the fake host as omp (`logger` and `typebox` on the API object); the default is pi. */
+	omp?: boolean;
 }
 
 function makeHarness(
@@ -252,10 +254,11 @@ function makeHarness(
 							getAllTools: () => h.allTools,
 						}
 					: {}),
+				...(opts?.omp ? { logger: {}, typebox: {} } : {}),
 			} as any,
 			{
 				...(opts?.compatLoader ? { compatLoader: opts.compatLoader } : {}),
-				...(opts?.hostBudget !== undefined ? { hostHandlerBudget: async () => opts.hostBudget ?? null } : {}),
+				...(opts?.hostBudget !== undefined || opts?.omp ? { hostHandlerBudget: async () => opts?.hostBudget ?? null } : {}),
 			},
 		);
 		if (prev !== undefined) process.env.PI_AUTO_MODE_DEBUG = prev;
@@ -367,6 +370,7 @@ function session(
 		activeTools?: string[];
 		allTools?: Array<{ name: string; parameters: { properties?: Record<string, { type?: unknown }> } }>;
 		hostBudget?: HostBudgetFixture;
+		omp?: boolean;
 	} = {},
 ): Harness {
 	setConfig(cfg, opts.invalid);
@@ -377,6 +381,7 @@ function session(
 		modelFlag: opts.modelFlag,
 		compatLoader: opts.compatLoader,
 		hostBudget: opts.hostBudget,
+		omp: opts.omp,
 	});
 	return h;
 }
@@ -7565,9 +7570,10 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 		expect((await toolCall(h, tool, input))?.block).toBe(true);
 		expect(h.calls).toHaveLength(1);
 	};
+	const OMP = { omp: true };
 
 	test("a device write that runs a tool is a rule allow, because the tool is gated as its own call", async () => {
-		const h = session({});
+		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>ask</verdict> state change" }];
 		await expectRuleAllow(h, "write", { path: "xd://mcp__lazy_skills_server_load_skill", content: '{"name":"python-style"}' });
 		await expectRuleAllow(h, "write", { path: "xd://mcp__sequential_thinking_get_thinking_history", content: "{}" });
@@ -7575,7 +7581,7 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 	});
 
 	test("a device read returns documentation, so it is a rule allow", async () => {
-		const h = session({});
+		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
 		for (const p of [
 			"xd://mcp__x",
@@ -7589,7 +7595,7 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 	});
 
 	test("a staged-action, plan or report device write still reaches the classifier", async () => {
-		const h = session({});
+		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
 		for (const p of ["xd://resolve", "xd://reject", "xd://propose", "xd://report_issue", "XD://Resolve"]) {
 			await expectClassifier(h, "write", { path: p, content: "apply it" });
@@ -7597,15 +7603,15 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 	});
 
 	test("a device write the host rejects as malformed still reaches the classifier", async () => {
-		const h = session({});
+		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
-		for (const p of ["xd://", "xd://eval/py", "xd://a.b", "xd://../x", "xd://a b"]) {
+		for (const p of ["xd://", "xd://eval/py", "xd://../x", "xd://a/b/c", "xd://a?x", "xd://a#x"]) {
 			await expectClassifier(h, "write", { path: p, content: "{}" });
 		}
 	});
 
 	test("the @ shorthand and an upper-case scheme grade like the plain URL", async () => {
-		const h = session({});
+		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
 		await expectRuleAllow(h, "write", { path: "@xd://mcp__x", content: "{}" });
 		await expectRuleAllow(h, "write", { path: "XD://mcp__x", content: "{}" });
@@ -7615,14 +7621,14 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 	});
 
 	test("a device URL outside the read and write transports is not a rule allow", async () => {
-		const h = session({});
+		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
 		await expectClassifier(h, "grep", { pattern: "x", path: "xd://mcp__x" });
 		await expectClassifier(h, "edit", { path: "xd://mcp__x", oldText: "a", newText: "b" });
 	});
 
 	test("a user deny rule matching a device URL still denies", async () => {
-		const h = session({ deny: ["^xd://mcp__lazy_skills_"] });
+		const h = session({ deny: ["^xd://mcp__lazy_skills_"] }, OMP);
 		h.calls.length = 0;
 		const r = await toolCall(h, "write", { path: "xd://mcp__lazy_skills_server_load_skill", content: "{}" });
 		expect(r?.block).toBe(true);
@@ -7630,14 +7636,25 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
-	test("a device spelling whose path leaves the project through a symlink is not a rule allow", async () => {
+	test("on pi, which has no xd scheme, a device spelling keeps the floor's path grade with S0", async () => {
+		const pi = session({});
+		pi.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		pi.calls.length = 0;
+		expect((await toolCall(pi, "write", { path: "xd://foo_history", content: "{}" }))?.block).toBe(true);
+		expect(pi.calls).toHaveLength(0);
+		await expectClassifier(pi, "read", { path: "xd://mcp__x" });
+		const omp = session({}, OMP);
+		await expectRuleAllow(omp, "write", { path: "xd://foo_history", content: "{}" });
+	});
+
+	test("on pi, a device spelling whose path leaves the project through a symlink is not a rule allow", async () => {
 		await withTempDir("pv-xd-out-", async (outside) => {
 			await withTempDir("pv-xd-", async (cwd) => {
 				fs.symlinkSync(outside, path.join(cwd, "xd:"));
 				const h = session({}, { cwd });
 				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
-				await expectClassifier(h, "write", { path: "xd://authorized_keys", content: "{}" });
-				await expectClassifier(h, "read", { path: "xd://authorized_keys" });
+				await expectClassifier(h, "write", { path: "xd://notes", content: "{}" });
+				await expectClassifier(h, "read", { path: "xd://notes" });
 			});
 		});
 	});

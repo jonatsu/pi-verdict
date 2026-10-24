@@ -413,9 +413,9 @@ changed:
   grades both as allow, and the internal-URL rule above does not withhold it for `read` and `write`, the two
   tools omp drives devices with; any other tool naming a device URL is held back as before. A write to the
   devices that run host code with no nested call (`resolve`, `reject`, `propose`, `report_issue`), to the
-  root or a topic URL, or to a name outside letters, digits, `_` and `-` stays gray. The allow also requires
-  every resolved form of the URL text to stay inside the project, because pi registers no `xd` scheme and
-  opens the text as the relative path `xd:/<name>`. Self-protection, the floor's denies, user `deny`,
+  root or a topic URL, or to a name holding `/`, `?` or `#` stays gray. The allow applies only when the host
+  is omp (`AdjudicateEnv.hostKind`): pi registers no `xd` scheme and opens the text as the relative path
+  `xd:/<name>`, so on pi an `xd://` target keeps the path grades, S0 included. Self-protection, the floor's denies, user `deny`,
   `denyPaths`, the `.omp` gate and the code-loading ask still run first, and a user `deny` regex also tests
   an internal URL target as written, because its path form collapses `//`.
 - *Accepted residual.* The device allow relies on omp wrapping every tool in its canonical tool map; a host

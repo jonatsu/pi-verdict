@@ -56,6 +56,8 @@ export interface Case {
 	kernelOpens?: string;
 	/** POSIX-only families (symlink + /etc). */
 	skipOn?: "win32";
+	/** The host the runs present; omp unless the case is about pi. */
+	host?: "pi";
 	/** Defect item number (from the source handover's ledger). */
 	item?: number;
 	/** Review finding reference, e.g. "arch-F2". */
@@ -1071,6 +1073,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 			config: { deny: ["^xd://mcp__lazy_skills_"] },
 			ref: "ADR-0009",
 			expected: { layer: "rule", reasonIncludes: "user deny rule" },
+		},
+		{
+			label: "on pi, which has no xd scheme, an xd:// spelling keeps the floor's path grade with S0",
+			family: "host-path",
+			tool: "write",
+			input: { path: "xd://foo_history", content: "{}" },
+			host: "pi",
+			ref: "ADR-0009",
+			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
 			label: "read of an ssh URL is not carried by a user allow rule",

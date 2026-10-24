@@ -26,6 +26,9 @@ run A under the consumer policy**, so a case the floor covers stays covered: if 
 matching and the deployed `deny` regex took over, C reports the `user deny rule` reason and the
 case fails.
 
+Every run presents the host as omp (`AdjudicateEnv.hostKind`). A case with `host: "pi"` runs as pi
+instead, for behaviour that differs between the hosts, such as an `xd://` target.
+
 ## Layer vocabulary
 
 `expected.layer` is the source that must decide the call:

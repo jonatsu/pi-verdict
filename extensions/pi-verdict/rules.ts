@@ -12,7 +12,7 @@ import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
-import { classifyReads, classifyWrites, globStaysInProject, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
+import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
 import type { RedactorFn } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./shell.ts";
@@ -29,6 +29,8 @@ export interface RuleContext {
 	/** True when the call names a user-declared protected path through a spelling the denyPaths
 	 *  tokeniser cannot extract, such as a home variable behind a command substitution. */
 	readonly namesProtectedPath: RedactorFn;
+	/** The host, which decides whether an `xd://` target is a tool device (omp) or a relative path (pi). */
+	readonly host: HostKind;
 }
 
 /** One tool call as every rule step reads it. */
@@ -81,11 +83,13 @@ const DEVICE_TRANSPORTS: ReadonlySet<string> = new Set(["read", "write"]);
 function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleCall {
 	const access = toolAccess(toolName, input);
 	const relocatable = access.direction === "observing" && toolName === "read" && access.reads.some((t) => readMayRelocate(t, ctx.cwd));
-	// A device URL is the floor's to grade only through the `read` and `write` transports omp drives
-	// devices with; any other tool naming one is held back like every internal URL.
+	// On omp a device URL is the floor's to grade only through the `read` and `write` transports omp
+	// drives devices with; any other tool naming one is held back like every internal URL.
 	const internalUrl = [...access.gradedReads, ...access.gradedWrites]
 		.filter(isHostInternalUrl)
-		.some((t) => (isDeviceUrl(t) ? !DEVICE_TRANSPORTS.has(toolName) : access.direction === "observing" || toolName === "ast_edit"));
+		.some((t) =>
+			ctx.host === "omp" && isDeviceUrl(t) ? !DEVICE_TRANSPORTS.has(toolName) : access.direction === "observing" || toolName === "ast_edit",
+		);
 	return {
 		toolName,
 		input,
@@ -105,9 +109,9 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
-		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.cwd, floorOn);
+		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.cwd, floorOn, ctx.host);
 	}
-	if (access.direction === "observing") return classifyReads(observedTargets(access, ctx.cwd), ctx.cwd, floorOn);
+	if (access.direction === "observing") return classifyReads(observedTargets(access, ctx.cwd), ctx.cwd, floorOn, ctx.host);
 	if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.

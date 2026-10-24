@@ -186,38 +186,47 @@ const S2_USER_RC = [
 ];
 const S3_GIT_META = [/(^|\/)\.git\/(hooks|config|modules)(\/|$)/i, /(^|\/)\.gitmodules$/i];
 
+/** The host the gate runs in. Only omp registers internal URL schemes such as `xd://`; pi opens the same
+ *  text as a relative path. */
+export type HostKind = "omp" | "pi";
+
+/** Returns `omp` for an extension API that carries omp's `logger` and `typebox`, else `pi`. */
+export function hostKindOf(pi: object): HostKind {
+	return "logger" in pi && "typebox" in pi ? "omp" : "pi";
+}
+
 const DEVICE_URL = /^xd:\/\//i;
 
-/** Matches `xd://`, `xd://<device>` and `xd://<device>/<topic>` with names of letters, digits, `_` and `-`,
- *  the spellings omp serves and that stay inside the project as a path on a host without the scheme. */
-const DEVICE_TARGET = /^xd:\/\/([A-Za-z0-9_-]*)(?:\/([A-Za-z0-9_-]+))?$/i;
+/** Matches the device URLs omp serves: `xd://`, `xd://<device>` and `xd://<device>/<topic>`, each name
+ *  free of `/`, `?` and `#`. */
+const DEVICE_TARGET = /^xd:\/\/([^/?#]*)(?:\/([^/?#]+))?$/i;
 
 /** omp devices whose write runs host code (apply or discard a staged preview, submit a plan, file a tool
  *  report) without a nested tool call for the gate to see. */
 const UNDISPATCHED_DEVICES: ReadonlySet<string> = new Set(["resolve", "reject", "propose", "report_issue"]);
 
-/** True for an omp `xd://` tool-device URL, in any scheme case. */
+/** True for an `xd://` URL in any scheme case; on omp it names a tool device. */
 export function isDeviceUrl(target: string): boolean {
 	return DEVICE_URL.test(target);
 }
 
 /** Grades an omp `xd://` device URL, which names no file: a read returns generated documentation, and a
  *  write runs the named tool as its own gated tool call, so both are a rule allow. A write to a device
- *  that runs host code directly, a URL the host rejects, or a spelling whose path leaves the project
- *  stays gray for the classifier (research/2026-10-25-xd-device-dispatch.md, ADR-0009). */
-function classifyDeviceUrl(rawPath: string, cwd: string, isWrite: boolean): RuleResult {
+ *  that runs host code directly, or a URL the host rejects, stays gray for the classifier
+ *  (research/2026-10-25-xd-device-dispatch.md, ADR-0009). */
+function classifyDeviceUrl(rawPath: string, isWrite: boolean): RuleResult {
 	const gray: RuleResult = { verdict: "gray", reason: "host tool device URL, not a file path" };
 	const target = DEVICE_TARGET.exec(rawPath);
 	if (target === null) return gray;
 	const [, name, topic] = target;
 	if (isWrite && (name === "" || topic !== undefined || UNDISPATCHED_DEVICES.has(name.toLowerCase()))) return gray;
-	const { forms, walk } = canonicalPathForms(rawPath, cwd);
-	return walk.unresolved || !formsInCwd(forms, cwd) ? gray : { verdict: "allow" };
+	return { verdict: "allow" };
 }
 
-/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
-function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
-	if (isDeviceUrl(rawPath)) return classifyDeviceUrl(rawPath, cwd, isWrite);
+/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification.
+ *  On pi an `xd://` target is an ordinary relative path and takes the path grades. */
+function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean, host: HostKind): RuleResult {
+	if (host === "omp" && isDeviceUrl(rawPath)) return classifyDeviceUrl(rawPath, isWrite);
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
@@ -291,8 +300,8 @@ export function globStaysInProject(targets: string[], cwd: string): boolean {
  *  target sits in-cwd; any remaining S2/outside-cwd target grades gray.
  *  Single-target inputs behave bit-for-bit as today — classifyPath itself is
  *  unchanged and does all the grading; this only combines N results. */
-export function classifyWrites(targets: string[], cwd: string, floorOn: boolean): RuleResult {
-	const results = targets.map((t) => classifyPath(t, cwd, true, floorOn));
+export function classifyWrites(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
+	const results = targets.map((t) => classifyPath(t, cwd, true, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow" };
@@ -327,9 +336,9 @@ export function s0DirectoryBeneath(target: string, cwd: string): boolean {
 	});
 }
 
-export function classifyReads(targets: string[], cwd: string, floorOn: boolean): RuleResult {
+export function classifyReads(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
 	if (targets.length === 0) return { verdict: "allow" };
-	const results = targets.map((t) => classifyPath(t, cwd, false, floorOn));
+	const results = targets.map((t) => classifyPath(t, cwd, false, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	const gray = results.find((r) => r.verdict === "gray");

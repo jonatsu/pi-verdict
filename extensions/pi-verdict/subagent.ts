@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { hostKindOf } from "./floor.ts";
 
 // ============================================================================
 // Subagent bridge (omp)
@@ -79,7 +80,7 @@ export async function readHostHandlerBudget(
 	cwd: string,
 	loader: () => Promise<unknown> = loadSettingsManager,
 ): Promise<HostBudget | null> {
-	if (!("logger" in pi && "typebox" in pi)) return null;
+	if (hostKindOf(pi) !== "omp") return null;
 	try {
 		const settingsManager = await loader();
 		// Safe: optional chaining covers a nullish module value, and `create` is checked to be a function.

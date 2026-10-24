@@ -10,6 +10,7 @@ import {
 } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
+import type { HostKind } from "./floor.ts";
 import type { ModelChoice, PipelineHost } from "./model-call.ts";
 import { HOST_REDACTION_PLATFORM, PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
@@ -52,6 +53,8 @@ export interface AdjudicateEnv {
 	getModel: () => ModelChoice;
 	complete: CompletionFn;
 	host: PipelineHost;
+	/** Which host runs the gate; the rule layer grades `xd://` targets by it. */
+	hostKind: HostKind;
 	signal?: AbortSignal;
 	getFallbackModel?: () => ModelChoice;
 	/** Live-status hook: called right before each gray-zone model call; UI-free (the handler renders it). */
@@ -305,6 +308,7 @@ export async function adjudicate(
 		denyPathBases: state.anchoredDenyPathBases(env.cwd),
 		policyDegraded: state.policyDegraded,
 		namesProtectedPath: redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd), HOST_REDACTION_PLATFORM, true),
+		host: env.hostKind,
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") {

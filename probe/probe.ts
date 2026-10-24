@@ -47,9 +47,10 @@ function stubModel(id: string): HostModel {
 }
 
 /** Build the per-run AdjudicateEnv. */
-function envFor(hasUI: boolean, withModel: boolean): AdjudicateEnv {
+function envFor(hasUI: boolean, withModel: boolean, hostKind: "omp" | "pi"): AdjudicateEnv {
 	return {
 		cwd: fx.work,
+		hostKind,
 		hasUI,
 		getModel: withModel ? () => ({ model: stubModel("probe-stub"), thinking: "off" as const }) : () => null,
 		complete: async () => {
@@ -172,8 +173,9 @@ async function runCase(c: Case, consumerPolicy: Record<string, unknown>): Promis
 	if (skipA.length > 0 && !c.degradedConfig) {
 		return { c, channel: "A", message: `config skipped entries: ${skipA.join(", ")}`, pass: false };
 	}
-	const a = await ext.adjudicate(stateA, call, envFor(false, false));
-	const b = await ext.adjudicate(stateA, call, envFor(true, true));
+	const hostKind = c.host ?? "omp";
+	const a = await ext.adjudicate(stateA, call, envFor(false, false, hostKind));
+	const b = await ext.adjudicate(stateA, call, envFor(true, true, hostKind));
 
 	const runs: Array<["A" | "B" | "C", Verdict]> = [
 		["A", a],
@@ -184,7 +186,7 @@ async function runCase(c: Case, consumerPolicy: Record<string, unknown>): Promis
 		if (skipC.length > 0) {
 			return { c, channel: "C", message: `consumer config skipped entries: ${skipC.join(", ")}`, pass: false };
 		}
-		runs.push(["C", await ext.adjudicate(stateC, call, envFor(false, false))]);
+		runs.push(["C", await ext.adjudicate(stateC, call, envFor(false, false, hostKind))]);
 	}
 
 	// The layer must agree across every run; the first mismatch reports.
