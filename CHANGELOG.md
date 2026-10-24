@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An apply-patch hunk header indented with spaces or a tab (`  *** Update File: /etc/hosts`) is now read as a write target: omp trims both ends of a header line before it matches one (`crates/pi-edit/src/modes/apply_patch.rs`, 18.12.6), but the gate matched only flush-left headers, so a patch with one ordinary header and one indented header got a rule allow for the indented target without grading it ([ADR-0009](docs/adr/0009-tool-access-adapter.md)).
 - A `grep`, `find`, `ls` or other scope-tool search of the filesystem root `/` now hits the `denyPaths` ask for every declared protected path beneath it; the subtree comparison appended a second separator to the root, so such a search skipped the ask and reached the classifier with the declaration unasked (`C11` in `docs/plans/simplify-and-comments.md`).
+- On macOS and Windows, self-protection ([ADR-0005](docs/adr/0005-self-protection-layer-restored.md)) compares its protected directories (the installed package or module directory, `verdicts/`, and the ancestors of a read-denied path) case-folded, as `denyPaths` already did, so a case-variant spelling such as `<agentDir>/VERDICTS/` is denied; the exact protected files and the bash signatures still compare case-sensitively. Linux is unchanged.
 
 ## [0.20.0] - 2026-10-24
 

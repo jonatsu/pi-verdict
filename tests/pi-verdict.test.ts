@@ -31,6 +31,7 @@ import autoMode, {
 	gitPushForce,
 	hostPathForms,
 	hostReadPath,
+	isProtectedReadPath,
 	isProtectedWritePath,
 	mentionsSpelling,
 	redactorFor,
@@ -3828,6 +3829,25 @@ describe("self-protection layer (ADR-0005)", () => {
 			expect(isProtectedWritePath(path.join(ext, "other.ts"), "/proj", prot)).toBe(false);
 		});
 	});
+
+	test("an agent directory directly under the root keeps a root listing readable", () => {
+		const agentDir = path.join(path.parse(TMP_AGENT).root, "pv-agent-under-root");
+		const prot = buildProtectedSet(agentDir, null);
+		expect(isProtectedReadPath(agentDir, "/proj", prot)).toBe(true);
+		expect(isProtectedReadPath(path.parse(TMP_AGENT).root, "/proj", prot)).toBe(false);
+	});
+
+	test.skipIf(process.platform !== "darwin" && process.platform !== "win32")(
+		"a case-variant spelling of the verdicts directory is protected on a case-insensitive filesystem",
+		async () => {
+			await withTempDir("pv-sp-case-", async (agentDir) => {
+				const prot = buildProtectedSet(agentDir, null);
+				const variant = path.join(agentDir, "VERDICTS", "s.jsonl");
+				expect(isProtectedWritePath(variant, "/proj", prot)).toBe(true);
+				expect(isProtectedReadPath(variant, "/proj", prot)).toBe(true);
+			});
+		},
+	);
 
 	test("a directory install protects the package, adapter included; a dev checkout protects no adapter", async () => {
 		await withTempDir("pv-sp-copy-", async (agentDir) => {

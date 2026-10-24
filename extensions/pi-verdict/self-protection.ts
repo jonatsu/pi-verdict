@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { collectStrings, commandText, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
 import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
-import { baseForms, kernelForms, rebuiltForms } from "./paths.ts";
+import { baseForms, fold, isWithin, kernelForms, rebuiltForms } from "./paths.ts";
 import type { RuleResult } from "./shell.ts";
 
 // ============================================================================
@@ -99,8 +99,9 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 		for (const { kind, roots } of families) {
 			for (const extRoot of roots) {
 				for (const own of ownForms) {
-					if (!own.startsWith(extRoot + path.sep)) continue;
-					const segs = path.relative(extRoot, own).split(path.sep);
+					const rel = pathBeneath(own, extRoot);
+					if (rel === null) continue;
+					const segs = rel.split(path.sep);
 					const singleFile = segs.length === 1;
 					// A single-file copy also protects the sibling adapter module it imports, since rewriting
 					// that changes the gate as surely as rewriting the main file.
@@ -172,7 +173,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	// (bounded: a home or root listing must not be caught).
 	const guardRoots = new Set<string>();
 	for (const root of [agentDir, path.dirname(agentDir), ...pluginRoots]) {
-		for (const f of baseForms(root)) guardRoots.add(f);
+		for (const f of baseForms(root)) if (f !== path.parse(f).root) guardRoots.add(f);
 	}
 
 	return { exact: [...exact], prefixes: [...prefixes], writePatterns, readDenied, guardRoots: [...guardRoots], bashPatterns };
@@ -184,16 +185,23 @@ function pathAlternation(forms: string[], agentDir: string): RegExp {
 	const home = os.homedir();
 	const alts = new Set<string>(forms.map(escapeRegExp));
 	for (const f of forms) {
-		if (f.startsWith(home + path.sep)) {
-			const rel = f.slice(home.length + 1);
-			alts.add(escapeRegExp("~/" + rel));
-			alts.add("\\$HOME/" + escapeRegExp(rel));
+		const homeRel = pathBeneath(f, home);
+		if (homeRel !== null) {
+			alts.add(escapeRegExp("~/" + homeRel));
+			alts.add("\\$HOME/" + escapeRegExp(homeRel));
 		}
 		for (const base of baseForms(agentDir)) {
-			if (f.startsWith(base + path.sep)) alts.add("\\$PI_CODING_AGENT_DIR/" + escapeRegExp(f.slice(base.length + 1)));
+			const agentRel = pathBeneath(f, base);
+			if (agentRel !== null) alts.add("\\$PI_CODING_AGENT_DIR/" + escapeRegExp(agentRel));
 		}
 	}
 	return new RegExp(`(?:${[...alts].join("|")})`);
+}
+
+/** Returns the part of `child` below `base`, or null when `child` is `base` itself or lies outside it. */
+function pathBeneath(child: string, base: string): string | null {
+	if (fold(child) === fold(base) || !isWithin(child, base)) return null;
+	return child.slice(base.endsWith(path.sep) ? base.length : base.length + 1);
 }
 
 /** Does the resolved write path hit the protected set? realpath guards against a symlink
@@ -202,9 +210,7 @@ export function isProtectedWritePath(rawPath: string, cwd: string, prot: Protect
 	if (!rawPath) return false;
 	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(rawPath))), ...kernelForms(rawPath, cwd)]) {
 		if (prot.exact.includes(c)) return true;
-		for (const p of prot.prefixes) {
-			if (c === p || c.startsWith(p + path.sep)) return true;
-		}
+		if (prot.prefixes.some((p) => isWithin(c, p))) return true;
 		if (prot.writePatterns.some((re) => re.test(toRuleForm(c)))) return true;
 	}
 	return false;
@@ -217,12 +223,8 @@ export function isProtectedReadPath(rawPath: string | undefined, cwd: string, pr
 	if (prot.readDenied.length === 0) return false;
 	const target = rawPath ?? cwd; // #48: absent path → cwd is the effective target
 	for (const c of [...rebuiltForms(path.resolve(cwd, expandHome(target))), ...kernelForms(target, cwd)]) {
-		for (const p of prot.readDenied) {
-			if (c === p || c.startsWith(p + path.sep)) return true;
-		}
-		for (const root of prot.guardRoots) {
-			if ((c === root || c.startsWith(root + path.sep)) && prot.readDenied.some((p) => p === c || p.startsWith(c + path.sep))) return true;
-		}
+		if (prot.readDenied.some((p) => isWithin(c, p))) return true;
+		if (prot.guardRoots.some((root) => isWithin(c, root)) && prot.readDenied.some((p) => isWithin(p, c))) return true;
 	}
 	return false;
 }
