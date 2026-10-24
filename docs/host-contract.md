@@ -10,7 +10,7 @@ next reader does not have to reverse-engineer the plugin-compatibility path.
 |---|---|---|---|
 | `@earendil-works/pi-ai` | value (`createAssistantMessageEventStream`, types) | `extensions/jev-adapter.ts` | peer (optional) + dev |
 | `@earendil-works/pi-ai/compat` | dynamic import (default `complete` loader) | `extensions/pi-verdict/completion.ts` (`bindCompletion`) | covered by the `pi-ai` peer (subpath remapped on omp) |
-| `@earendil-works/pi-coding-agent` | type import (both extensions); dynamic import of the `ui.custom` dialog modules (`loadDialogModules`, `extensions/pi-verdict/ui/dialog.ts` only) | both extensions | peer (optional) + dev |
+| `@earendil-works/pi-coding-agent` | type import (both extensions); dynamic import of the `ui.custom` dialog modules (`loadDialogModules`, `extensions/pi-verdict/ui/dialog.ts`) and of `SettingsManager` (`readHostHandlerBudget`, `extensions/pi-verdict/subagent.ts`, omp only) | both extensions | peer (optional) + dev |
 | `@earendil-works/pi-tui` | type + dynamic import (`loadDialogModules`) | `extensions/pi-verdict/ui/dialog.ts` | peer (optional) + dev |
 
 All three packages are declared in `peerDependencies` with
@@ -38,6 +38,17 @@ On **omp**, `src/extensibility/plugins/legacy-pi-compat.ts` resolves them:
 omp 18.12.6 (`@oh-my-pi/pi-ai@18.12.6`, `@oh-my-pi/pi-coding-agent@18.12.6`,
 `@oh-my-pi/pi-tui@18.12.6`) on Linux, read from the installed packages on 2026-10-24; devDependency line pi 0.84.3
 (`@earendil-works/*@0.84.3`).
+
+## The handler budget
+
+omp ends each `tool_call` handler after `extensionHandlers.toolCallTimeoutMs` (default 30000 ms) and pauses that
+budget only for dialogs opened through the handler's own `ctx.ui`. A subagent's ask is shown on the root UI, so
+pi-verdict reads the budget itself: on omp (detected by `logger` and `typebox` on the extension API) it calls the
+legacy `SettingsManager.create(cwd)` from the pi-coding-agent root. omp's shim returns the settings of the session
+whose handler is running, and pi-verdict reads `extensionHandlers.toolCallTimeoutMs` from `getProjectSettings()`,
+then `getGlobalSettings()`. A missing export, a throw or an invalid value counts as the 30000 ms default, which
+can only close a dialog early. Verified in omp 18.12.6: `runner.ts` (`emitToolCall`, `raceHandlerWithTimeout`,
+`createHandlerUIContext`) and `legacy-pi-coding-agent-shim.ts` (`SettingsManager`).
 
 ## Note on the dialog helpers
 

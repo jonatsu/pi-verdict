@@ -105,8 +105,8 @@ export const CLASSIFIER_TIMEOUT_MS = 25_000;
 export const FALLBACK_TIMEOUT_MS = 15_000;
 
 /** End-to-end budget for one gray-zone decision, first layer through fallback. It stays below omp's default
- *  per-handler `toolCallTimeoutMs`, which would otherwise kill the handler mid-cascade; it is fixed because
- *  the extension cannot read the host's configured bound. */
+ *  per-handler `toolCallTimeoutMs`, which would otherwise kill the handler mid-cascade; it is fixed, because
+ *  the root session's pipeline does not read the host's configured bound. */
 export const ADJUDICATION_BUDGET_MS = 27_000;
 
 /** Returns an attempt's timeout: its cap, limited by the remaining budget less `reserveMs` held for a later

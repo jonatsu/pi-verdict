@@ -188,12 +188,14 @@ async function runConfidenceCascade(
  *  cascade. Only an explicit second-model allow in enforce mode permits the call; every other outcome
  *  denies, and a shadow-mode opinion is recorded but never applied.
  *  Asks that did not come from the classifier (protected path, rule/fail-closed asks that
- *  exist only under autoDeny:false) never reach the model: `autoResolve` is "deny" there. */
+ *  exist only under autoDeny:false) never reach the model: `autoResolve` is "deny" there.
+ *  `deadlineAt` (epoch ms) bounds the second model by the host's handler budget; past it the model fails closed. */
 export async function resolveAskWithoutHuman(
 	state: SessionState,
 	env: AdjudicateEnv,
 	v: Verdict,
 	actionLine: string,
+	deadlineAt?: number,
 ): Promise<{ verdict: "allow" | "deny"; reason: string; fb?: FallbackAudit }> {
 	// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a genuine
 	// model-originated allow is withheld — no human answered, so the ask cannot be escalated
@@ -238,12 +240,9 @@ export async function resolveAskWithoutHuman(
 		rules.denyPaths.length > 0,
 		FALLBACK_TIMEOUT_MS,
 		rules.classifierRules,
-		// item 7 boundary: the subagent ask path runs in the handler outside the root-session
-		// adjudication deadline, so no budget is passed — its documented guidance stays "raise the
-		// host toolCallTimeoutMs above subagentAskTimeoutMs + 60000" (docs/configuration.md).
-		// The second-model prompt is a model payload like any other —
-		// without this it shipped past tool calls unredacted, defeating Phase 5 (ADR-0002).
+		// The second-model prompt is a model payload like any other, so it is redacted too (ADR-0002).
 		env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd)),
+		deadlineAt === undefined ? undefined : { deadlineAt, reserveMs: 0 },
 	);
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";

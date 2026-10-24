@@ -80,7 +80,18 @@ import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate }
 import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";
-import { STATUS_WIDGET_KEY, subagentIdentity, subagentLabel, type UiContext } from "./subagent.ts";
+import {
+	HOST_RETURN_MARGIN_MS,
+	type HostBudget,
+	hostBudgetAdvice,
+	readHostHandlerBudget,
+	STATUS_WIDGET_KEY,
+	subagentAskWindow,
+	subagentIdentity,
+	subagentLabel,
+	type UiContext,
+	untilAborted,
+} from "./subagent.ts";
 import {
 	NEVER_CHOICE,
 	NOT_NOW_CHOICE,
@@ -159,9 +170,11 @@ function blockedReason(tag: string, detail: string): string {
 	return `[auto-mode ${tag} block] BLOCKED — this action did NOT run. Reason: ${clean || "(no further reason given)"}. Report the block to the user; never claim it succeeded or completed.`;
 }
 
-/** Optional dependency injection for tests (#35): fake the compat fallback loader. */
+/** Optional dependency injection for tests (#35): fake the compat fallback loader and the host's
+ *  per-handler budget (null = a host without one). */
 export interface AutoModeDeps {
 	compatLoader?: CompatLoader;
+	hostHandlerBudget?: (ctx: ExtensionContext) => Promise<HostBudget | null>;
 }
 
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
@@ -180,6 +193,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	const debug = pi.getFlag("auto-mode-debug") === true || process.env.PI_AUTO_MODE_DEBUG === "1";
 	// Session state: reset list belongs to SessionState.reset
 	const state = new SessionState(undefined, agentDirPath());
+	const hostHandlerBudget = deps.hostHandlerBudget ?? ((ctx: ExtensionContext) => readHostHandlerBudget(pi, ctx.cwd));
 
 	/** One construction point for this session's redactor: the presentation and
 	 *  handler sites build their per-call predicate through this helper instead of repeating
@@ -207,11 +221,12 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		call: { toolName: string; input: Record<string, unknown> },
 		action: string,
 		ui: UiContext,
-		opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext },
+		opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext; windowMs?: number },
 	): Promise<{ block: true; reason: string } | undefined | "aborted"> {
 		const note = (msg: string, level: "info" | "warning" | "error"): void =>
 			ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
-		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
+		const answerWithin = opts.windowMs === undefined ? "" : ` (answer within ${Math.ceil(opts.windowMs / 1000)} s)`;
+		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t) + answerWithin;
 		// Notifications carry no protected-path plaintext (the invariant the
 		// protected-path branch below states out loud) — an action whose text names a base
 		// becomes the fixed marker; block REASONS and the local dialog surfaces are unchanged
@@ -445,6 +460,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}
 		}
 		refreshStatus(ctx);
+		// Last, so every step above stays synchronous: only a root session with a UI shows subagent asks.
+		if (subagentIdentity(ctx) === null && ctx.hasUI && state.userRules.subagentGate === "normal" && !state.hostBudgetWarned) {
+			const advice = hostBudgetAdvice(state.userRules.subagentAskTimeoutMs, await hostHandlerBudget(ctx));
+			if (advice) {
+				state.hostBudgetWarned = true;
+				ctx.ui.notify(`🛡️ pi-verdict: subagent asks will expire early: ${advice}`, "warning");
+			}
+		}
 	});
 
 	pi.on("session_shutdown", () => {
@@ -906,6 +929,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!enabled) return undefined;
+		const handlerStart = Date.now();
 
 		const sub = subagentIdentity(ctx);
 		const mode = state.userRules.subagentGate;
@@ -979,9 +1003,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const lateWarning = state.audit?.drainWarning();
 			if (lateWarning) warn(`pi-verdict: ${lateWarning}`);
 		};
-		const present = async (signal?: AbortSignal): Promise<{ block: true; reason: string } | undefined | "aborted"> => {
+		const present = async (signal?: AbortSignal, windowMs?: number): Promise<{ block: true; reason: string } | undefined | "aborted"> => {
 			try {
-				return await presentVerdict(verdict, call, action, ui ?? ctx.ui, { label, signal, ctx });
+				return await presentVerdict(verdict, call, action, ui ?? ctx.ui, { label, signal, ctx, windowMs });
 			} catch (err) {
 				if (verdict.pendingAudit) state.audit?.append(verdict.pendingAudit);
 				throw err;
@@ -1005,12 +1029,16 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			return r === "aborted" ? undefined : r;
 		}
 
+		// omp ends this handler after its budget and does not pause it for a dialog on the root UI.
+		const budget = await hostHandlerBudget(ctx);
+		const hostDeadlineAt = budget === null ? undefined : handlerStart + budget.ms - HOST_RETURN_MARGIN_MS;
+
 		// Subagent ask resolved with no human answer: second model (only an explicit allow permits)
 		const finishWithoutHuman = async (resolution: "timeout" | "auto"): Promise<{ block: true; reason: string } | undefined> => {
 			// The second model judges the same uncapped action line the first classifier saw;
 			// displayAction is cut to 1000 chars for notifications and would hide a payload in the middle.
 			const modelAction = redactFn(input) ? PROTECTED_PATH_MARKER : actionCallLine(event.toolName, input).line;
-			const res = await resolveAskWithoutHuman(state, env, verdict, modelAction);
+			const res = await resolveAskWithoutHuman(state, env, verdict, modelAction, hostDeadlineAt);
 			finalize({ subagent: { ...sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 			const out = (ui ?? ctx.ui).notify.bind(ui ?? ctx.ui);
 			if (res.verdict === "allow") {
@@ -1027,9 +1055,12 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		};
 
 		if (mode === "normal" && ui !== null) {
-			const deadline = AbortSignal.timeout(state.userRules.subagentAskTimeoutMs);
+			const askTimeoutMs = state.userRules.subagentAskTimeoutMs;
+			const window = subagentAskWindow(askTimeoutMs, budget, Date.now() - handlerStart);
+			const deadline = AbortSignal.timeout(window.ms);
 			const signal = ctx.signal ? AbortSignal.any([deadline, ctx.signal]) : deadline;
-			const r = await present(signal);
+			// The race closes the wait even while the ask is still queued behind another dialog.
+			const r = await untilAborted(present(signal, window.ms), signal);
 			if (r !== "aborted") {
 				finalize({ ...answerAudit(r), subagent: { ...sub, resolution: "human" } });
 				return r;
@@ -1037,6 +1068,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			if (ctx.signal?.aborted) {
 				finalize({ subagent: { ...sub, resolution: "timeout" } });
 				return { block: true, reason: blockReason("subagent-cancelled", "subagent run was cancelled while awaiting approval") };
+			}
+			if (window.hostLimited) {
+				const advice = hostBudgetAdvice(askTimeoutMs, budget);
+				ui.notify(`🛡️ [${label}] subagent ask expired before omp's handler timeout${advice ? `: ${advice}` : ""}`, "warning");
 			}
 			return finishWithoutHuman("timeout");
 		}

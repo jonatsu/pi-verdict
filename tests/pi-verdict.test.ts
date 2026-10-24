@@ -44,6 +44,7 @@ import autoMode, {
 	setXdgConfigRootsForTests,
 	shellWords,
 } from "../extensions/pi-verdict/index.ts";
+import { HOST_BUDGET_MARGIN_MS } from "../extensions/pi-verdict/subagent.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -98,7 +99,18 @@ interface Harness {
 	 *  getAllTools entirely, exercising the capability-absent branch. */
 	activeTools: string[] | undefined;
 	allTools: Array<{ name: string; parameters: { properties?: Record<string, { type?: unknown }> } }> | undefined;
-	install: (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; compatLoader?: () => Promise<{ complete: any }> }) => void;
+	install: (opts?: InstallOpts) => void;
+}
+
+/** Host handler budget the extension sees (omp's `extensionHandlers.toolCallTimeoutMs`); undefined keeps the real reader. */
+type HostBudgetFixture = { ms: number; configured: boolean } | null;
+
+interface InstallOpts {
+	flag?: boolean;
+	debug?: boolean;
+	modelFlag?: string;
+	compatLoader?: () => Promise<{ complete: any }>;
+	hostBudget?: HostBudgetFixture;
 }
 
 function makeHarness(
@@ -203,7 +215,7 @@ function makeHarness(
 	};
 	h.ctx = ctx;
 
-	h.install = (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; compatLoader?: () => Promise<{ complete: any }> }) => {
+	h.install = (opts?: InstallOpts) => {
 		flags = {
 			"auto-mode": opts?.flag ?? true,
 			"auto-mode-debug": opts?.debug ?? false,
@@ -236,7 +248,10 @@ function makeHarness(
 						}
 					: {}),
 			} as any,
-			opts?.compatLoader ? { compatLoader: opts.compatLoader } : {},
+			{
+				...(opts?.compatLoader ? { compatLoader: opts.compatLoader } : {}),
+				...(opts?.hostBudget !== undefined ? { hostHandlerBudget: async () => opts.hostBudget ?? null } : {}),
+			},
 		);
 		if (prev !== undefined) process.env.PI_AUTO_MODE_DEBUG = prev;
 		else delete process.env.PI_AUTO_MODE_DEBUG;
@@ -346,11 +361,18 @@ function session(
 		compatLoader?: () => Promise<{ complete: any }>;
 		activeTools?: string[];
 		allTools?: Array<{ name: string; parameters: { properties?: Record<string, { type?: unknown }> } }>;
+		hostBudget?: HostBudgetFixture;
 	} = {},
 ): Harness {
 	setConfig(cfg, opts.invalid);
 	const h = makeHarness(opts.cwd, { ompRegistry: opts.ompRegistry, activeTools: opts.activeTools, allTools: opts.allTools });
-	h.install({ flag: opts.flag, debug: opts.debug, modelFlag: opts.modelFlag, compatLoader: opts.compatLoader });
+	h.install({
+		flag: opts.flag,
+		debug: opts.debug,
+		modelFlag: opts.modelFlag,
+		compatLoader: opts.compatLoader,
+		hostBudget: opts.hostBudget,
+	});
 	return h;
 }
 
@@ -5165,16 +5187,16 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 	async function withBridge(
 		cfg: Parameters<typeof setConfig>[0],
 		fn: (root: Harness, sub: Harness) => Promise<void>,
-		opts: { rootHasUI?: boolean } = {},
+		opts: { rootHasUI?: boolean; hostBudget?: HostBudgetFixture } = {},
 	): Promise<void> {
 		// the production default is "normal" (a fork decision; ADR-0007); bridge tests name it
 		// explicitly and individual tests override (an explicit `subagentGate: undefined` key
 		// exercises the true default)
-		const root = session({ subagentGate: "normal", ...cfg });
+		const root = session({ subagentGate: "normal", ...cfg }, { hostBudget: opts.hostBudget });
 		root.ctx.hasUI = opts.rootHasUI ?? true;
 		await root.handlers["session_start"]({}, root.ctx);
 		const sub = makeHarness();
-		sub.install();
+		sub.install({ hostBudget: opts.hostBudget });
 		sub.ctx.agent = { kind: "sub", id: "Scout1", name: "scout" };
 		sub.ctx.hasUI = false;
 		sub.findMap = { "mock/fb": { id: "fb-model" } };
@@ -5471,6 +5493,104 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		} finally {
 			clearAudit();
 		}
+	});
+
+	describe("omp's per-handler budget (extensionHandlers.toolCallTimeoutMs)", () => {
+		// The budget is injected; the dialog's real deadline is the budget less HOST_BUDGET_MARGIN_MS, so a
+		// budget just above the margin gives a short genuine deadline, as with subagentAskTimeoutMs above.
+		const SHORT_BUDGET = { ms: HOST_BUDGET_MARGIN_MS + 40, configured: false };
+		const EXPIRED = "subagent ask expired before omp's handler timeout";
+
+		/** Rich root dialog that never settles on its own: it closes only through the dialog's abort. */
+		const neverAnswered = (root: Harness, titles: string[]): void => {
+			root.ctx.ui.custom = (factory: (...args: any[]) => any) =>
+				new Promise((resolve) => {
+					const component = factory(
+						{ requestRender() {} },
+						{ fg: (_c: string, t: string) => t, bold: (t: string) => t },
+						undefined,
+						resolve,
+					);
+					titles.push(component.render(120).join("\n"));
+				});
+		};
+
+		test("a subagent ask on the root UI closes before the host budget ends and pi-verdict blocks the call", async () => {
+			clearAudit();
+			try {
+				await withBridge(
+					{ audit: true, subagentAskTimeoutMs: 60_000, denyPaths: [SENS] },
+					async (root, sub) => {
+						const titles: string[] = [];
+						neverAnswered(root, titles);
+						const r = await toolCall(sub, "read", { path: path.join(SENS, "x.md") });
+						expect(titles).toHaveLength(1);
+						expect(titles[0]).toContain("(answer within 1 s)");
+						expect(r?.block).toBe(true);
+						expect(String(r.reason)).toContain("subagent-auto");
+						expect(readAudit().at(-1).subagent).toEqual({ id: "Scout1", name: "scout", resolution: "timeout" });
+						const notices = root.notifies.map(([m]) => m);
+						const expiry = notices.find((m) => m.includes(EXPIRED));
+						expect(expiry).toContain(LABEL);
+						expect(expiry).toContain("at least 120000");
+						expect(notices.join("\n")).not.toContain(path.basename(SENS));
+					},
+					{ hostBudget: SHORT_BUDGET },
+				);
+			} finally {
+				clearAudit();
+			}
+		});
+
+		test("a budget that outlasts subagentAskTimeoutMs leaves the ask deadline in charge, with no expiry notice", async () => {
+			await withBridge(
+				{ subagentAskTimeoutMs: 30, classifierFallbackModel: "mock/fb" },
+				async (root, sub) => {
+					hangUntilAbort(root);
+					sub.responses = [ASK, ALLOW];
+					expect(await toolCall(sub, "bash", { command: "cargo build" })).toBeUndefined();
+					expect(root.notifies.some(([m]) => m.includes(EXPIRED))).toBe(false);
+				},
+				{ hostBudget: { ms: 200_000, configured: true } },
+			);
+		});
+
+		test("a budget below subagentAskTimeoutMs + 60000 warns once at root session start", async () => {
+			const warnings = (h: Harness): string[] => h.notifies.filter(([m]) => m.includes("subagent asks will expire early")).map(([m]) => m);
+			await withBridge(
+				{ subagentAskTimeoutMs: 60_000 },
+				async (root, sub) => {
+					expect(warnings(root)).toHaveLength(1);
+					expect(warnings(root)[0]).toMatch(/^🛡️ /u);
+					expect(warnings(root)[0]).toContain("30000 ms, default");
+					expect(warnings(root)[0]).toContain("at least 120000");
+					sub.responses = [ASK];
+					await toolCall(sub, "bash", { command: "cargo build" });
+					expect(warnings(root)).toHaveLength(1);
+					expect(warnings(sub)).toHaveLength(0);
+				},
+				{ hostBudget: { ms: 30_000, configured: false } },
+			);
+			for (const hostBudget of [{ ms: 120_000, configured: true }, null]) {
+				await withBridge({ subagentAskTimeoutMs: 60_000 }, async (root) => expect(warnings(root)).toHaveLength(0), { hostBudget });
+			}
+			await withBridge({ subagentGate: "auto" }, async (root) => expect(warnings(root)).toHaveLength(0), {
+				hostBudget: { ms: 30_000, configured: false },
+			});
+		});
+
+		test("a root-session ask is not bounded by the host budget (omp pauses it for the handler's own dialog)", async () => {
+			const h = session({}, { hostBudget: SHORT_BUDGET });
+			const signals: Array<AbortSignal | undefined> = [];
+			h.ctx.ui.confirm = async (_t: string, _m: string, o?: { signal?: AbortSignal }) => {
+				signals.push(o?.signal);
+				return true;
+			};
+			h.responses = [ASK];
+			expect(await toolCall(h, "bash", { command: "cargo build" })).toBeUndefined();
+			expect(signals).toEqual([undefined]);
+			expect(h.notifies.some(([m]) => m.includes(EXPIRED))).toBe(false);
+		});
 	});
 
 	test("invalid subagentGate / subagentAskTimeoutMs warn and fall back to the defaults", async () => {

@@ -47,7 +47,7 @@ Two independent extensions in `extensions/` (no `src/`, no build step; TypeScrip
 
 **Fail direction**: closed. Classifier error / timeout / no model / malformed output ⇒ deny (`source:"fail-closed"`). No UI (`pi -p`, json, rpc) ⇒ every `ask` degrades to deny with `degraded:true`. Config errors ⇒ empty rules with the floor ON plus a notification, **and `policyDegraded` (ADR-0010): a config parse/load failure, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry withholds every model-originated allow — first layer + cascade → ask (`source:"degraded-policy"`), subagent second model → denied outright — and suspends user `allow`/`tools` for the session; named in the footer badge, `/automode`, every block reason, and a session-start warning**. The extension is never disabled. Audit write failures are fail-soft.
 
-**Subagents** (omp): a subagent session's ask goes to the root session's UI (`rootUi`); with no root UI, or `subagentGate: "auto"`, it resolves without a human through `resolveAskWithoutHuman`, which consults `classifierFallbackModel` and denies everything else.
+**Subagents** (omp): a subagent session's ask goes to the root session's UI (`rootUi`); with no root UI, or `subagentGate: "auto"`, it resolves without a human through `resolveAskWithoutHuman`, which consults `classifierFallbackModel` and denies everything else. omp does not pause its per-handler budget for a dialog on the root UI, so a subagent's ask closes before that budget ends (`readHostHandlerBudget`, `subagentAskWindow`; `docs/host-contract.md`).
 
 **State**: `SessionState` class (exported for tests) holds fallback stats, `userRules`, audit log, `policyDegraded`, and `denyPathBases`. Module-level caches: `completionCache` (WeakMap per registry), `TEMPERATURE_REJECTED_MODELS`, lazy `dialogModules`.
 
@@ -92,7 +92,7 @@ bun run release-check       # package.json version == annotated tag v<version> (
 - Host path spellings are graded through `hostPathForms` (raw form plus omp's `expandPath`, read selectors, `?q=` image questions, shell-escaped spaces, WSL drive aliases); ADR-0009 records the accepted residual spellings. Add a spelling there, not in a single layer.
 - Scope tools (`SCOPE_TOOL_NAMES`: `grep`, `find`, `ls`, `glob`, `ast_grep`, `ast_edit`) have subtree semantics; an empty path is the cwd. A target holding a glob metacharacter never yields a rule allow, except an in-project `glob` listing.
 - Regexes in rules are capped at `BASH_MAX_MATCH_LEN=8192`; longer commands fall through to the over-cap ask.
-- DI seams beyond `AdjudicateEnv`: `autoMode(pi, {compatLoader})`; `streamDecisions(…, fetcher = fetch)` and `createJevProvider(keyResolver, fetcher)` inject `fetch`.
+- DI seams beyond `AdjudicateEnv`: `autoMode(pi, {compatLoader, hostHandlerBudget})`; `streamDecisions(…, fetcher = fetch)` and `createJevProvider(keyResolver, fetcher)` inject `fetch`.
 - Notifications: deny/ask always notify; a classifier allow only with `notifyAllows`; mechanical allows are silent.
 
 ## Important Files

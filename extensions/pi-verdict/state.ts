@@ -77,6 +77,8 @@ export class SessionState {
 	 *  failure, or a skipped deny/denyPaths entry) — while true, every model-originated allow
 	 *  becomes an ask (ADR-0010). Part of the reset list via reloadRules. */
 	policyDegraded = false;
+	/** The warning that the host's handler budget is too short for subagent asks was shown this session. */
+	hostBudgetWarned = false;
 
 	constructor(userRules?: UserRules, agentDir: string | null = null) {
 		this.agentDir = agentDir;
@@ -111,6 +113,7 @@ export class SessionState {
 		const report = this.reloadRules(cwd, sessionTrustedRoot);
 		this.fallback.reset();
 		this.verdictCounts = { allow: 0, ask: 0, deny: 0 };
+		this.hostBudgetWarned = false;
 		return report;
 	}
 
