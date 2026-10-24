@@ -1,7 +1,7 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
 Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0). This plan defines the finding ids
-`C1`-`C41` that commits and the CHANGELOG may cite; code comments never do (`pv-comments`).
+`C1`-`C44` that commits and the CHANGELOG may cite; code comments never do (`pv-comments`).
 
 ## Goal
 
@@ -34,11 +34,11 @@ flowchart LR
 | --- | --- |
 | 1. Classifier split (done) | `C21`, `C27`, `C28` for the four model-call modules, plus `C26`'s `ModelChoice` |
 | 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
-| 3. `adjudicate.ts` and the `Verdict` union | `C20`, `C25`, `C26`, `C37`, `C34` |
+| 3. `adjudicate.ts` and the `Verdict` union | `C20`, `C25`, `C26`, `C37`, `C34`, `C42` |
 | 4. `state.ts` | `C32` |
 | 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17` |
 | 6. UI modules | `C29`, `C31` |
-| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C35`, `C36`, `C38`-`C41` |
+| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C35`, `C36`, `C38`-`C41`, `C43`, `C44` |
 
 ## Findings
 
@@ -172,3 +172,21 @@ flowchart LR
   (`r`, `fire`), builds `diag` eagerly, and carries story comments.
 - **C41 `redactorFor` (54 lines)** builds the spelling set and the matcher together; its doc lists
   spellings instead of stating a predicate; `toolAccess("", args)` passes a magic empty tool name.
+- **C42 Names around the rule layer read poorly.** `RuleContext` calls the protected set `prot` and
+  the user rules `user`, abbreviations every step repeats; `RedactorFn` is a predicate that redacts
+  nothing, yet `namesProtectedPath` is typed with it; and `adjudicate` computes
+  `state.anchoredDenyPathBases(env.cwd)` twice to build one `RuleContext`, once for the bases and once
+  for the strict redactor. Fix: `protectedSet` and `userRules`, a `CallPredicate` type for the strict
+  redactor, and one local for the anchored bases.
+- **C43 Protected asset paths and reason strings are written more than once.** The trust store path
+  `config/pi-verdict-trust.json` is joined twice in `buildProtectedSet` and again in `trust.ts`;
+  `plugin-overrides.json` appears in both a write pattern and a bash signature; and
+  `selfProtectCheck` spells two deny reasons inline while `COMMAND_TOUCHES_GATE` is declared after
+  its first use. Fix: one table of the gate's asset paths that `trust.ts` and `self-protection.ts`
+  share, and the deny reasons declared together above the check.
+- **C44 Repeated predicates and bare literals in the call model.** The test
+  `access.kind === "code" && access.command !== null`, or a variant of it, is spelled in
+  `rules.ts`, `deny-paths.ts`, `action-line.ts`, `code-loading.ts` and `self-protection.ts`;
+  `gradeBase` compares `input.language` with a bare `"py"`; and `packageDepth` carries the magic
+  numbers `2` and `3` for the npm scope and git host depths. Fix: a `codeText(access)` accessor that
+  returns the code or null, a named eval-language constant, and named depth constants.
