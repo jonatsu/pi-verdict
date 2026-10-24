@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { isCommandTool, toolAccess } from "./access.ts";
 import { expandHome } from "./floor.ts";
-import { baseForms, kernelPath, pathEquals, pathStartsWith } from "./paths.ts";
+import { baseForms, isWithin, kernelPath } from "./paths.ts";
 
 // ============================================================================
 // denyPaths (ADR-0002): user-declared protected paths — deterministic ask
@@ -219,7 +219,7 @@ export function hitDenyPaths(toolName: string, input: Record<string, unknown>, c
 	for (const candidate of callPathCandidates(toolName, input, cwd)) {
 		for (const c of denyPathForms(candidate, cwd)) {
 			for (const b of bases) {
-				if (pathEquals(c, b) || pathStartsWith(c, b) || (subtree && pathStartsWith(b, c))) return b;
+				if (isWithin(c, b) || (subtree && isWithin(b, c))) return b;
 			}
 		}
 	}

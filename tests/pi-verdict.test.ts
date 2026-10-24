@@ -1709,6 +1709,19 @@ describe("denyPaths (ADR-0002)", () => {
 		});
 	});
 
+	test("a search of the filesystem root asks for every declaration beneath it", async () => {
+		for (const [tool, input] of [
+			["grep", { pattern: "secret", path: "/" }],
+			["find", { pattern: "*.md", path: "/" }],
+			["ls", { path: "/" }],
+		] as const) {
+			const h = session({ denyPaths: [SENS] });
+			await toolCall(h, tool, input);
+			expect(h.confirms).toBe(1);
+			expect(h.calls.length).toBe(0);
+		}
+	});
+
 	test("omitted path: user allow cannot override the hit (denyPaths priority holds)", async () => {
 		const h = session({ allow: [".*"], denyPaths: [SENS] }, { cwd: TMP_AGENT });
 		await toolCall(h, "grep", { pattern: "secret" });

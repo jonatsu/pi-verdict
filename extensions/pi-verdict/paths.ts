@@ -154,5 +154,11 @@ export function kernelPath(rawPath: string, cwd: string): string | null {
  * —each keeps its own and is not unified by this module; see the “dual-form matching” entry). */
 export const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
 export const fold = (s: string): string => (CASE_INSENSITIVE_FS ? s.toLowerCase() : s);
-export const pathEquals = (a: string, b: string): boolean => fold(a) === fold(b);
-export const pathStartsWith = (child: string, base: string): boolean => fold(child).startsWith(fold(base) + path.sep);
+
+/** True when `child` is `base` or lies beneath it, compared case-folded on case-insensitive filesystems.
+ *  A base that already ends in a separator, such as the filesystem root, contains every path under it. */
+export function isWithin(child: string, base: string): boolean {
+	const c = fold(child);
+	const b = fold(base);
+	return c === b || c.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
+}
