@@ -539,6 +539,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "allow" },
 		},
 		{
+			label: "edit header with a placeholder tag still targets its S0 path",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: `[${fx.work}/a.ts#1a2b]\nPUT 1.=1:\n+x\n[~/.ssh/authorized_keys#AUTO]\nPUT 1.=1:\n+y\n` },
+			ref: "ADR-0009",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
 			label: "pathless edit with no parseable header stays opaque",
 			family: "tool-access",
 			tool: "edit",

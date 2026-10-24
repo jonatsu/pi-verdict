@@ -2204,12 +2204,34 @@ const HASHLINE_TAG_RE = /#[0-9a-fA-F]{4}$/;
 function stripHashlineTagAndQuotes(trimmedBody: string): string | null {
 	if (!trimmedBody) return null;
 	const tag = HASHLINE_TAG_RE.exec(trimmedBody);
-	const raw = tag ? trimmedBody.slice(0, tag.index) : trimmedBody;
+	return unquoteHashlinePath(tag ? trimmedBody.slice(0, tag.index) : trimmedBody);
+}
+
+/** One layer of matching quotes removed; null for an empty text. */
+function unquoteHashlinePath(raw: string): string | null {
 	if (raw.length < 2) return raw.length > 0 ? raw : null;
 	const first = raw[0];
 	const last = raw[raw.length - 1];
 	if ((first === '"' || first === "'") && first === last) return raw.slice(1, -1);
 	return raw;
+}
+
+/** A stand-in where the tag belongs (`#AUTO`, `#????`, `#0`, a bare `#`): one short word of no path
+ *  characters at the end of a header body. omp parses such a header as the untagged path. */
+const HASHLINE_PLACEHOLDER_TAG_RE = /#[^\s#./\\:[\]]{0,16}\s*$/;
+
+/** Every path a trimmed header body can name: the body with a 4-hex tag stripped, which is also the
+ *  raw spelling when no tag follows, and, when the body ends in a placeholder tag, the path in front
+ *  of it as well. A form the host would not pick only adds scrutiny. Mirrors omp's `recover_header`
+ *  (18.12.6). */
+function hashlineHeaderPaths(trimmedBody: string): string[] {
+	const forms = new Set<string>();
+	const tagless = stripHashlineTagAndQuotes(trimmedBody);
+	if (tagless) forms.add(tagless);
+	const placeholder = HASHLINE_PLACEHOLDER_TAG_RE.exec(trimmedBody);
+	const untagged = placeholder ? unquoteHashlinePath(trimmedBody.slice(0, placeholder.index).trim()) : null;
+	if (untagged) forms.add(untagged);
+	return [...forms];
 }
 
 /** Unwrap a hashline-wrapped `[path#TAG]` value (`write` may carry one) to the
@@ -2233,8 +2255,7 @@ function parseHashlineTargets(text: string): string[] {
 	for (const raw of stripped.split("\n")) {
 		const line = raw.replace(/\r$/, "");
 		if (line.startsWith("[") && line.endsWith("]")) {
-			const body = stripHashlineTagAndQuotes(line.slice(1, -1).trim());
-			if (body) targets.push(body);
+			targets.push(...hashlineHeaderPaths(line.slice(1, -1).trim()));
 			continue;
 		}
 		const legacy = line.trimStart();

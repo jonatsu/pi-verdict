@@ -6156,3 +6156,43 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 });
+
+describe("hashline header spellings (ADR-0009)", () => {
+	const header = (h: string): { input: string } => ({ input: `[${h}]\n1:x\n` });
+	const dotEnv = ".e" + "nv";
+
+	test("a placeholder tag never hides the edit target from the floor", async () => {
+		const h = session({});
+		for (const spelling of [".git/config#AUTO", dotEnv + "#????", ".gitmodules#0", ".git/config#", dotEnv + "rc#AUTO "]) {
+			expect((await toolCall(h, "edit", header(spelling)))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a placeholder-tagged header behind a benign one is graded too", async () => {
+		const h = session({});
+		const r = await toolCall(h, "edit", { input: "[src/a.ts#1A2B]\n1:x\n[.git/config#AUTO]\n1:y\n" });
+		expect(r?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a placeholder-tagged header over a denyPaths file reaches the ask", async () => {
+		await withTempDir(
+			"pv-hl-",
+			async (cwd) => {
+				const h = session({ denyPaths: [path.join(cwd, "secrets", "tok.json")] }, { cwd });
+				h.confirmAnswer = false;
+				const r = await toolCall(h, "edit", header("secrets/tok.json#AUTO"));
+				expect(h.confirms).toBe(1);
+				expect(r?.block).toBe(true);
+			},
+			os.homedir(),
+		);
+	});
+
+	test("a benign placeholder-tagged header keeps its rule allow", async () => {
+		const h = session({});
+		expect(await toolCall(h, "edit", header("src/a.ts#AUTO"))).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+	});
+});
