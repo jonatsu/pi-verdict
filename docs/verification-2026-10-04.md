@@ -1,5 +1,7 @@
 # Live verification — 2026-10-04 (fork `v0.16.0-fork.2`)
 
+This is a dated record, not current guidance. Later behavior is in `CHANGELOG.md`.
+
 Observed results for the handoff's verification list, run on Oh-My-Pi 18.5.1 (Linux/WSL2).
 The pinned ref is the commit carrying this file; the diff range for review is
 `frapetti/main..v0.16.0-fork.2`. First-pass chain: `7938bc2` (self-protection + defaults),

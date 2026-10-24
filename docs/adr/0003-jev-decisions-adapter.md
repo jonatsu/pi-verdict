@@ -42,3 +42,18 @@ Research findings (research/typesafe-jev-classifiermodel.md, later revised and e
 - Package grows by one file; users who don't opt in merely load an inert extension (provider registration plus two event hooks, no requests).
 - `classifierModel` semantics widen from "LLM provider/model" to "any model registered through pi"; CONTEXT.md is synced (jev adapter / typed decision / verdict prefix contract entries).
 - jev's verdict quality is unverified against adversarial samples (the F-series review bypass cases); enabling it accepts its experimental nature; the rule layer (built-in floor + user deny + denyPaths) remains the primary defense — the classifier only takes the gray zone.
+
+## Amendment (2026-10-24): write protection of the adapter copy
+
+Decision point 5 says write-deny itself no longer exists. [ADR-0005](0005-self-protection-layer-restored.md)
+restored the self-protection layer on 2026-10-04, so agent writes to the installed extension copy are
+denied again. The coverage differs by install form, as `buildProtectedSet` derives it:
+
+- **Directory install** (the git spec, or a package under `plugins/node_modules/`): the whole package
+  directory is protected by prefix, so `jev-adapter.ts` is covered.
+- **Single-file copy install** (`cp extensions/pi-verdict.ts extensions/jev-adapter.ts <agentDir>/extensions/`):
+  only `pi-verdict.ts` is protected, as an exact path. `jev-adapter.ts` is not write-protected, although
+  `pi-verdict.ts` imports it, so an agent could change the gate by rewriting the adapter. This gap is
+  open.
+
+This ADR's decisions are unchanged.

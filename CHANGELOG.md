@@ -2,8 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Fixed
+
+- The first-run config template's `_hint` text links this repository's `docs/configuration.md` instead of upstream's, names the real `classifierFallbackModel` triggers (a fail-closed first layer, or a jev confidence below `classifierMinConfidence`) in place of the removed `classifierFallbackConfidence`, and no longer offers `task` as an example `tools` entry, since listing `task` would let subagent launches bypass the subagent gate. Existing configs are not rewritten.
 
 ## [0.18.0] - 2026-10-07
 
@@ -60,6 +66,7 @@ Changes since `v0.17.0`: the tool-access adapter round ([ADR-0009](docs/adr/0009
 
 Fork changes on top of `v0.16.0` (frapetti-dev), for the omp deployment. Diff range `frapetti/main..v0.17.0`.
 The accumulated fork rounds ship under plain semver, superseding the planned `0.16.0-fork.7` step-release.
+`v0.17.0` is a tag only, with no GitHub Release: its `publish.yml` still named the `@frapetti-dev` scope, so it could not publish. These changes reached users in 0.18.0.
 
 ### Added
 
@@ -402,3 +409,34 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `research/pi-model-call-and-ref-implementations.md`: research on Pi extension model-call/configuration APIs and analysis of implementations from three open-source permission extensions, including a rule-layer seed set (#2)
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
+
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/jonatsu/pi-verdict/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/jonatsu/pi-verdict/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/jonatsu/pi-verdict/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/jonatsu/pi-verdict/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/jonatsu/pi-verdict/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/jonatsu/pi-verdict/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/jonatsu/pi-verdict/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/jonatsu/pi-verdict/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/jonatsu/pi-verdict/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/jonatsu/pi-verdict/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/jonatsu/pi-verdict/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/jonatsu/pi-verdict/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/jonatsu/pi-verdict/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/jonatsu/pi-verdict/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/jonatsu/pi-verdict/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/jonatsu/pi-verdict/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/jonatsu/pi-verdict/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/jonatsu/pi-verdict/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/jonatsu/pi-verdict/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/jonatsu/pi-verdict/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/jonatsu/pi-verdict/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/jonatsu/pi-verdict/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/jonatsu/pi-verdict/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/jonatsu/pi-verdict/compare/v0.2.4...v0.3.0
+[0.2.4]: https://github.com/jonatsu/pi-verdict/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/jonatsu/pi-verdict/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/jonatsu/pi-verdict/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/jonatsu/pi-verdict/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/jonatsu/pi-verdict/releases/tag/v0.2.0

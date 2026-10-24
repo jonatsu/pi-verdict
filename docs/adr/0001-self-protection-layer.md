@@ -1,11 +1,11 @@
 # 0001 - Self-protection layer: gate integrity over configuration exemption
 
 ---
-status: superseded (2026-09-25: self-protection layer fully removed — see final revision below)
-date: 2025-08-27
+status: superseded by ADR-0005 (removed 2026-09-25; restored 2026-10-04)
+date: 2026-08-27
 ---
 
-**Restored 2026-10-05 by [ADR-0005](0005-self-protection-layer-restored.md)** — the final revision below
+**Restored 2026-10-04 by [ADR-0005](0005-self-protection-layer-restored.md)** — the final revision below
 (removal) is itself superseded: the layer is back, snapshot-free (no `IntegrityWatch`). Read ADR-0005 for the
 current decision; the text below stands as the historical record of the removal.
 
