@@ -584,9 +584,11 @@ function parseHashlineTargets(text: string): string[] {
 			targets.push(mv[1].trim());
 			continue;
 		}
+		// omp trims both ends of an apply-patch hunk header, so an indented one is still a header.
+		const hunk = hostTrim(raw);
 		for (const prefix of ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "]) {
-			if (line.startsWith(prefix) && line.slice(prefix.length).trim()) {
-				targets.push(line.slice(prefix.length).trim());
+			if (hunk.startsWith(prefix) && hunk.slice(prefix.length).trim()) {
+				targets.push(hunk.slice(prefix.length).trim());
 				break;
 			}
 		}

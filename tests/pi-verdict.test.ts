@@ -6158,6 +6158,17 @@ describe("action-line cap, layer 0 coverage, and exemption ordering (item 6a, Ph
 		expect(h.calls.length).toBe(0);
 	});
 
+	test("an indented apply-patch header is still a write target, as omp trims hunk headers", async () => {
+		for (const indent of ["  ", "\t"]) {
+			const h = session({});
+			const patch = "*** Begin Patch\n*** Add File: a.txt\n+x\n" + indent + "*** Update File: /etc/hosts\n@@\n-a\n+b\n*** End Patch";
+			const r = await toolCall(h, "edit", { input: patch });
+			expect(r?.block).toBe(true);
+			expect(r?.reason).toContain("system directory");
+			expect(h.calls.length).toBe(0);
+		}
+	});
+
 	test("layer 0: an eval cell whose shell-out names the verdicts dir is denied", async () => {
 		const h = session({});
 		const r = await toolCall(h, "eval", { language: "py", code: "!cat " + path.join(TMP_AGENT, "verdicts", "s1.jsonl") });
