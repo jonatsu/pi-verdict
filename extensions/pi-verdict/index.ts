@@ -411,44 +411,56 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"))) exact.add(f);
 
 	// Installed copy target: single-file form → the file itself (exact); module-directory
-	// and npm directory forms → the directory or package root (prefix). extRoot and ownFile are matched on both their
-	// lexical and realpath forms so a symlinked directory (e.g. macOS /var →
-	// /private/var) cannot misalign the set.
+	// and package forms → the directory or package root (prefix). Each install root is one
+	// directory in several spellings (lexical, realpath: a symlinked directory or a macOS
+	// /var → /private/var cannot misalign the set), so a match under any spelling protects
+	// the same relative targets under every spelling.
 	const extTargets = new Set<string>();
 	if (ownFile) {
-		const extRoots = new Set<string>();
+		type RootKind = "extensions" | "npm";
 		const agentBases = new Set(baseForms(agentDir));
 		const configRootBases = new Set([...agentBases].map((b) => path.dirname(b)));
-		for (const seg of [["extensions"], ["plugins", "node_modules"]]) {
-			const bases = seg.length === 2 ? new Set([...agentBases, ...configRootBases]) : agentBases;
-			for (const base of bases) {
-				for (const root of baseForms(path.join(base, ...seg))) extRoots.add(root);
-			}
+		const layouts: { seg: string[]; kind: RootKind; bases: Set<string> }[] = [
+			{ seg: ["extensions"], kind: "extensions", bases: agentBases },
+			// omp plugin installs, under the agent dir or (omp 18.1+) beside it
+			{ seg: ["plugins", "node_modules"], kind: "npm", bases: new Set([...agentBases, ...configRootBases]) },
+		];
+		const families: { kind: RootKind; roots: string[] }[] = [];
+		for (const { seg, kind, bases } of layouts) {
+			for (const base of bases) families.push({ kind, roots: baseForms(path.join(base, ...seg)) });
 		}
+		// Segments of the package root inside an install root. npm scopes are two-segment dirs
+		// (@scope/pkg): protect the package, not the whole scope dir.
+		const packageDepth = (segs: string[]): number => {
+			return segs[0].startsWith("@") ? 2 : 1;
+		};
 		const ownForms = new Set(baseForms(ownFile));
-		for (const extRoot of extRoots) {
-			for (const own of ownForms) {
-				if (!own.startsWith(extRoot + path.sep)) continue;
-				const segs = path.relative(extRoot, own).split(path.sep);
-				const singleFile = segs.length === 1;
-				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir.
-				// A single-file copy also protects the sibling adapter module it imports, since rewriting
-				// that changes the gate as surely as rewriting the main file.
-				const targets: { file: string; isExact: boolean }[] = singleFile
-					? [
-							{ file: own, isExact: true },
-							{ file: path.join(path.dirname(own), JEV_ADAPTER_FILE), isExact: true },
-						]
-					: [{ file: path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1)), isExact: false }];
-				// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
-				// imports the adapter from the root beside it, outside the directory prefix.
-				if (!singleFile && segs.length === 2 && !segs[0].startsWith("@") && path.basename(extRoot) === "extensions") {
-					targets.push({ file: path.join(extRoot, JEV_ADAPTER_FILE), isExact: true });
-				}
-				for (const { file, isExact } of targets) {
-					for (const f of baseForms(file)) {
-						(isExact ? exact : prefixes).add(f);
-						extTargets.add(f);
+		for (const { kind, roots } of families) {
+			for (const extRoot of roots) {
+				for (const own of ownForms) {
+					if (!own.startsWith(extRoot + path.sep)) continue;
+					const segs = path.relative(extRoot, own).split(path.sep);
+					const singleFile = segs.length === 1;
+					// A single-file copy also protects the sibling adapter module it imports, since rewriting
+					// that changes the gate as surely as rewriting the main file.
+					const targets: { rel: string[]; isExact: boolean }[] = singleFile
+						? [
+								{ rel: segs, isExact: true },
+								{ rel: [JEV_ADAPTER_FILE], isExact: true },
+							]
+						: [{ rel: segs.slice(0, packageDepth(segs)), isExact: false }];
+					// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
+					// imports the adapter from the root beside it, outside the directory prefix.
+					if (!singleFile && kind === "extensions" && segs.length === 2 && !segs[0].startsWith("@")) {
+						targets.push({ rel: [JEV_ADAPTER_FILE], isExact: true });
+					}
+					for (const root of roots) {
+						for (const { rel, isExact } of targets) {
+							for (const f of baseForms(path.join(root, ...rel))) {
+								(isExact ? exact : prefixes).add(f);
+								extTargets.add(f);
+							}
+						}
 					}
 				}
 			}

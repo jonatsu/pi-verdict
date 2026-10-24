@@ -3842,6 +3842,24 @@ describe("self-protection layer (ADR-0005)", () => {
 		});
 	});
 
+	test("a module-directory install behind a renamed extensions symlink still protects the adapter, in both spellings", async () => {
+		await withTempDir("pv-sp-rename-", async (base) => {
+			const agentDir = path.join(base, "agent");
+			const gateExt = path.join(base, "gate-ext");
+			fs.mkdirSync(path.join(gateExt, "pi-verdict"), { recursive: true });
+			fs.mkdirSync(agentDir, { recursive: true });
+			fs.symlinkSync(gateExt, path.join(agentDir, "extensions"));
+			const prot = buildProtectedSet(agentDir, path.join(fs.realpathSync(gateExt), "pi-verdict", "index.ts"));
+			for (const root of [path.join(agentDir, "extensions"), fs.realpathSync(gateExt)]) {
+				const adapter = path.join(root, "jev-adapter.ts");
+				expect(isProtectedWritePath(adapter, "/proj", prot)).toBe(true);
+				expect(prot.bashPatterns.some((re) => re.test(`cp x ${adapter}`))).toBe(true);
+				expect(isProtectedWritePath(path.join(root, "pi-verdict", "shell.ts"), "/proj", prot)).toBe(true);
+				expect(prot.bashPatterns.some((re) => re.test(`cp x ${path.join(root, "pi-verdict", "shell.ts")}`))).toBe(true);
+			}
+		});
+	});
+
 	test("a write into the module directory is denied when the agent dir's extensions is a symlink to the repo", async () => {
 		// The running copy lives at its realpath in the repo; the agent dir reaches it through the link.
 		const link = path.join(TMP_AGENT, "extensions");
