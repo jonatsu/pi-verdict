@@ -3536,19 +3536,27 @@ export interface RedactionPlatform {
 }
 const HOST_REDACTION_PLATFORM: RedactionPlatform = { caseInsensitive: CASE_INSENSITIVE_FS, win32: path.sep === "\\" };
 
-/** A double-quoted `"$HOME"` or a braced `${HOME}` (with an optional closing quote) directly before a
- *  `/`, including the forms that expand to `$HOME` while it is set: `${HOME:-x}`, `${HOME-x}`,
- *  `${HOME:=x}`, `${HOME=x}`, `${HOME:?x}` and `${HOME?x}`. `${HOME:+x}` is left alone because it expands
- *  to `x`, and a single-quoted `'$HOME'` is literal in the shell. The default text is capped so a
+/** A `$HOME` or braced `${HOME}` expansion, with the quotes the shell joins around it, directly before
+ *  a `/`: `"$HOME"/x`, `$HOME"/x"`, `${HOME}'/x'`, `"$HOME""/x"`. Braces may carry a default that
+ *  expands to `$HOME` while it is set: `${HOME:-x}`, `${HOME-x}`, `${HOME:=x}`, `${HOME=x}`,
+ *  `${HOME:?x}` and `${HOME?x}`. `${HOME:+x}` is left alone because it expands to `x`, and a
+ *  single-quoted `'$HOME'` is literal in the shell (the lookbehind). The default text is capped so a
  *  command full of unterminated `${HOME-` cannot make the scan quadratic. */
-const HOME_EXPANSION_BEFORE_SLASH = /"\$HOME"(?=\/)|"?\$\{HOME(?::?[-=?][^}]{0,200})?\}"?(?=\/)/g;
+const HOME_EXPANSION_BEFORE_SLASH = /(?<!')"?\$(?:HOME|\{HOME(?::?[-=?]([^}]{0,200}))?\})["']{0,3}(?=\/)/g;
 
-/** `bashPathTokens` knows only "/" separators and the bare `$HOME` spelling: spell a quoted or braced
- *  home expansion as `$HOME`, and unify a Windows command's backslashes, as denyPathCandidates does.
- *  A mis-read shell escape only adds candidates, which asks. */
+/** `bashPathTokens` knows only "/" separators and the bare `$HOME` spelling. The result holds the
+ *  command as written, a copy with each home expansion spelled `$HOME`, and each expansion's default
+ *  word on a line of its own (the tokenizer would glue `:-` onto it), so the tokens of all three are
+ *  candidates. A Windows command's backslashes are unified, as denyPathCandidates does. A mis-read
+ *  shell escape only adds candidates, which asks. */
 function commandForPathTokens(command: string, win32: boolean): string {
-	const home = command.replace(HOME_EXPANSION_BEFORE_SLASH, "$$HOME");
-	return win32 ? home.replace(/\\/g, "/") : home;
+	const defaults: string[] = [];
+	const canonical = command.replace(HOME_EXPANSION_BEFORE_SLASH, (_match, word: string | undefined) => {
+		if (word) defaults.push(word);
+		return "$HOME";
+	});
+	const all = canonical === command ? command : [command, canonical, ...defaults].join("\n");
+	return win32 ? all.replace(/\\/g, "/") : all;
 }
 
 /** Characters that end or begin a path word in a command or argument. */

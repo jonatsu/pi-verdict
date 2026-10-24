@@ -5349,6 +5349,36 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	test("a quote between the $HOME expansion and its slash still reaches the denyPaths ask", async () => {
+		const tail = ".pv-strict-tail";
+		const h = session({ denyPaths: [`~/${tail}/`] });
+		h.confirmAnswer = false;
+		for (const command of [
+			`cat $HOME"/${tail}/x"`,
+			`cat \${HOME}'/${tail}/x'`,
+			`cat "$HOME""/${tail}/x"`,
+			`cat "$HOME"'/${tail}/x'`,
+			`cat "\${HOME:-/x}"'/${tail}/x'`,
+		]) {
+			h.confirms = 0;
+			expect((await toolCall(h, "bash", { command }))?.block).toBe(true);
+			expect(h.confirms).toBe(1);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("the default word of a braced HOME expansion is still a path candidate", async () => {
+		const base = "/tmp/pv-default-word-base";
+		const h = session({ denyPaths: [base] });
+		h.confirmAnswer = false;
+		for (const command of [`HOME=; cat \${HOME:-${base}}/x`, `cat "\${HOME-${base}}"/x`, `cat \${HOME:=${base}}/x`]) {
+			h.confirms = 0;
+			expect((await toolCall(h, "bash", { command }))?.block).toBe(true);
+			expect(h.confirms).toBe(1);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
 	test("a single-quoted or non-defaulting $HOME is not read as the home directory", async () => {
 		const tail = ".pv-strict-tail";
 		const h = session({ denyPaths: [`~/${tail}/`] });
