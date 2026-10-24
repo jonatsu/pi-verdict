@@ -37,7 +37,7 @@ export function transcriptSafe(text: string): string {
 }
 
 /** Returns a past tool call as one capped transcript line: its command, its targets, its path, or its JSON. */
-export function toolCallLine(name: string, args: Record<string, unknown>): string {
+export function toolCallLine(name: string, args: Readonly<Record<string, unknown>>): string {
 	if (typeof args.command === "string") return `${name}: ${transcriptSafe(args.command)}`;
 	// A multi-target edit names its full target set, not only `args.path` or the raw patch (ADR-0009).
 	const access = toolAccess(name, args);
@@ -67,7 +67,7 @@ function boundedExcerpt(text: string, maxChars: number): string {
 /** Returns the action under review as its transcript line, uncapped by `MAX_ENTRY_CHARS`. `overCap` is true
  *  when the counted part exceeds `ACTION_LINE_MAX_CHARS`; the rule layer then asks before any model runs.
  *  A content excerpt or an unrecognised tool's JSON is appended bounded and never sets `overCap`. */
-export function actionCallLine(name: string, args: Record<string, unknown>): { line: string; overCap: boolean } {
+export function actionCallLine(name: string, args: Readonly<Record<string, unknown>>): { line: string; overCap: boolean } {
 	// The cap counts raw lengths, as the floor reads the raw text: zero-width padding cannot shrink an
 	// action below the cap. Only the displayed line is sanitized.
 	if (typeof args.command === "string") {

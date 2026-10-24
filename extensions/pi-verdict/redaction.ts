@@ -10,7 +10,7 @@ import { baseForms, CASE_INSENSITIVE_FS } from "./paths.ts";
 
 /** True when a tool call's arguments name a protected path; the caller then replaces the whole payload line
  *  with `PROTECTED_PATH_MARKER`. */
-export type RedactorFn = (args: Record<string, unknown>) => boolean;
+export type RedactorFn = (args: Readonly<Record<string, unknown>>) => boolean;
 
 /** The fixed text a redacted payload line becomes: a neutral privacy marker, not an instruction to the model. */
 export const PROTECTED_PATH_MARKER = "<protected-path>";
@@ -65,7 +65,7 @@ export function redactorFor(
 		}
 		return false;
 	};
-	return (args: Record<string, unknown>): boolean => {
+	return (args: Readonly<Record<string, unknown>>): boolean => {
 		const access = toolAccess("", args); // name-agnostic: direction/unknown both key on payload shape only
 		for (const target of [...access.gradedReads, ...access.gradedWrites]) if (hits(target)) return true;
 		if (access.command !== null)
@@ -81,8 +81,8 @@ export function redactorFor(
  *  case, and Windows spells separators with a backslash. A parameter so each branch is testable
  *  on any host. */
 export interface RedactionPlatform {
-	caseInsensitive: boolean;
-	win32: boolean;
+	readonly caseInsensitive: boolean;
+	readonly win32: boolean;
 }
 /** The platform this process runs on. */
 export const HOST_REDACTION_PLATFORM: RedactionPlatform = { caseInsensitive: CASE_INSENSITIVE_FS, win32: path.sep === "\\" };

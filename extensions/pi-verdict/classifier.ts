@@ -92,11 +92,11 @@ function parseVerdict(text: string): { verdict: VerdictWord; reason: string } | 
 }
 
 export interface ClassifierOutcome {
-	verdict: VerdictWord;
-	reason: string;
-	source: "model" | "fail-closed";
+	readonly verdict: VerdictWord;
+	readonly reason: string;
+	readonly source: "model" | "fail-closed";
 	/** Audit material (#54): the transcript sent and the last attempt's raw output, on both outcomes. */
-	auditRaw: { transcript: string; rawResponse: string; modelId: string; thinking: ThinkingLevel };
+	readonly auditRaw: Readonly<{ transcript: string; rawResponse: string; modelId: string; thinking: ThinkingLevel }>;
 }
 
 /** Per-attempt cap of the first layer, set above the measured classifier latency p90 (research/cache-sim). */
