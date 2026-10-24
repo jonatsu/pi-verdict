@@ -4646,6 +4646,35 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		}
 	});
 
+	test("shadow mode keeps the second model advisory for subagents: it is consulted and recorded, never decisive", async () => {
+		clearAudit();
+		try {
+			await withBridge(
+				{ audit: true, subagentGate: "auto", classifierFallbackMode: "shadow", classifierFallbackModel: "mock/fb" },
+				async (root, sub) => {
+					sub.responses = [ASK, ALLOW];
+					const r = await toolCall(sub, "bash", { command: "cargo build" });
+					expect(r?.block).toBe(true);
+					expect(String(r.reason)).toContain("shadow");
+					expect(sub.calls.length).toBe(2); // the second model still ran
+					expect(root.confirms).toBe(0);
+					const rec = readAudit().at(-1);
+					expect(rec.fallback).toMatchObject({ mode: "shadow", triggeredBy: "subagent-ask", verdict: "allow", effective: "deny" });
+				},
+			);
+			// the same setup under enforce is unchanged: an explicit second-model allow permits
+			await withBridge(
+				{ subagentGate: "auto", classifierFallbackMode: "enforce", classifierFallbackModel: "mock/fb" },
+				async (_root, sub) => {
+					sub.responses = [ASK, ALLOW];
+					expect(await toolCall(sub, "bash", { command: "cargo build" })).toBeUndefined();
+				},
+			);
+		} finally {
+			clearAudit();
+		}
+	});
+
 	test("auto: a call naming a protected path through a spelling the tokeniser misses is held without any model call", async () => {
 		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb", denyPaths: ["~/.ssh/"] }, async (_root, sub) => {
 			sub.responses = [ASK, ALLOW];

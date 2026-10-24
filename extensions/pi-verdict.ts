@@ -3940,7 +3940,8 @@ export interface FallbackAudit {
 	reason: string | null;
 	durationMs: number;
 	error: string | null;
-	/** enforce mode only: the verdict applied (pre headless-degradation) */
+	/** the verdict applied (pre headless-degradation); absent for a shadow-mode cascade, and "deny" for a
+	 *  subagent ask in shadow mode, where the opinion is recorded but never applied */
 	effective?: "allow" | "ask" | "deny";
 }
 
@@ -4286,7 +4287,8 @@ async function runConfidenceCascade(
 }
 
 /** Subagent gate: resolve an ask with no human answer. The UI-free counterpart of the
- *  cascade. Only an explicit second-model allow permits the call; every other outcome denies.
+ *  cascade. Only an explicit second-model allow in enforce mode permits the call; every other outcome
+ *  denies, and a shadow-mode opinion is recorded but never applied.
  *  Asks that did not come from the classifier (protected path, rule/fail-closed asks that
  *  exist only under autoDeny:false) never reach the model: `autoResolve` is "deny" there. */
 export async function resolveAskWithoutHuman(
@@ -4347,12 +4349,18 @@ export async function resolveAskWithoutHuman(
 	);
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";
-	const result: { verdict: "allow" | "deny"; reason: string } = allowed
-		? withhold(`second model allows: ${outcome.reason}`)
-		: {
-				verdict: "deny",
-				reason: `second model did not approve (${outcome.source === "model" ? outcome.verdict : "error"}): ${outcome.reason}`,
-			};
+	const opinion = outcome.source === "model" ? outcome.verdict : "error";
+	// Shadow mode records the second model's opinion and never lets it change the outcome, so with no human
+	// the ask denies whatever the model said.
+	const result: { verdict: "allow" | "deny"; reason: string } =
+		rules.classifierFallbackMode === "shadow"
+			? {
+					verdict: "deny",
+					reason: `no human answer; classifierFallbackMode is shadow, so the second model's opinion (${opinion}) is recorded only — ${v.reason}`,
+				}
+			: allowed
+				? withhold(`second model allows: ${outcome.reason}`)
+				: { verdict: "deny", reason: `second model did not approve (${opinion}): ${outcome.reason}` };
 	return {
 		...result,
 		fb: {
