@@ -141,7 +141,7 @@ Spawn a sub-instance that loads only the repo copy, against a throwaway agent di
 ## Release
 
 - Sequence: `chore(release): bump version` commit (bump `package.json` version; move `## [Unreleased]` to `## [X.Y.Z] - <date>`) + annotated tag `vX.Y.Z` + `bun run release-check` + push + GitHub Release. `gh release` commands are blocked by the built-in deny floor, so the user runs them from their own terminal.
-- This checkout has two remotes (`origin` = `jonatsu/pi-verdict`, `frapetti` = upstream) and no `gh` default, so pass `-R jonatsu/pi-verdict` to every `gh` command.
+- This checkout has three remotes (`origin` = `jonatsu/pi-verdict`, `frapetti` = `frapetti-dev/pi-verdict`, `upstream` = the original `jesset/pi-verdict`). `gh` defaults to `jonatsu/pi-verdict` through `gh repo set-default`, which is local git config; in a fresh clone, run `gh repo set-default jonatsu/pi-verdict` first, because otherwise `gh` may query the original repository.
 - Publishing is automated: Release published → `.github/workflows/publish.yml` (tag/version double-check + typecheck + tests + publish to GitHub Package Registry). The workflow runs as it stands at the tagged commit.
 
 ## Git & Workflow Conventions
