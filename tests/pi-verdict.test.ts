@@ -669,6 +669,12 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 		[`~/.omp/agent/${AGENT_DB}:1-5`, "agent database with a line selector"],
 		[`~/.omp/agent/${AGENT_DB}:settings`, "agent database with a table selector"],
 		[`~/.omp/agent/${AGENT_DB}?q=select 1`, "agent database with a query"],
+		// after `omp config init-xdg` the host flattens the agent dir into $XDG_DATA_HOME/omp
+		[`~/.local/share/omp/${AGENT_DB}`, "agent database in the XDG data home"],
+		[`~/.local/share/omp/${AGENT_DB}-wal`, "XDG agent database write-ahead log"],
+		[`~/.local/share/omp/${AGENT_DB}:settings`, "XDG agent database with a table selector"],
+		[`~/.local/share/omp/agent/${AGENT_DB}`, "agent database in an XDG agent subdirectory"],
+		[`~/.local/share/omp/agent/${AGENT_DB}-shm`, "XDG agent subdirectory shared memory"],
 		[path.join(TMP_AGENT, AGENT_DB), "agent database in a custom agent dir"],
 		[path.join(TMP_AGENT, `${AGENT_DB}-wal`), "write-ahead log in a custom agent dir"],
 		[path.join(TMP_AGENT, `${AGENT_DB}:settings`), "custom agent dir database with a table selector"],
@@ -682,6 +688,19 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 			expect(h.calls.length).toBe(0);
 		});
 	}
+	test("a directory that merely ends in omp is not the XDG data home", async () => {
+		await withTempDir(
+			".pv-s0db-",
+			async (cwd) => {
+				fs.mkdirSync(path.join(cwd, "pomp"));
+				fs.writeFileSync(path.join(cwd, "pomp", AGENT_DB), "x");
+				const h = session({}, { cwd });
+				expect(await toolCall(h, "read", { path: `pomp/${AGENT_DB}` })).toBeUndefined();
+				expect(h.calls.length).toBe(0);
+			},
+			os.homedir(),
+		);
+	});
 	test("a project file that merely shares the name keeps its rule allow", async () => {
 		await withTempDir(
 			".pv-s0db-",

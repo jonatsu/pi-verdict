@@ -1624,8 +1624,10 @@ const S0_SECRET = [
 	/\.config\/gh(\/|$)/i,
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
 	// omp's settings and auth store; the SQLite sidecar files hold the same pages, and a `:table` or
-	// `?q=` suffix is the host's own read selector on the database.
-	/\.(?:pi|omp)\/agent\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
+	// `?q=` suffix is the host's own read selector on the database. After `omp config init-xdg` the
+	// host keeps it at `$XDG_DATA_HOME/omp/agent.db` (the agent dir is flattened away), so a bare `omp`
+	// segment counts as well as the dotted `.omp/agent` and `.pi/agent` trees.
+	/(?:\.(?:pi|omp)\/agent|(?:^|\/)omp(?:\/agent)?)\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
 	/(^|\/)\.npmrc$/i,
