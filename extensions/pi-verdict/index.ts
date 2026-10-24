@@ -75,7 +75,8 @@ import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
-import { type AutoModeDeps, completeForClassifier, type ThinkingLevel } from "./classifier.ts";
+import type { ThinkingLevel } from "./classifier.ts";
+import { type AutoModeDeps, completeForClassifier } from "./completion.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { type RulesLoadReport, SessionState } from "./state.ts";
@@ -111,13 +112,8 @@ export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 export { resolveAgentDir } from "./agent-dir.ts";
 export { AuditLog, type AuditRecord, type FallbackAudit } from "./audit.ts";
-export {
-	type AutoModeDeps,
-	bindCompletion,
-	budgetedTimeoutMs,
-	type CompletionFn,
-	type PipelineHost,
-} from "./classifier.ts";
+export { budgetedTimeoutMs, type PipelineHost } from "./classifier.ts";
+export { type AutoModeDeps, bindCompletion, type CompletionFn } from "./completion.ts";
 export { BASH_PATH_TOKENS, bashPathTokens } from "./deny-paths.ts";
 export {
 	declineDetail,

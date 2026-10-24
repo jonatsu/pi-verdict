@@ -6,12 +6,12 @@ import {
 	ADJUDICATION_BUDGET_MS,
 	CLASSIFIER_TIMEOUT_MS,
 	type ClassifierOutcome,
-	type CompletionFn,
 	classifyWithModel,
 	FALLBACK_TIMEOUT_MS,
 	type PipelineHost,
 	type ThinkingLevel,
 } from "./classifier.ts";
+import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
 import { HOST_REDACTION_PLATFORM, PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
