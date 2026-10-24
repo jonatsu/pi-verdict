@@ -12,7 +12,7 @@ import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
-import { classifyReads, classifyWrites, globStaysInProject, s0DirectoryBeneath } from "./floor.ts";
+import { classifyReads, classifyWrites, globStaysInProject, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
 import type { RedactorFn } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./shell.ts";
@@ -75,13 +75,17 @@ export function classifyByRules(toolName: string, input: Record<string, unknown>
 	);
 }
 
+const DEVICE_TRANSPORTS: ReadonlySet<string> = new Set(["read", "write"]);
+
 /** Reads the call's targets once for every step. */
 function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleCall {
 	const access = toolAccess(toolName, input);
 	const relocatable = access.direction === "observing" && toolName === "read" && access.reads.some((t) => readMayRelocate(t, ctx.cwd));
-	const internalUrl =
-		(access.direction === "observing" || toolName === "ast_edit") &&
-		[...access.gradedReads, ...access.gradedWrites].some(isHostInternalUrl);
+	// A device URL is the floor's to grade only through the `read` and `write` transports omp drives
+	// devices with; any other tool naming one is held back like every internal URL.
+	const internalUrl = [...access.gradedReads, ...access.gradedWrites]
+		.filter(isHostInternalUrl)
+		.some((t) => (isDeviceUrl(t) ? !DEVICE_TRANSPORTS.has(toolName) : access.direction === "observing" || toolName === "ast_edit"));
 	return {
 		toolName,
 		input,
@@ -141,10 +145,11 @@ function withholdFloorAllow(grade: RuleResult, call: RuleCall, ctx: RuleContext)
 
 /** Denies when a user `deny` rule matches any target. Only a known tool's targets count, so a rule never
  *  keys on an unknown tool's payload by accident; an eval cell's code text is a deny target, never an
- *  allow target. */
+ *  allow target. An internal URL is also a deny target as written, because its path form collapses `//`. */
 function userDeny(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	const { access, targets } = call;
-	const denyTargets = access.kind === "code" && access.command !== null ? [...targets, access.command] : targets;
+	const urls = access.direction === "unknown" ? [] : [...access.gradedReads, ...access.gradedWrites].filter(isHostInternalUrl);
+	const denyTargets = [...targets, ...urls, ...(access.kind === "code" && access.command !== null ? [access.command] : [])];
 	for (const re of ctx.user.deny) {
 		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
 	}

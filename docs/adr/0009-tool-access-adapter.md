@@ -401,3 +401,23 @@ changed:
   and `write memory://x` are `allow`). Writes into a scheme whose backing directory the user protects are
   therefore not asked; see `TODO.md` item 3. The transcript redactor still hides a base spelled
   in it.
+
+## Amendment (2026-10-25): omp tool devices
+
+- *Registered schemes, `xd`.* An omp `xd://` URL names a tool device, never a file: the scheme is
+  device-backed and the router never locates it on disk. A `read` of a device URL returns documentation
+  the host generates (the listing, a tool's documentation and schema, a usage line, or a documentation
+  topic), and a `write xd://<tool>` runs the tool through omp's tool wrapper, which emits the tool's own
+  `tool_call`, so the gate adjudicates that call separately
+  ([research/2026-10-25-xd-device-dispatch.md](../../research/2026-10-25-xd-device-dispatch.md)). The floor
+  grades both as allow, and the internal-URL rule above does not withhold it for `read` and `write`, the two
+  tools omp drives devices with; any other tool naming a device URL is held back as before. A write to the
+  devices that run host code with no nested call (`resolve`, `reject`, `propose`, `report_issue`), to the
+  root or a topic URL, or to a name outside letters, digits, `_` and `-` stays gray. The allow also requires
+  every resolved form of the URL text to stay inside the project, because pi registers no `xd` scheme and
+  opens the text as the relative path `xd:/<name>`. Self-protection, the floor's denies, user `deny`,
+  `denyPaths`, the `.omp` gate and the code-loading ask still run first, and a user `deny` regex also tests
+  an internal URL target as written, because its path form collapses `//`.
+- *Accepted residual.* The device allow relies on omp wrapping every tool in its canonical tool map; a host
+  that dispatched an unwrapped tool would run it with only the outer `write` adjudicated. The research
+  record names the host lines to re-check on each upgrade.

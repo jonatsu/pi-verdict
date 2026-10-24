@@ -184,7 +184,9 @@ tool_call
   │     │   path that does not exist, an internal URL (ssh://, vault://), or eval's code
   │     ├─ a mutating call naming no target at all → opaque ask (ADR-0009)
   │     ├─ otherwise the floor's own grade stands: a read no sensitivity rule flags,
-  │     │   a write inside the project, or an in-project glob listing → allow
+  │     │   a write inside the project, or an in-project glob listing → allow;
+  │     │   an omp xd:// device read (docs) or a write that runs a tool → allow,
+  │     │   since the tool it runs is gated as its own call (resolve/reject/propose gray)
   │     ├─ note: a scope tool's glob path is graded as spelled and by its literal prefix
   │     ├─ note: eval's code text: deny/denyPaths/.omp apply to the whole text, user
   │     │   allow never does; the bash floor covers a py cell's shell-out lines only

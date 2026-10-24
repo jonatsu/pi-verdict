@@ -7513,20 +7513,6 @@ describe("host path spelling (ADR-0009)", () => {
 		}
 	});
 
-	test("an xd:// device URL is not graded as a file path, so a tool name ending in _history reaches the classifier", async () => {
-		const h = session({});
-		h.responses = [{ text: "<verdict>allow</verdict> device" }];
-		for (const [tool, input] of [
-			["read", { path: "xd://mcp__sequential_thinking_get_thinking_history" }],
-			["write", { path: "xd://mcp__sequential_thinking_get_thinking_history", content: "{}" }],
-			["read", { path: "XD://tool_credentials" }],
-		] as const) {
-			h.calls.length = 0;
-			expect(await toolCall(h, tool, input)).toBeUndefined();
-			expect(h.calls).toHaveLength(1);
-		}
-	});
-
 	test("hostPathForms removes shell escapes for read paths only", () => {
 		const forms = hostPathForms("~/Tax\\ Returns/a\\(1\\).pdf", { unescapeShell: true });
 		expect(forms).toContain(`${home}/Tax Returns/a(1).pdf`);
@@ -7565,6 +7551,95 @@ describe("host path spelling (ADR-0009)", () => {
 			},
 			home,
 		);
+	});
+});
+
+describe("omp xd:// device calls (ADR-0009)", () => {
+	const expectRuleAllow = async (h: ReturnType<typeof session>, tool: string, input: Record<string, unknown>): Promise<void> => {
+		h.calls.length = 0;
+		expect(await toolCall(h, tool, input)).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+	};
+	const expectClassifier = async (h: ReturnType<typeof session>, tool: string, input: Record<string, unknown>): Promise<void> => {
+		h.calls.length = 0;
+		expect((await toolCall(h, tool, input))?.block).toBe(true);
+		expect(h.calls).toHaveLength(1);
+	};
+
+	test("a device write that runs a tool is a rule allow, because the tool is gated as its own call", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>ask</verdict> state change" }];
+		await expectRuleAllow(h, "write", { path: "xd://mcp__lazy_skills_server_load_skill", content: '{"name":"python-style"}' });
+		await expectRuleAllow(h, "write", { path: "xd://mcp__sequential_thinking_get_thinking_history", content: "{}" });
+		await expectRuleAllow(h, "write", { path: "xd://bash", content: '{"command":"ls"}' });
+	});
+
+	test("a device read returns documentation, so it is a rule allow", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		for (const p of [
+			"xd://mcp__x",
+			"xd://",
+			"xd://eval/py",
+			"xd://mcp__sequential_thinking_get_thinking_history",
+			"XD://tool_credentials",
+		]) {
+			await expectRuleAllow(h, "read", { path: p });
+		}
+	});
+
+	test("a staged-action, plan or report device write still reaches the classifier", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		for (const p of ["xd://resolve", "xd://reject", "xd://propose", "xd://report_issue", "XD://Resolve"]) {
+			await expectClassifier(h, "write", { path: p, content: "apply it" });
+		}
+	});
+
+	test("a device write the host rejects as malformed still reaches the classifier", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		for (const p of ["xd://", "xd://eval/py", "xd://a.b", "xd://../x", "xd://a b"]) {
+			await expectClassifier(h, "write", { path: p, content: "{}" });
+		}
+	});
+
+	test("the @ shorthand and an upper-case scheme grade like the plain URL", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		await expectRuleAllow(h, "write", { path: "@xd://mcp__x", content: "{}" });
+		await expectRuleAllow(h, "write", { path: "XD://mcp__x", content: "{}" });
+		await expectRuleAllow(h, "read", { path: "@xd://mcp__x" });
+		await expectClassifier(h, "write", { path: "@xd://resolve", content: "apply it" });
+		await expectClassifier(h, "write", { path: "@XD://REJECT", content: "drop it" });
+	});
+
+	test("a device URL outside the read and write transports is not a rule allow", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		await expectClassifier(h, "grep", { pattern: "x", path: "xd://mcp__x" });
+		await expectClassifier(h, "edit", { path: "xd://mcp__x", oldText: "a", newText: "b" });
+	});
+
+	test("a user deny rule matching a device URL still denies", async () => {
+		const h = session({ deny: ["^xd://mcp__lazy_skills_"] });
+		h.calls.length = 0;
+		const r = await toolCall(h, "write", { path: "xd://mcp__lazy_skills_server_load_skill", content: "{}" });
+		expect(r?.block).toBe(true);
+		expect(r?.reason).toContain("user deny rule");
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a device spelling whose path leaves the project through a symlink is not a rule allow", async () => {
+		await withTempDir("pv-xd-out-", async (outside) => {
+			await withTempDir("pv-xd-", async (cwd) => {
+				fs.symlinkSync(outside, path.join(cwd, "xd:"));
+				const h = session({}, { cwd });
+				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				await expectClassifier(h, "write", { path: "xd://authorized_keys", content: "{}" });
+				await expectClassifier(h, "read", { path: "xd://authorized_keys" });
+			});
+		});
 	});
 });
 
