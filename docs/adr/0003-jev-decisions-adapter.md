@@ -57,3 +57,11 @@ denied again. The coverage differs by install form, as `buildProtectedSet` deriv
   open.
 
 This ADR's decisions are unchanged.
+
+## Amendment (2026-10-24): omp support
+
+The limitation "omp hosts are unaffected (no `registerProvider`)" no longer holds. omp exposes
+`registerProvider` with its own signature, and the adapter registers `typesafe/jev-latest` there so that
+`classifierModel` resolves. The host does not dispatch the completion: `completeForClassifier` in
+`pi-verdict.ts` calls `streamDecisions` directly, with the key from the host's OpenRouter credential or the
+transport's environment variable. Without a key the setting falls back to the session model with a warning.
