@@ -2294,6 +2294,30 @@ function hashlineHeaderPaths(trimmedBody: string): string[] {
 	return [...forms];
 }
 
+/** The patch envelope markers omp consumes around a hashline header. */
+const HASHLINE_ENVELOPE_MARKERS = ["*** Begin Patch", "*** End Patch", "*** Abort"] as const;
+
+/** The row with leading bracketed envelope markers removed, closed (`[*** Begin Patch] [a#1A2B]`) or
+ *  unclosed (`[*** Begin Patch [a#1A2B]`), repeatedly; a row that is only markers comes back as the
+ *  last bare marker, and a row without one is returned unchanged. Scans by index, so it runs in
+ *  linear time. Mirrors omp's `unbracket_envelope_markers` (18.12.6). */
+function unbracketEnvelopeMarkers(line: string): string {
+	let at = 0;
+	for (;;) {
+		if (line[at] !== "[") return line.slice(at);
+		let inner = at + 1;
+		while (inner < line.length && /\s/.test(line[inner])) inner++;
+		const marker = HASHLINE_ENVELOPE_MARKERS.find((m) => line.startsWith(m, inner));
+		if (marker === undefined) return line.slice(at);
+		let tail = inner + marker.length;
+		while (tail < line.length && /\s/.test(line[tail])) tail++;
+		if (line[tail] === "]") tail++;
+		while (tail < line.length && /\s/.test(line[tail])) tail++;
+		if (tail >= line.length) return marker;
+		at = tail;
+	}
+}
+
 /** Unwrap a hashline-wrapped `[path#TAG]` value (`write` may carry one) to the
  *  inner path; anything outside the strict bracket shape returns unchanged —
  *  same contract as omp's `unwrapHashlineHeaderPath`. */
@@ -2315,10 +2339,15 @@ function parseHashlineTargets(text: string): string[] {
 	for (const raw of stripped.split("\n")) {
 		// omp trims the line end before it reads a header, so `[path#TAG] ` is still a header.
 		const line = raw.trimEnd();
-		if (line.startsWith("[") && line.endsWith("]")) {
-			targets.push(...hashlineHeaderPaths(line.slice(1, -1).trim()));
-			continue;
+		// A header behind bracketed envelope markers is graded peeled and as written.
+		const peeled = unbracketEnvelopeMarkers(line);
+		let isHeader = false;
+		for (const row of peeled === line ? [line] : [peeled, line]) {
+			if (!row.startsWith("[") || !row.endsWith("]")) continue;
+			targets.push(...hashlineHeaderPaths(row.slice(1, -1).trim()));
+			isHeader = true;
 		}
+		if (isHeader) continue;
 		const legacy = line.trimStart();
 		if (legacy.startsWith("¶")) {
 			let i = 0;

@@ -563,6 +563,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "edit header behind an envelope marker still targets its .git metadata path",
+			family: "tool-access",
+			tool: "edit",
+			input: { input: `[${fx.work}/a.ts#1a2b]\nPUT 1.=1:\n+x\n[*** Begin Patch] [.git/config#3c4d]\nPUT 1.=1:\n+y\n` },
+			ref: "ADR-0009",
+			expected: { layer: "rule", reasonIncludes: ".git metadata" },
+		},
+		{
 			label: "pathless edit with no parseable header stays opaque",
 			family: "tool-access",
 			tool: "edit",

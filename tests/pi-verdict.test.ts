@@ -6466,4 +6466,30 @@ describe("hashline header spellings (ADR-0009)", () => {
 		expect(h.calls).toHaveLength(0);
 		expect(h.confirms).toBe(0);
 	});
+
+	test("an envelope marker before a header does not hide its target", async () => {
+		const h = session({});
+		for (const row of [
+			"[*** Begin Patch] [.git/config#ABCD]",
+			"[*** Begin Patch [.git/config#ABCD]",
+			"[  *** Begin Patch   ]   [.git/config#ABCD]",
+			"[*** Begin Patch][*** Begin Patch] [.git/config#ABCD]",
+			"[*** End Patch] [.git/config#ABCD]",
+			"[*** Abort] [.git/config#AUTO] ",
+			"[*** Begin Patch] [*** Update File: .git/config#ABCD]",
+		]) {
+			expect((await toolCall(h, "edit", { input: `${row}\n+x\n` }))?.block).toBe(true);
+		}
+		const behind = await toolCall(h, "edit", { input: "[src/a.ts#1A2B]\n1:x\n[*** Begin Patch] [.git/config#ABCD]\n1:y\n" });
+		expect(behind?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a benign header behind an envelope marker keeps its rule allow", async () => {
+		const h = session({});
+		for (const row of ["[*** Begin Patch] [src/a.ts#1A2B]", "[*** Begin Patch [src/a.ts#1A2B]"]) {
+			expect(await toolCall(h, "edit", { input: `${row}\n1:x\n` })).toBeUndefined();
+		}
+		expect(h.confirms).toBe(0);
+	});
 });
