@@ -16,9 +16,7 @@ uncertainty → friction     (never: uncertainty → permission)
 
 ### 2. Self-protection and deterministic floors come before AI
 
-The snapshot-free self-protection layer runs first. It hard-denies writes to `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, and the installed extension copy under a recognized root; policy reads pass.
-
-It also denies agent reads and writes to `<agentDir>/verdicts/`. No user `allow` rule, `builtinDenyFloor: false`, or `autoDeny: false` lifts these denies.
+The snapshot-free self-protection layer runs first. It hard-denies agent writes to the gate's own files (the policy file, the trust store, and the installed extension copy under a recognized root) and agent reads of the trust store and of `<agentDir>/verdicts/`; reads of the policy file pass. [docs/layers.md](./layers.md) holds the exact list. No user `allow` rule, `builtinDenyFloor: false`, or `autoDeny: false` lifts these denies.
 
 Development checkouts are not protected, and the layer does not keep a baseline or restore files. Bash-side matching uses substrings and can be obfuscated.
 
@@ -32,7 +30,7 @@ Known limitation, stated honestly: bash-side path extraction is token-level — 
 
 ### 4. Adjudicate by impact, not by complexity
 
-A long command is not automatically dangerous, and a short one is not automatically safe — so the deciding axis is *impact*, never length or syntactic complexity: long read-only actions can auto-allow; short destructive ones deny or ask. This is what keeps protection meaningful without producing approval fatigue.
+A long command is not automatically dangerous, and a short one is not automatically safe — so the deciding axis is *impact*, never length or syntactic complexity: long read-only actions can auto-allow; short destructive ones deny or ask. This is what keeps protection meaningful without producing approval fatigue. The one length rule is a safety limit, not a judgment: an action longer than the rule layer can read in full (`BASH_MAX_MATCH_LEN`, 8192 characters) is asked about before any user `allow` rule can admit it, because no rule can vouch for a tail it never read.
 
 ### 5. Verdicts are informed judgments, not proofs
 
@@ -44,7 +42,7 @@ The classifier receives only what it needs to judge: a condensed transcript (use
 
 ### 7. Protected resources are matched by canonical identity
 
-Path matching compares lexical and realpath forms (#20), with case folding on case-insensitive filesystems and macOS firmlink prefixes (#21). Relative, `~`, `$HOME`, and environment-variable spellings are normalized. The path-sensitivity floor reconstructs non-existent targets from the nearest realpath ancestor; `denyPaths` and user-rule path targets match base tier plus the kernel-true spelling for `..`-spellings, with no ancestor rebuild, so such targets may fall to the classifier's existence hint. A path that merely *looks* workspace-local is not trusted as workspace-local.
+Path matching compares lexical and realpath forms (#20), with case folding on case-insensitive filesystems and macOS firmlink prefixes (#21). Relative, `~`, and `$HOME` spellings are expanded, `${HOME}` is caught by the strict transcript-redactor match, and every file-tool target is graded in each form the host can resolve it to (omp's own path rewrites, read selectors, shell-escaped spaces, WSL drive aliases; [ADR-0009](./adr/0009-tool-access-adapter.md)). Other environment variables are not expanded. The path-sensitivity floor reconstructs non-existent targets from the nearest realpath ancestor; `denyPaths` and user-rule path targets match base tier plus the kernel-true spelling for `..`-spellings, with no ancestor rebuild, so such targets may fall to the classifier's existence hint. A path that merely *looks* workspace-local is not trusted as workspace-local.
 
 ### 8. User policy may weaken only the built-in floor by explicit opt-in
 
@@ -64,11 +62,11 @@ pi-verdict makes tool authorization safer and more explainable; it provides no O
 
 ## Directions (not yet shipped)
 
-**Capability-aware authorization.** Decisions today key off tool names, paths, and command strings, with the classifier covering uncovered tools (MCP and custom tools land in the gray zone by construction — no user rule silently covers a tool it does not name). Expressing policy in terms of capabilities (`filesystem.write`, `network`, `credential-access`, `destructive`, …) instead of command spellings is a direction we find right, and it is not implemented today. When it ships, this section moves into the principles above.
+**Capability-aware authorization.** Decisions today key off tool names, paths, and command strings, with the classifier covering uncovered tools (MCP and custom tools reach the classifier unless you name them in `tools`; their `path`, `paths` and patch fields still feed the `denyPaths` and `.omp` asks, and a `tools` entry never skips those asks). Expressing policy in terms of capabilities (`filesystem.write`, `network`, `credential-access`, `destructive`, …) instead of command spellings is a direction we find right, and it is not implemented today. When it ships, this section moves into the principles above.
 
 ## Summary
 
-The self-protection layer runs before configurable rules: it blocks gated writes to `<agentDir>/config/pi-verdict.json`, `<agentDir>/config/pi-verdict-trust.json`, and the recognized installed copy. Policy reads pass; reads and writes to `<agentDir>/verdicts/` are denied.
+The self-protection layer runs before configurable rules. The full layer order, with the verdict source each layer reports, is in [docs/layers.md](./layers.md); in outline:
 
 ```text
                      Tool Call
@@ -80,13 +78,14 @@ The self-protection layer runs before configurable rules: it blocks gated writes
                   deny ◄───┼──► continue
                            │
                            ▼
-              ┌─────────────────────┐
-              │ Deterministic floor │   (regexes, path grades, denyPaths — no LLM)
-              └──────────┬──────────┘
-                 deny ◄──┼──► clearly safe → allow
-                         │
-                       gray
-                         ▼
+         ┌───────────────────────────────────┐
+         │ Deterministic rule layer          │   (built-in floor, your deny rules, protected-path
+         │                                   │    and over-cap asks, your allow rules and tools — no LLM)
+         └─────────────────┬─────────────────┘
+          deny / ask ◄─────┼─────► allow   (a floor grade or one of your rules)
+                           │
+                         gray
+                           ▼
               ┌────────────────────┐
               │  LLM classifier    │   (semantic judgment, fail-closed)
               └─────────┬──────────┘
