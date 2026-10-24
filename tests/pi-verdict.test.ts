@@ -6116,6 +6116,21 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("a merge-request URL target is never a rule allow, like pr:// and issue://", async () => {
+		const h = session({ allow: ["^.*$"], tools: ["read", "grep"] });
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		for (const [tool, input] of [
+			["read", { path: "mr://1/diff" }],
+			["read", { path: "@mr://1" }],
+			["grep", { pattern: "x", path: "mr://1/diff" }],
+			["read", { path: "MR://1/diff" }],
+		] as const) {
+			h.calls.length = 0;
+			expect((await toolCall(h, tool, input))?.block).toBe(true);
+			expect(h.calls).toHaveLength(1);
+		}
+	});
+
 	test("hostPathForms removes shell escapes for read paths only", () => {
 		const forms = hostPathForms("~/Tax\\ Returns/a\\(1\\).pdf", { unescapeShell: true });
 		expect(forms).toContain(`${home}/Tax Returns/a(1).pdf`);

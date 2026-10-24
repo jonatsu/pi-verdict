@@ -986,6 +986,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		},
 		{
+			label: "read of a merge-request URL is never a rule allow",
+			family: "host-path",
+			tool: "read",
+			input: { path: "mr://1/diff" },
+			ref: "ADR-0009",
+			expected: { layer: "classifier" },
+		},
+		{
 			label: "read of an ssh URL is not carried by a user allow rule",
 			family: "host-path",
 			tool: "read",

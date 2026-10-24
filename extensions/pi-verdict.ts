@@ -1797,7 +1797,7 @@ function classifyReads(targets: string[], cwd: string, floorOn: boolean): RuleRe
 // transcript redactor all read their targets through `hostPathForms` (ADR-0009 amendment).
 // ============================================================================
 
-/** URL schemes that omp's InternalUrlRouter registers (18.6.1). Only these are URLs to the host;
+/** URL schemes that omp's InternalUrlRouter registers (18.12.6). Only these are URLs to the host;
  *  any other `scheme://` text is an ordinary relative path. */
 const HOST_INTERNAL_SCHEMES: ReadonlySet<string> = new Set([
 	"skill",
@@ -1814,6 +1814,7 @@ const HOST_INTERNAL_SCHEMES: ReadonlySet<string> = new Set([
 	"vault",
 	"issue",
 	"pr",
+	"mr",
 	"mcp",
 	"omp",
 	"xd",
