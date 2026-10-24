@@ -44,7 +44,7 @@ import autoMode, {
 	setXdgConfigRootsForTests,
 	shellWords,
 } from "../extensions/pi-verdict/index.ts";
-import { HOST_BUDGET_MARGIN_MS, readHostHandlerBudget } from "../extensions/pi-verdict/subagent.ts";
+import { HOST_BUDGET_MARGIN_MS, readHostHandlerBudget, subagentAskWindow } from "../extensions/pi-verdict/subagent.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -5609,6 +5609,33 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 			expect(r?.block).toBe(true);
 			expect(root.confirms).toBe(0);
 		});
+	});
+});
+
+describe("subagent ask window (subagentAskWindow)", () => {
+	const M = HOST_BUDGET_MARGIN_MS;
+	const budget = (ms: number) => ({ ms, configured: true });
+
+	test("with no host budget (pi) the ask timeout alone applies", () => {
+		expect(subagentAskWindow(60_000, null, 0)).toEqual({ ms: 60_000, hostLimited: false });
+		expect(subagentAskWindow(60_000, null, 10_000_000)).toEqual({ ms: 60_000, hostLimited: false });
+	});
+
+	test("a budget below the margin, or elapsed time past the budget, leaves a zero host-limited window", () => {
+		expect(subagentAskWindow(60_000, budget(M - 1), 0)).toEqual({ ms: 0, hostLimited: true });
+		expect(subagentAskWindow(60_000, budget(30_000), 31_000)).toEqual({ ms: 0, hostLimited: true });
+		expect(subagentAskWindow(60_000, budget(30_000), 30_000 - M)).toEqual({ ms: 0, hostLimited: true });
+	});
+
+	test("host time below the ask timeout is the window, measured from the handler's start, and marks it host-limited", () => {
+		expect(subagentAskWindow(60_000, budget(30_000), 0)).toEqual({ ms: 30_000 - M, hostLimited: true });
+		expect(subagentAskWindow(60_000, budget(30_000), 5_000)).toEqual({ ms: 25_000 - M, hostLimited: true });
+	});
+
+	test("host time at or above the ask timeout leaves the ask timeout in charge", () => {
+		expect(subagentAskWindow(60_000, budget(60_000 + M), 0)).toEqual({ ms: 60_000, hostLimited: false });
+		expect(subagentAskWindow(60_000, budget(200_000), 0)).toEqual({ ms: 60_000, hostLimited: false });
+		expect(subagentAskWindow(60_000, budget(60_000 + M), 1)).toEqual({ ms: 60_000 - 1, hostLimited: true });
 	});
 });
 
