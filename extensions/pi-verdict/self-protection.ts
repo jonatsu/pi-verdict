@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { collectStrings, commandText, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
 import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
-import { baseForms, fold, isWithin, kernelForms, rebuiltForms } from "./paths.ts";
+import { baseForms, isWithin, kernelForms, rebuiltForms, relativeBeneath } from "./paths.ts";
 import type { RuleResult } from "./shell.ts";
 
 // ============================================================================
@@ -134,7 +134,7 @@ function installTargets(agentDir: string, ownFile: string): InstallTarget[] {
 	for (const { kind, roots } of installRootFamilies(agentDir)) {
 		for (const extRoot of roots) {
 			for (const own of ownForms) {
-				const rel = pathBeneath(own, extRoot);
+				const rel = relativeBeneath(own, extRoot);
 				if (rel === null) continue;
 				for (const { rel: targetRel, isExact } of relativeInstallTargets(kind, rel.split(path.sep))) {
 					for (const root of roots) {
@@ -210,23 +210,17 @@ function pathAlternation(forms: string[], agentDir: string): RegExp {
 	const home = os.homedir();
 	const alts = new Set<string>(forms.map(escapeRegExp));
 	for (const f of forms) {
-		const homeRel = pathBeneath(f, home);
+		const homeRel = relativeBeneath(f, home);
 		if (homeRel !== null) {
 			alts.add(escapeRegExp("~/" + homeRel));
 			alts.add("\\$HOME/" + escapeRegExp(homeRel));
 		}
 		for (const base of baseForms(agentDir)) {
-			const agentRel = pathBeneath(f, base);
+			const agentRel = relativeBeneath(f, base);
 			if (agentRel !== null) alts.add("\\$PI_CODING_AGENT_DIR/" + escapeRegExp(agentRel));
 		}
 	}
 	return new RegExp(`(?:${[...alts].join("|")})`);
-}
-
-/** Returns the part of `child` below `base`, or null when `child` is `base` itself or lies outside it. */
-function pathBeneath(child: string, base: string): string | null {
-	if (fold(child) === fold(base) || !isWithin(child, base)) return null;
-	return child.slice(base.endsWith(path.sep) ? base.length : base.length + 1);
 }
 
 /** Returns true when a write to `rawPath` lands in the protected set in any form it resolves to. A

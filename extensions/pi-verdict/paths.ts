@@ -162,3 +162,10 @@ export function isWithin(child: string, base: string): boolean {
 	const b = fold(base);
 	return c === b || c.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
 }
+
+/** Returns the part of `child` below `base` in `child`'s own spelling, or null when `child` is `base`
+ *  itself or lies outside it; compared as `isWithin` compares. */
+export function relativeBeneath(child: string, base: string): string | null {
+	if (fold(child) === fold(base) || !isWithin(child, base)) return null;
+	return child.slice(base.endsWith(path.sep) ? base.length : base.length + 1);
+}
