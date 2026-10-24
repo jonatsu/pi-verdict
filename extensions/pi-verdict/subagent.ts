@@ -44,40 +44,59 @@ export const HOST_RETURN_MARGIN_MS = 1_000;
 export const HOST_BUDGET_HEADROOM_MS = 60_000;
 
 const HANDLER_TIMEOUT_KEY = ["extensionHandlers", "toolCallTimeoutMs"] as const;
+const OMP_DEFAULT_BUDGET: HostBudget = { ms: OMP_HANDLER_TIMEOUT_DEFAULT_MS, configured: false };
 
-function readTimeoutSetting(layer: unknown): number | undefined {
+/** The budget omp derives from a configured value: a configured `null` is unset, and a non-positive,
+ *  non-finite or non-number value falls back to the default. Returns undefined when unset. */
+function budgetFromValue(value: unknown): HostBudget | undefined {
+	if (value === undefined || value === null) return undefined;
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? { ms: value, configured: true } : OMP_DEFAULT_BUDGET;
+}
+
+function layerValue(layer: unknown): unknown {
 	let node: unknown = layer;
 	for (const key of HANDLER_TIMEOUT_KEY) {
 		if (typeof node !== "object" || node === null) return undefined;
-		// Safe: a non-null object, and every property read is narrowed below.
+		// Safe: a non-null object, and every property read is narrowed by budgetFromValue.
 		node = (node as Record<string, unknown>)[key];
 	}
-	if (node === undefined || node === null) return undefined;
-	// omp replaces a non-positive or non-finite value with its default.
-	return typeof node === "number" && Number.isFinite(node) && node > 0 ? node : OMP_HANDLER_TIMEOUT_DEFAULT_MS;
+	return node;
 }
+
+const loadSettingsManager = async (): Promise<unknown> => (await import("@earendil-works/pi-coding-agent")).SettingsManager;
 
 /** Returns the host's per-handler `tool_call` budget, or null on a host without one (pi). On omp it reads
  *  `extensionHandlers.toolCallTimeoutMs` through the legacy `SettingsManager.create(cwd)`, which resolves the
- *  calling session's settings while a handler runs; the project layer wins over the global one. A failed read
- *  assumes the omp default, which can only close a dialog early. */
-export async function readHostHandlerBudget(pi: object, cwd: string): Promise<HostBudget | null> {
+ *  calling session's settings while a handler runs. `rawValue` gives the value omp enforces, merged over every
+ *  layer; without it the project layer wins over the global one, which misses a `--config` overlay, runtime
+ *  overrides and an overlay parent's view. A failed read assumes the omp default of 30000 ms. Any value that
+ *  differs from the enforced one moves the dialog's close: a longer enforced budget closes it early, and a
+ *  shorter one lets omp block the call first, as without this read. */
+export async function readHostHandlerBudget(
+	pi: object,
+	cwd: string,
+	loader: () => Promise<unknown> = loadSettingsManager,
+): Promise<HostBudget | null> {
 	if (!("logger" in pi && "typebox" in pi)) return null;
 	try {
-		const { SettingsManager } = await import("@earendil-works/pi-coding-agent");
-		const manager: unknown = SettingsManager.create(cwd);
-		// Safe: each method is checked to be a function before the call; a null manager throws into the catch.
-		const m = manager as { getProjectSettings?: unknown; getGlobalSettings?: unknown };
-		const layer = (name: "getProjectSettings" | "getGlobalSettings"): unknown => {
-			const get = m[name];
-			return typeof get === "function" ? get.call(manager) : undefined;
-		};
-		const ms = readTimeoutSetting(layer("getProjectSettings")) ?? readTimeoutSetting(layer("getGlobalSettings"));
-		if (ms !== undefined) return { ms, configured: true };
+		const settingsManager = await loader();
+		// Safe: optional chaining covers a nullish module value, and `create` is checked to be a function.
+		const create = (settingsManager as { create?: unknown } | null | undefined)?.create;
+		if (typeof create !== "function") return OMP_DEFAULT_BUDGET;
+		const manager: unknown = create.call(settingsManager, cwd);
+		if (typeof manager !== "object" || manager === null) return OMP_DEFAULT_BUDGET;
+		// Safe: a non-null object; each method is checked to be a function before the call.
+		const m = manager as { rawValue?: unknown; getProjectSettings?: unknown; getGlobalSettings?: unknown };
+		if (typeof m.rawValue === "function") {
+			// The shape omp's `configuredValue` reads from a setting handle (18.12.6).
+			const value: unknown = m.rawValue.call(manager, { segments: HANDLER_TIMEOUT_KEY, definition: {} });
+			return budgetFromValue(value) ?? OMP_DEFAULT_BUDGET;
+		}
+		const layer = (get: unknown): unknown => (typeof get === "function" ? layerValue(get.call(manager)) : undefined);
+		return budgetFromValue(layer(m.getProjectSettings)) ?? budgetFromValue(layer(m.getGlobalSettings)) ?? OMP_DEFAULT_BUDGET;
 	} catch {
-		// fall through to the default
+		return OMP_DEFAULT_BUDGET;
 	}
-	return { ms: OMP_HANDLER_TIMEOUT_DEFAULT_MS, configured: false };
 }
 
 /** How long a subagent's ask may wait on the root UI: `subagentAskTimeoutMs`, or less when the host budget

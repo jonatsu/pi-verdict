@@ -44,7 +44,7 @@ import autoMode, {
 	setXdgConfigRootsForTests,
 	shellWords,
 } from "../extensions/pi-verdict/index.ts";
-import { HOST_BUDGET_MARGIN_MS } from "../extensions/pi-verdict/subagent.ts";
+import { HOST_BUDGET_MARGIN_MS, readHostHandlerBudget } from "../extensions/pi-verdict/subagent.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -5609,6 +5609,77 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 			expect(r?.block).toBe(true);
 			expect(root.confirms).toBe(0);
 		});
+	});
+});
+
+describe("reading omp's handler budget (readHostHandlerBudget)", () => {
+	const OMP = { logger: {}, typebox: {} };
+	const DEFAULT = { ms: 30_000, configured: false };
+	const KEY = ["extensionHandlers", "toolCallTimeoutMs"];
+	const layerWith = (v: unknown) => ({ extensionHandlers: { toolCallTimeoutMs: v } });
+	const loaderOf = (manager: unknown) => async () => ({ create: () => manager });
+
+	test("a host without logger and typebox (pi) has no budget, and the loader is never called", async () => {
+		let loads = 0;
+		const loader = async () => {
+			loads++;
+			return { create: () => ({}) };
+		};
+		expect(await readHostHandlerBudget({}, "/proj", loader)).toBeNull();
+		expect(loads).toBe(0);
+	});
+
+	test("an import throw, a create throw, a missing create or a manager with no readers gives omp's default", async () => {
+		const failing = [
+			async () => {
+				throw new Error("no module");
+			},
+			async () => ({
+				create: () => {
+					throw new Error("no settings");
+				},
+			}),
+			async () => ({}),
+			async () => undefined,
+			loaderOf(null),
+			loaderOf({}),
+		];
+		for (const loader of failing) expect(await readHostHandlerBudget(OMP, "/proj", loader)).toEqual(DEFAULT);
+	});
+
+	test("rawValue, the merged value omp enforces, wins over the project and global layers", async () => {
+		const args: unknown[] = [];
+		const manager = {
+			rawValue: (setting: unknown) => {
+				args.push(setting);
+				return 45_000;
+			},
+			getProjectSettings: () => layerWith(200_000),
+			getGlobalSettings: () => layerWith(200_000),
+		};
+		expect(await readHostHandlerBudget(OMP, "/proj", loaderOf(manager))).toEqual({ ms: 45_000, configured: true });
+		expect(args).toEqual([{ segments: KEY, definition: {} }]);
+	});
+
+	test("rawValue reporting null or nothing is unset: omp's default, not a layer value", async () => {
+		for (const value of [null, undefined]) {
+			const manager = { rawValue: () => value, getGlobalSettings: () => layerWith(200_000) };
+			expect(await readHostHandlerBudget(OMP, "/proj", loaderOf(manager))).toEqual(DEFAULT);
+		}
+	});
+
+	test("without rawValue the project layer wins over the global one, and an unset project falls through", async () => {
+		const both = { getProjectSettings: () => layerWith(50_000), getGlobalSettings: () => layerWith(90_000) };
+		expect(await readHostHandlerBudget(OMP, "/proj", loaderOf(both))).toEqual({ ms: 50_000, configured: true });
+		const globalOnly = { getProjectSettings: () => ({}), getGlobalSettings: () => layerWith(90_000) };
+		expect(await readHostHandlerBudget(OMP, "/proj", loaderOf(globalOnly))).toEqual({ ms: 90_000, configured: true });
+	});
+
+	test("an invalid value gives omp's default, as omp itself does", async () => {
+		for (const value of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, "120000", {}]) {
+			expect(await readHostHandlerBudget(OMP, "/proj", loaderOf({ rawValue: () => value }))).toEqual(DEFAULT);
+			expect(await readHostHandlerBudget(OMP, "/proj", loaderOf({ getGlobalSettings: () => layerWith(value) }))).toEqual(DEFAULT);
+		}
 	});
 });
 

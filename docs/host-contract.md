@@ -45,10 +45,16 @@ omp ends each `tool_call` handler after `extensionHandlers.toolCallTimeoutMs` (d
 budget only for dialogs opened through the handler's own `ctx.ui`. A subagent's ask is shown on the root UI, so
 pi-verdict reads the budget itself: on omp (detected by `logger` and `typebox` on the extension API) it calls the
 legacy `SettingsManager.create(cwd)` from the pi-coding-agent root. omp's shim returns the settings of the session
-whose handler is running, and pi-verdict reads `extensionHandlers.toolCallTimeoutMs` from `getProjectSettings()`,
-then `getGlobalSettings()`. A missing export, a throw or an invalid value counts as the 30000 ms default, which
-can only close a dialog early. Verified in omp 18.12.6: `runner.ts` (`emitToolCall`, `raceHandlerWithTimeout`,
-`createHandlerUIContext`) and `legacy-pi-coding-agent-shim.ts` (`SettingsManager`).
+whose handler is running. pi-verdict reads `extensionHandlers.toolCallTimeoutMs` through that instance's
+`rawValue`, passing the `{ segments, definition }` shape omp's `configuredValue` reads from a setting handle. This
+is the value omp enforces: global, project, the `--config` overlay and runtime overrides merged, over an overlay
+parent's view. A configured `null` is unset there, as in omp. Without `rawValue`, pi-verdict reads
+`getProjectSettings()`, then `getGlobalSettings()`, which miss the overlay, the overrides and the parent. A missing
+export, a throw, an unset value or an invalid one counts as the 30000 ms default. When the value read differs from
+the one omp enforces, a longer enforced budget closes the dialog early, and a shorter one lets omp block the call
+before the dialog closes. Verified in omp 18.12.6: `runner.ts` (`emitToolCall`, `raceHandlerWithTimeout`,
+`createHandlerUIContext`), `config/settings.ts` (`rawValue`, `configuredValue`, `#mergeOwnLayers`) and
+`legacy-pi-coding-agent-shim.ts` (`SettingsManager`).
 
 ## Note on the dialog helpers
 
