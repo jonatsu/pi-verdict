@@ -450,9 +450,15 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 							]
 						: [{ rel: segs.slice(0, packageDepth(segs)), isExact: false }];
 					// A module directory directly under an extensions root (extensions/pi-verdict/index.ts)
-					// imports the adapter from the root beside it, outside the directory prefix.
+					// imports the adapter from the root beside it, outside the directory prefix. A top-level
+					// `<dir>.ts` or `<dir>.js` is a decoy entry: the host dedupes extensions by name, keeps the
+					// first, and discovers top-level files before `*/index.ts`.
 					if (!singleFile && kind === "extensions" && segs.length === 2 && !segs[0].startsWith("@")) {
-						targets.push({ rel: [JEV_ADAPTER_FILE], isExact: true });
+						targets.push(
+							{ rel: [JEV_ADAPTER_FILE], isExact: true },
+							{ rel: [`${segs[0]}.ts`], isExact: true },
+							{ rel: [`${segs[0]}.js`], isExact: true },
+						);
 					}
 					for (const root of roots) {
 						for (const { rel, isExact } of targets) {

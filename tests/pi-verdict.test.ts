@@ -3860,6 +3860,18 @@ describe("self-protection layer (ADR-0005)", () => {
 		});
 	});
 
+	test("a module-directory install also protects a decoy entry file of the same name beside it", async () => {
+		await withTempDir("pv-sp-decoy-", async (agentDir) => {
+			const root = path.join(agentDir, "extensions");
+			const prot = buildProtectedSet(agentDir, path.join(root, "pi-verdict", "index.ts"));
+			for (const decoy of [path.join(root, "pi-verdict.ts"), path.join(root, "pi-verdict.js")]) {
+				expect(isProtectedWritePath(decoy, "/proj", prot)).toBe(true);
+				expect(prot.bashPatterns.some((re) => re.test(`cp x ${decoy}`))).toBe(true);
+			}
+			expect(isProtectedWritePath(path.join(root, "pi-verdict.md"), "/proj", prot)).toBe(false);
+		});
+	});
+
 	test("a write into the module directory is denied when the agent dir's extensions is a symlink to the repo", async () => {
 		// The running copy lives at its realpath in the repo; the agent dir reaches it through the link.
 		const link = path.join(TMP_AGENT, "extensions");
