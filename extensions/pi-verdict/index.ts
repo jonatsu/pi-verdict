@@ -221,12 +221,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		call: { toolName: string; input: Record<string, unknown> },
 		action: string,
 		ui: UiContext,
-		opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext; windowMs?: number },
+		opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext; deadlineAt?: number },
 	): Promise<{ block: true; reason: string } | undefined | "aborted"> {
 		const note = (msg: string, level: "info" | "warning" | "error"): void =>
 			ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
-		const answerWithin = opts.windowMs === undefined ? "" : ` (answer within ${Math.ceil(opts.windowMs / 1000)} s)`;
-		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t) + answerWithin;
+		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
 		// Notifications carry no protected-path plaintext (the invariant the
 		// protected-path branch below states out loud) — an action whose text names a base
 		// becomes the fixed marker; block REASONS and the local dialog surfaces are unchanged
@@ -289,7 +288,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 					minConfidence: null,
 					fallbackMessage: `${action}\n\n${v.reason}\n\nProtected path: ${v.detail ?? "(see pi-verdict.json)"}\n\nAllow this access?`,
 				},
-				{ signal: opts.signal },
+				{ signal: opts.signal, deadlineAt: opts.deadlineAt },
 			);
 			if (d === "aborted") return "aborted";
 			if (d.allow) {
@@ -314,7 +313,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				minConfidence: state.userRules.classifierMinConfidence,
 				fallbackMessage: `${action}\n\n${label}: ${v.reason}\n\nAllow execution?`,
 			},
-			{ signal: opts.signal, explain: (question) => explainAsk(opts.ctx, call, action, label, v.reason, question) },
+			{
+				signal: opts.signal,
+				deadlineAt: opts.deadlineAt,
+				explain: (question) => explainAsk(opts.ctx, call, action, label, v.reason, question),
+			},
 		);
 		if (d === "aborted") return "aborted";
 		return d.allow ? undefined : { block: true, reason: blockReason("user-declined", declineDetail("user declined", d.reason)) };
@@ -1003,9 +1006,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const lateWarning = state.audit?.drainWarning();
 			if (lateWarning) warn(`pi-verdict: ${lateWarning}`);
 		};
-		const present = async (signal?: AbortSignal, windowMs?: number): Promise<{ block: true; reason: string } | undefined | "aborted"> => {
+		const present = async (signal?: AbortSignal, deadlineAt?: number): Promise<{ block: true; reason: string } | undefined | "aborted"> => {
 			try {
-				return await presentVerdict(verdict, call, action, ui ?? ctx.ui, { label, signal, ctx, windowMs });
+				return await presentVerdict(verdict, call, action, ui ?? ctx.ui, { label, signal, ctx, deadlineAt });
 			} catch (err) {
 				if (verdict.pendingAudit) state.audit?.append(verdict.pendingAudit);
 				throw err;
@@ -1060,7 +1063,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const deadline = AbortSignal.timeout(window.ms);
 			const signal = ctx.signal ? AbortSignal.any([deadline, ctx.signal]) : deadline;
 			// The race closes the wait even while the ask is still queued behind another dialog.
-			const r = await untilAborted(present(signal, window.ms), signal);
+			const r = await untilAborted(present(signal, Date.now() + window.ms), signal);
 			if (r !== "aborted") {
 				finalize({ ...answerAudit(r), subagent: { ...sub, resolution: "human" } });
 				return r;

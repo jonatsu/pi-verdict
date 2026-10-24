@@ -5542,6 +5542,36 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 			}
 		});
 
+		test("a queued subagent dialog shows the time left when it opens, not when it was queued", async () => {
+			const { initTheme } = await import("@earendil-works/pi-coding-agent");
+			initTheme("dark", false); // the root's classifier ask renders its command as Markdown
+			await withBridge(
+				{ subagentAskTimeoutMs: 60_000, denyPaths: [SENS] },
+				async (root, sub) => {
+					const titles: string[] = [];
+					let releaseRoot: (() => void) | undefined;
+					root.ctx.ui.custom = (factory: (...args: any[]) => any) =>
+						new Promise((resolve) => {
+							const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+							const component = factory({ requestRender() {} }, theme, undefined, resolve);
+							titles.push(component.render(120).join("\n"));
+							if (titles.length === 1) releaseRoot = () => resolve("yes");
+						});
+					root.responses = [ASK];
+					const rootCall = toolCall(root, "bash", { command: "cargo build" });
+					await flush(() => releaseRoot !== undefined);
+					const subCall = toolCall(sub, "read", { path: path.join(SENS, "x.md") });
+					await Bun.sleep(1_500); // the subagent ask waits in the queue behind the root dialog
+					releaseRoot?.();
+					expect(await rootCall).toBeUndefined();
+					await subCall;
+					const shown = Number(/\(answer within (\d+) s\)/.exec(titles[1] ?? "")?.[1]);
+					expect(shown).toBeLessThan(4);
+				},
+				{ hostBudget: { ms: HOST_BUDGET_MARGIN_MS + 4_000, configured: true } },
+			);
+		}, 15_000);
+
 		test("a budget that outlasts subagentAskTimeoutMs leaves the ask deadline in charge, with no expiry notice", async () => {
 			await withBridge(
 				{ subagentAskTimeoutMs: 30, classifierFallbackModel: "mock/fb" },

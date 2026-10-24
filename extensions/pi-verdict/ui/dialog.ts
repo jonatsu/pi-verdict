@@ -446,22 +446,27 @@ async function pickAsk(ui: UiContext, spec: ApproveDialogSpec, signal?: AbortSig
  *  EXPLAIN-GATE role; the answer is shown in the re-opened dialog). Escape in a follow-up input
  *  returns to the dialog. Hosts without the rich dialog get the plain yes/no `confirm`.
  *  Dialogs are serialized process-wide (omp queues `confirm`/`select` but not `custom`), and
- *  `signal` cancels a pending or shown dialog → "aborted". */
+ *  `signal` cancels a pending or shown dialog → "aborted". With `deadlineAt` (epoch ms) the title shows the
+ *  seconds left to answer. */
 export async function confirmAsk(
 	ui: UiContext,
 	spec: ApproveDialogSpec,
-	opts: { signal?: AbortSignal; explain?: (question: string | null) => Promise<ExplainGateResult> } = {},
+	opts: { signal?: AbortSignal; deadlineAt?: number; explain?: (question: string | null) => Promise<ExplainGateResult> } = {},
 ): Promise<AskDecision | "aborted"> {
-	const { signal, explain } = opts;
+	const { signal, deadlineAt, explain } = opts;
 	const dialogOpts = signal ? { signal } : undefined;
+	// Computed when the dialog opens, so time spent queued behind another dialog is not shown as left.
+	const titleNow = (): string =>
+		deadlineAt === undefined ? spec.title : `${spec.title} (answer within ${Math.max(0, Math.ceil((deadlineAt - Date.now()) / 1000))} s)`;
 	return serializeDialog(async (): Promise<AskDecision | "aborted"> => {
 		let explanation: string | undefined;
 		for (;;) {
 			if (signal?.aborted) return "aborted";
-			const choice = await pickAsk(ui, { ...spec, explain: explain !== undefined, explanation }, signal);
+			const title = titleNow();
+			const choice = await pickAsk(ui, { ...spec, title, explain: explain !== undefined, explanation }, signal);
 			if (signal?.aborted) return "aborted";
 			if (choice === undefined) {
-				const ok = await ui.confirm(spec.title, spec.fallbackMessage, dialogOpts);
+				const ok = await ui.confirm(title, spec.fallbackMessage, dialogOpts);
 				if (signal?.aborted) return "aborted";
 				return ok ? { allow: true } : { allow: false };
 			}
