@@ -2,15 +2,18 @@
 
 Slug: `tool-access-hardening-plan`
 
-**Status: approved by the user on 2026-10-05, not yet executed.** Revision 3, nine commits, release
-held by default.
+**Status: COMPLETED — 2026-10-05.** Executed as ten commits (`01260f9` … `0f0ab53`, including one
+fix-forward commit, `218d7e2`); the round outcome is appended at the end of this document ("Round outcome").
+It shipped in `v0.18.0` (2026-10-07), whose `CHANGELOG.md` section also records the later review fixes
+and the host path resolution that followed the round. What follows is revision 3, the plan as approved on
+2026-10-05.
 Revision 2 (2026-10-05) folds the Claude review of the draft
 (`.scratch/reviews/2026-10-05-tool-access-hardening-plan-review.md`: findings F1–F19; its executed
 evidence and nine decision points, all recommended defaults adopted). Revision 3 folds the scoped
 re-review of revision 2 (findings R2-1–R2-14, all applied) and the 2026-10-05 Claude re-review of
 revision 3 (the opaque narrowing + four minors, all applied).
 
-**Basis:** `docs/plans/input-coverage-hardening.md` (the 2026-10-04 proposal; items re-triaged against
+**Basis:** `docs/plans/archive/input-coverage-hardening.md` (the 2026-10-04 proposal; items re-triaged against
 HEAD `c7f9d2e`, `v0.17.0` — two of its items already landed with the probe-apparatus round, see the
 disposition table). Gate-side facts below were re-verified against `extensions/pi-verdict.ts` at
 `c7f9d2e` (= `889c57a` + the AGENTS.md package-name fix) by symbol, not by the proposal's now-stale
@@ -530,10 +533,12 @@ commits (rebase discipline), no logical ones.
 - **One path-resolution service** (`resolveTarget(raw, cwd)` returning every tier once): the
   kernel-true walk consolidation already landed (`kernelWalk` feeds `classifyPath`, the protected-path
   helpers, `denyPathForms` and `userRuleTargets`); a full re-unification re-touches layers that just
-  stabilized, for no behavioral gap. Revisit after this round.
+  stabilized, for no behavioral gap. Revisit after this round. *Moved:* the call-model plan took this over
+  as item 9.
 - **Splitting the 4,788-line file:** size L; whether omp's loader follows pi's every-`.ts`-file rule
   for subdirectory extensions is unverified; provenance must hash the whole `files` list. Land only
-  along the seams above, in its own round, after the loader question is settled.
+  along the seams above, in its own round, after the loader question is settled. *Moved:* the call-model
+  plan (`call-model-and-rule-hardening.md`, item 12) took this over and settled the loader question.
 - **A bash AST library:** rejected by the proposal itself (precision, not soundness; measured to
   absorb zero gray calls; breaks zero-dependency packaging). Revisit only if tripwire false positives
   become the main complaint.
@@ -685,7 +690,9 @@ for 431 → 448 and 92 → 93.
 
 - **User-side**: create the `v0.17.0` GitHub Release from your own terminal (the deny floor blocks
   `gh release`). `publish.yml` now targets `@jonatsu` and authenticates with its own `GITHUB_TOKEN`
-  (`packages: write`), so there is nothing to set up (`TODO.md`).
+  (`packages: write`), so there is nothing to set up (`TODO.md`). *Superseded on 2026-10-07:* `v0.17.0`
+  stays a tag with no release, because its `publish.yml` predates the scope fix (`0f0ab53`); its changes
+  ship to users as `v0.18.0`.
 - The five budget tests use the real clock (50–300 ms, ~350 ms total); the one test that needs genuine
   provider latency carries the repo rule's required justification comment.
 - ADR-0009's pinning sentence paraphrases the direct shell-API test's title and its describe group rather

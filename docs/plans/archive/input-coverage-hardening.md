@@ -1,8 +1,12 @@
 # Input coverage hardening — proposals
 
-**Status: proposed, not scheduled.** Items 1-3 are recommended as the next round, after the probe-apparatus round
-(`docs/plans/archive/probe-apparatus.md`, completed) lands. None of these items is accepted yet. Each one needs a decision before it
-becomes a plan.
+**Status: SUPERSEDED — 2026-10-05.** The tool-access plan (`docs/plans/archive/tool-access-hardening.md`)
+re-triaged every item below; its "Disposition of proposal items" table records where each one landed, and its
+round outcome records the commits. Two items landed before that plan (`a3c7071`, `7ad1014`); the path service
+and the file split moved to the call-model plan (`docs/plans/call-model-and-rule-hardening.md`, items 9 and 12).
+The text below is the original proposal, kept as written; it was not accepted as a plan itself. When written,
+items 1-3 were recommended as the next round, after the probe-apparatus round
+(`docs/plans/archive/probe-apparatus.md`, completed).
 
 Written 2026-10-04 from an architecture review of HEAD `6136aa0` (`v0.16.0-fork.6`). The review read this
 repository and the omp 18.5.1 host source (`@oh-my-pi/pi-coding-agent`, installed under mise). The four findings
