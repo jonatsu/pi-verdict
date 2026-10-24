@@ -115,6 +115,19 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
   covered.
 - **Host drift.** The set is a point-in-time reading of omp 18.12.6 and pi 0.84.3; a host upgrade
   can add a loader. The omp drift audit re-checks it.
+- **Native and lazy loaders.** omp's grammar files and native addon under `~/.omp/natives/` (a compiled
+  omp loads its `.node` addon from there; the npm install does not) and the cwd-first `sys.path` of the
+  Python eval kernel, where a project file can shadow a module, are not in the set.
+
+### Open questions
+
+These were not traced in the source reading and may widen the set:
+
+- whether a project settings layer can re-enable a provider the user listed in `disabledProviders`
+  (settings arrays replace on merge), which decides whether the foreign trees above stay inert;
+- whether omp's `shellMinimizer.settingsPath`, `launch.*` or the auth broker configuration name a
+  command;
+- whether a subagent in another working directory re-runs project discovery for hooks and tools.
 
 ## Consequences
 

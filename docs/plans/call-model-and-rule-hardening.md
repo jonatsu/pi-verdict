@@ -237,6 +237,9 @@ own `.config/gcloud/` reaches the classifier (the rationale at `:1414-1418`).
 - **Attribution:** the pattern comes from jev-engineering's `hard_deny` 09. Add a source comment
   (`eugeniughelbur/jev-engineering@82655a6d policy.json, MIT, Copyright (c) 2026 Eugeniu Ghelbur`). The
   evaluation's licensing section explains why.
+- **Open decision, same edit:** the 1Password CLI config `~/.config/op/config` is `allow/rule` on read today. A one-line
+  S0 entry beside gcloud would close it; its value is low, because the session token normally lives in the environment.
+  Ask the user before adding it.
 
 ### 4. `raw-device` covers macOS disk names (size XS)
 
