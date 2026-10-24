@@ -1092,6 +1092,13 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "read of a home credential file with a JSON query= filter is denied like the plain name",
+			family: "host-path",
+			tool: "read",
+			input: { path: "~/.do" + "cker/config.json?query=.auths" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
 			label: "read of an existing project file with an image question is still a rule allow",
 			family: "host-path",
 			tool: "read",

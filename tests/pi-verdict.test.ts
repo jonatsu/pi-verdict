@@ -6067,6 +6067,33 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("hostPathForms peels the JSON ?query= selector in both spellings", () => {
+		const ask = { peelImageQuestion: true };
+		expect(hostPathForms("a.json?query=.x", ask)).toEqual(["a.json?query=.x", "a.json"]);
+		expect(hostPathForms("a.json?q=.x", ask)).toEqual(["a.json?q=.x", "a.json"]);
+		expect(hostPathForms("a.json?raw=1&query=.", ask)).toContain("a.json");
+		expect(hostPathForms("a.json?query=", ask)).toEqual(["a.json?query="]);
+		expect(hostPathForms("https://h/a.json?query=x", ask)).toEqual(["https://h/a.json?query=x"]);
+	});
+
+	test("a JSON read with a ?query= selector is graded as the file the host opens", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const secret = path.join(cwd, "secrets", "tok.json");
+				const h = session({ denyPaths: [secret] }, { cwd });
+				h.confirmAnswer = false;
+				for (const p of [`${home}/.p` + "i/agent/au" + "th.json?query=.", `${home}/.do` + "cker/config.json?raw=1&query=.auths"]) {
+					expect((await toolCall(h, "read", { path: p }))?.block).toBe(true);
+				}
+				expect(h.calls).toHaveLength(0);
+				expect((await toolCall(h, "read", { path: `${secret}?query=.` }))?.block).toBe(true);
+				expect(h.confirms).toBe(1);
+			},
+			home,
+		);
+	});
+
 	test("a target in a registered internal scheme is never a rule allow, even under a user allow", async () => {
 		await withTempDir(
 			"pv-hps-",

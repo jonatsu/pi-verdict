@@ -1967,7 +1967,7 @@ interface HostPathFormOptions {
 	peelSelector?: boolean;
 	/** Also grade each part of a `;`, `,` or whitespace separated list. */
 	splitList?: boolean;
-	/** Also grade the path with a `?q=` image question removed. */
+	/** Also grade the path with a `?q=` or `?query=` selector removed. */
 	peelImageQuestion?: boolean;
 	/** Also grade the path with shell escapes (`\ `, `\(`) removed. */
 	unescapeShell?: boolean;
@@ -2019,14 +2019,15 @@ function wslDriveAlias(target: string): string | null {
 	return match === null ? null : path.posix.join("/mnt", match[1].toLowerCase(), ...match[2].split("\\").filter(Boolean));
 }
 
-/** The path with an image question (`?q=<text>`) removed, or null when the text carries none;
- *  mirrors omp's splitImageQuestionTarget (18.6.1). The host asks a vision model about the file
- *  before the question and opens the rest, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query. */
+/** The path with an image question or JSON filter (`?q=<text>` or `?query=<text>`) removed, or null when
+ *  the text carries none; mirrors omp's splitImageQuestionTarget and parseJsonSelector (18.12.6). The
+ *  host opens the file before the question, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query. */
 function peelImageQuestion(target: string): string | null {
 	if (target.includes("://")) return null;
 	const queryIndex = target.indexOf("?");
 	if (queryIndex === -1) return null;
-	return new URLSearchParams(target.slice(queryIndex + 1)).get("q") ? target.slice(0, queryIndex) : null;
+	const params = new URLSearchParams(target.slice(queryIndex + 1));
+	return params.get("q") || params.get("query") ? target.slice(0, queryIndex) : null;
 }
 
 /** A text the host opens as a filesystem path that is relative to the project. */
