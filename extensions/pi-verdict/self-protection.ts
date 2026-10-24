@@ -1,10 +1,9 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
+import { collectStrings, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
 import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
 import { baseForms, kernelForms, rebuiltForms } from "./paths.ts";
-import { inputStrings } from "./redaction.ts";
 import type { RuleResult } from "./shell.ts";
 
 // ============================================================================
@@ -270,7 +269,7 @@ export function selfProtectCheck(toolName: string, input: Record<string, unknown
 		}
 		return null;
 	}
-	const strings = inputStrings(input);
+	const strings = collectStrings(input);
 	const access = toolAccess(toolName, input);
 	if (direction === "read") {
 		for (const s of [...strings, ...access.gradedReads]) {

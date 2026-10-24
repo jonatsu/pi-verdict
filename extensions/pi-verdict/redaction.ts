@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { toolAccess } from "./access.ts";
+import { collectStrings, toolAccess } from "./access.ts";
 import { bashPathTokens, commandForPathTokens, denyPathForms } from "./deny-paths.ts";
 import { baseForms, CASE_INSENSITIVE_FS } from "./paths.ts";
 
@@ -71,8 +71,8 @@ export function redactorFor(
 		if (access.command !== null)
 			for (const token of bashPathTokens(commandForPathTokens(access.command, platform.win32))) if (hits(token)) return true;
 		// Over the string values themselves: the JSON text doubles every backslash, so a Windows spelling
-		// would never match there. The JSON check stays for nesting deeper than inputStrings reads.
-		if (mentionsSpelling(inputStrings(args), spellings, platform, strict)) return true;
+		// would never match there. The JSON check stays for nesting deeper than collectStrings reads.
+		if (mentionsSpelling(collectStrings(args), spellings, platform, strict)) return true;
 		return mentionsSpelling([JSON.stringify(args)], spellings, platform, strict);
 	};
 }
@@ -121,14 +121,4 @@ export function mentionsSpelling(
 		if (needle && haystacks.some((h) => found(h, needle))) return true;
 	}
 	return false;
-}
-
-/** Returns every string value in a tool input, down to a fixed nesting depth: the candidates the redactor
- *  and the self-protection scan test for a protected path. */
-export function inputStrings(value: unknown, out: string[] = [], depth = 0): string[] {
-	if (depth > 6 || value === null || value === undefined) return out;
-	if (typeof value === "string") out.push(value);
-	else if (Array.isArray(value)) for (const v of value) inputStrings(v, out, depth + 1);
-	else if (typeof value === "object") for (const v of Object.values(value)) inputStrings(v, out, depth + 1);
-	return out;
 }

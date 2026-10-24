@@ -768,3 +768,22 @@ export function userRuleTargets(toolName: string, input: Record<string, unknown>
 	const raw = access.direction === "mutating" ? access.gradedWrites : access.gradedReads.length > 0 ? access.gradedReads : [cwd];
 	return expandTargetForms(raw, cwd);
 }
+
+// A string nested deeper than this is not collected: self-protection then sees only the targets
+// `toolAccess` extracts, and the redactor still scans the arguments' JSON text.
+const MAX_STRING_DEPTH = 6;
+
+/** Returns every string value in a tool input, down to `MAX_STRING_DEPTH` levels of nesting: the candidates
+ *  the redactor and the self-protection scan test for a protected path. */
+export function collectStrings(value: unknown): string[] {
+	const out: string[] = [];
+	collectStringsInto(value, out, 0);
+	return out;
+}
+
+function collectStringsInto(value: unknown, out: string[], depth: number): void {
+	if (depth > MAX_STRING_DEPTH || value === null || value === undefined) return;
+	if (typeof value === "string") out.push(value);
+	else if (Array.isArray(value)) for (const v of value) collectStringsInto(v, out, depth + 1);
+	else if (typeof value === "object") for (const v of Object.values(value)) collectStringsInto(v, out, depth + 1);
+}
