@@ -1581,6 +1581,21 @@ const buildAnchoredS0 = (xdgRoots: string[]): [RegExp, RegExp] => {
 };
 let anchoredS0 = buildAnchoredS0(XDG_CONFIG_ROOTS);
 
+/** The settings and auth database inside the agent dir this session is anchored to (and its SQLite
+ *  sidecar files), matched where the dir is custom (`PI_CODING_AGENT_DIR`) and the static
+ *  `.omp/agent` entry in `S0_SECRET` cannot see it. Rebuilt only when the agent dir changes. */
+let agentDbRule: { dir: string; re: RegExp } | null = null;
+function agentDbS0(): RegExp[] {
+	const dir = agentDirPath();
+	if (agentDbRule?.dir !== dir) {
+		agentDbRule = {
+			dir,
+			re: new RegExp(`^(?:${xdgRootForms(path.resolve(dir)).join("|")})/agent\\.db(?:-wal|-shm|-journal)?(?::|\\?|$)`, "i"),
+		};
+	}
+	return [agentDbRule.re];
+}
+
 /** Test seam; null restores the production roots (mirrors `setTmpdirBasesForTests`). Takes raw
  *  dirs and derives their rule forms, so a test needs no regex escaping; empty and relative
  *  values are ignored exactly as the production `XDG_CONFIG_HOME` guard does. */
@@ -1608,6 +1623,11 @@ const S0_SECRET = [
 	/_history$/i,
 	/\.config\/gh(\/|$)/i,
 	/\.(?:pi|omp)\/agent\/auth\.json$/i,
+	// omp's settings and auth store; the SQLite sidecar files hold the same pages, and a `:table` or
+	// `?q=` suffix is the host's own read selector on the database. After `omp config init-xdg` the
+	// host keeps it at `$XDG_DATA_HOME/omp/agent.db` (the agent dir is flattened away), so a bare `omp`
+	// segment counts as well as the dotted `.omp/agent` and `.pi/agent` trees.
+	/(?:\.(?:pi|omp)\/agent|(?:^|\/)omp(?:\/agent)?)\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
 	/(^|\/)\.npmrc$/i,
@@ -1683,7 +1703,7 @@ function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: b
 
 	// S0: the static entries plus the two home/XDG-anchored credential-home entries
 	// (`anchoredS0`, item 9) — the seam rebuilds those at test time.
-	if (hit(S0_SECRET) || hit(anchoredS0)) return D(`S0 secrets/credential path: ${rawPath}`);
+	if (hit(S0_SECRET) || hit(anchoredS0) || hit(agentDbS0())) return D(`S0 secrets/credential path: ${rawPath}`);
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
@@ -1731,7 +1751,7 @@ function globStaysInProject(targets: string[], cwd: string): boolean {
 		if (/^[a-z][a-z0-9+.-]+:/i.test(t)) return false;
 		const { forms, ruleForms, walk } = canonicalPathForms(t, cwd);
 		const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
-		return !walk.unresolved && !hit(S0_SECRET) && !hit(anchoredS0) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
+		return !walk.unresolved && !hit(S0_SECRET) && !hit(anchoredS0) && !hit(agentDbS0()) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
 	});
 }
 
@@ -1797,7 +1817,7 @@ function classifyReads(targets: string[], cwd: string, floorOn: boolean): RuleRe
 // transcript redactor all read their targets through `hostPathForms` (ADR-0009 amendment).
 // ============================================================================
 
-/** URL schemes that omp's InternalUrlRouter registers (18.6.1). Only these are URLs to the host;
+/** URL schemes that omp's InternalUrlRouter registers (18.12.6). Only these are URLs to the host;
  *  any other `scheme://` text is an ordinary relative path. */
 const HOST_INTERNAL_SCHEMES: ReadonlySet<string> = new Set([
 	"skill",
@@ -1814,6 +1834,7 @@ const HOST_INTERNAL_SCHEMES: ReadonlySet<string> = new Set([
 	"vault",
 	"issue",
 	"pr",
+	"mr",
 	"mcp",
 	"omp",
 	"xd",
@@ -1877,29 +1898,50 @@ const HOST_PATH_FORMS_MAX_CHARS = BASH_MAX_MATCH_LEN;
 
 const SELECTOR_LINE_RANGE = String.raw`L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?`;
 const SELECTOR_RANGE_CHUNK = `${SELECTOR_LINE_RANGE}(?<=[\\d.-])`;
-const SELECTOR_RANGE_LIST = `${SELECTOR_RANGE_CHUNK}(?:,${SELECTOR_RANGE_CHUNK})*`;
 const SELECTOR_TAIL = String.raw`-\d+`;
-const SELECTOR_RE = new RegExp(`^(?:${SELECTOR_RANGE_LIST}|${SELECTOR_TAIL}|raw|conflicts|img)$`, "i");
-const SELECTOR_RANGE_ONLY_RE = new RegExp(`^(?:${SELECTOR_RANGE_LIST}|${SELECTOR_TAIL})$`, "i");
+// A comma list may mix ranges and tails (`1-12,-15`); a lone tail is a one-chunk list.
+const SELECTOR_LIST_CHUNK = `(?:${SELECTOR_RANGE_CHUNK}|${SELECTOR_TAIL})`;
+const SELECTOR_LIST = `${SELECTOR_LIST_CHUNK}(?:,${SELECTOR_LIST_CHUNK})*`;
+const SELECTOR_RE = new RegExp(`^(?:${SELECTOR_LIST}|raw|conflicts|img)$`, "i");
+const SELECTOR_RANGE_ONLY_RE = new RegExp(`^${SELECTOR_LIST}$`, "i");
 
-/** The path with a trailing read selector (`:N-M`, `:-N`, `:raw`, `:conflicts`, `:img`, or one range
- *  plus `:raw`) removed, or null when the text carries none; mirrors omp's splitPathAndSel (18.6.1).
- *  The host opens the peeled path, so `.env:raw` reads `.env`. */
-function peelHostSelector(target: string): string | null {
-	const colon = target.lastIndexOf(":");
-	if (colon <= 0 || !SELECTOR_RE.test(target.slice(colon + 1))) return null;
-	const candidate = target.slice(colon + 1);
-	let base = target.slice(0, colon);
-	const inner = base.lastIndexOf(":");
-	if (inner > 0) {
-		const innerCandidate = base.slice(inner + 1);
-		const innerIsRaw = /^raw$/i.test(innerCandidate);
-		const outerIsRaw = /^raw$/i.test(candidate);
-		const innerIsRange = SELECTOR_RANGE_ONLY_RE.test(innerCandidate);
-		const outerIsRange = SELECTOR_RANGE_ONLY_RE.test(candidate);
-		if ((innerIsRaw && outerIsRange) || (innerIsRange && outerIsRaw)) base = base.slice(0, inner);
+/** Moves a list that repeats its selector colon after a comma (`a:1-30,:-30`) out of the base, so the
+ *  base is the path in front of the whole list. */
+function foldRepeatedListColons(base: string): string {
+	let folded = base;
+	while (folded.endsWith(",")) {
+		const colon = folded.lastIndexOf(":");
+		if (colon < 1 || !SELECTOR_RANGE_ONLY_RE.test(folded.slice(colon + 1, -1))) break;
+		folded = folded.slice(0, colon);
 	}
-	return base;
+	return folded;
+}
+
+/** The path with a trailing read selector (a range and tail list such as `:1-12,-15`, `:raw`,
+ *  `:conflicts`, `:img`, or one list plus `:raw`) removed, or null when the text carries none; mirrors
+ *  omp's `splitPathAndSel` (18.12.6). `foldListColons: false` keeps a repeated list colon in the base
+ *  (`a:1-30,:-30` peels only `:-30`), the split the host takes when that shorter path is a real file.
+ *  The host opens the peeled path, so `.env:raw` reads `.env`. */
+function peelHostSelector(target: string, foldListColons = true): string | null {
+	const colon = target.lastIndexOf(":");
+	if (colon <= 0) return null;
+	const candidate = target.slice(colon + 1);
+	if (!SELECTOR_RE.test(candidate)) return null;
+	let base = target.slice(0, colon);
+	let rawSuffix = false;
+	if (/^raw$/i.test(candidate)) {
+		const inner = base.lastIndexOf(":");
+		if (inner > 0 && SELECTOR_RANGE_ONLY_RE.test(base.slice(inner + 1))) {
+			base = base.slice(0, inner);
+			rawSuffix = true;
+		}
+		if (!rawSuffix) return base;
+	} else if (!SELECTOR_RANGE_ONLY_RE.test(candidate)) {
+		return base;
+	}
+	if (foldListColons) base = foldRepeatedListColons(base);
+	const inner = base.lastIndexOf(":");
+	return !rawSuffix && inner > 0 && /^raw$/i.test(base.slice(inner + 1)) ? base.slice(0, inner) : base;
 }
 
 /** The tools whose path argument the host splits a read selector from. A tool the gate does not model
@@ -1967,7 +2009,7 @@ interface HostPathFormOptions {
 	peelSelector?: boolean;
 	/** Also grade each part of a `;`, `,` or whitespace separated list. */
 	splitList?: boolean;
-	/** Also grade the path with a `?q=` image question removed. */
+	/** Also grade the path with a `?q=` or `?query=` selector removed. */
 	peelImageQuestion?: boolean;
 	/** Also grade the path with shell escapes (`\ `, `\(`) removed. */
 	unescapeShell?: boolean;
@@ -1989,10 +2031,11 @@ export function hostPathForms(target: string, how: HostPathFormOptions = {}): st
 			forms.add(expandHostPath(variant));
 			if (!how.peelSelector) continue;
 			for (const form of [variant, expandHostPath(variant)]) {
-				const peeled = peelHostSelector(form);
-				if (peeled === null) continue;
-				forms.add(peeled);
-				forms.add(expandHostPath(peeled));
+				for (const peeled of [peelHostSelector(form), peelHostSelector(form, false)]) {
+					if (peeled === null) continue;
+					forms.add(peeled);
+					forms.add(expandHostPath(peeled));
+				}
 			}
 		}
 	}
@@ -2019,14 +2062,19 @@ function wslDriveAlias(target: string): string | null {
 	return match === null ? null : path.posix.join("/mnt", match[1].toLowerCase(), ...match[2].split("\\").filter(Boolean));
 }
 
-/** The path with an image question (`?q=<text>`) removed, or null when the text carries none;
- *  mirrors omp's splitImageQuestionTarget (18.6.1). The host asks a vision model about the file
- *  before the question and opens the rest, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query. */
-function peelImageQuestion(target: string): string | null {
+/** The path with an image question or JSON filter (`?q=<text>` or `?query=<text>`) removed, or null when
+ *  the text carries none; mirrors omp's splitImageQuestionTarget and parseJsonSelector (18.12.6). The
+ *  host opens the file before the question, so `~/.netrc?q=x` reads `~/.netrc`. URLs keep their query.
+ *  Grading peels `query` for every file, since an extra form only widens it; `jsonOnlyQuery` peels it
+ *  only in front of a `.json`, `.jsonl` or `.ndjson` name, the files the host treats it as a filter for. */
+function peelImageQuestion(target: string, jsonOnlyQuery = false): string | null {
 	if (target.includes("://")) return null;
 	const queryIndex = target.indexOf("?");
 	if (queryIndex === -1) return null;
-	return new URLSearchParams(target.slice(queryIndex + 1)).get("q") ? target.slice(0, queryIndex) : null;
+	const params = new URLSearchParams(target.slice(queryIndex + 1));
+	const file = target.slice(0, queryIndex);
+	const filter = params.get("query") && (!jsonOnlyQuery || /\.(?:jsonl?|ndjson)$/i.test(file));
+	return params.get("q") || filter ? file : null;
 }
 
 /** A text the host opens as a filesystem path that is relative to the project. */
@@ -2054,11 +2102,15 @@ function readMayRelocate(entry: string, cwd: string): boolean {
 }
 
 /** The path omp's `read` opens for one entry, in the host's order: the image question is cut, then a
- *  trailing selector is cut unless the whole text names an existing file, then the path is expanded. */
+ *  trailing selector is cut unless the whole text names an existing file (a list that repeats its colon
+ *  keeps the shorter split when that one exists), then the path is expanded. */
 export function hostReadPath(entry: string, cwd: string): string {
-	const asked = peelImageQuestion(entry) ?? entry;
-	const peeled = peelHostSelector(asked);
-	const literalExists = peeled !== null && fs.existsSync(path.resolve(cwd, expandHostPath(asked)));
+	const asked = peelImageQuestion(entry, true) ?? entry;
+	const folded = peelHostSelector(asked);
+	const unfolded = peelHostSelector(asked, false);
+	const exists = (p: string): boolean => fs.existsSync(path.resolve(cwd, expandHostPath(p)));
+	const peeled = folded !== null && folded !== unfolded && unfolded !== null && exists(unfolded) ? unfolded : folded;
+	const literalExists = peeled !== null && exists(asked);
 	const chosen = expandHostPath(peeled === null || literalExists ? asked : peeled);
 	const unescaped = unescapeShellPath(chosen);
 	return !fs.existsSync(path.resolve(cwd, chosen)) && fs.existsSync(path.resolve(cwd, unescaped)) ? unescaped : chosen;
@@ -2203,7 +2255,11 @@ const HASHLINE_TAG_RE = /#[0-9a-fA-F]{4}$/;
 function stripHashlineTagAndQuotes(trimmedBody: string): string | null {
 	if (!trimmedBody) return null;
 	const tag = HASHLINE_TAG_RE.exec(trimmedBody);
-	const raw = tag ? trimmedBody.slice(0, tag.index) : trimmedBody;
+	return unquoteHashlinePath(tag ? hostTrim(trimmedBody.slice(0, tag.index)) : trimmedBody);
+}
+
+/** One layer of matching quotes removed; null for an empty text. */
+function unquoteHashlinePath(raw: string): string | null {
 	if (raw.length < 2) return raw.length > 0 ? raw : null;
 	const first = raw[0];
 	const last = raw[raw.length - 1];
@@ -2211,12 +2267,86 @@ function stripHashlineTagAndQuotes(trimmedBody: string): string | null {
 	return raw;
 }
 
+/** A stand-in where the tag belongs (`#AUTO`, `#????`, `#0`, a bare `#`): one short word of no path
+ *  characters at the end of a header body. omp parses such a header as the untagged path. */
+const HASHLINE_PLACEHOLDER_TAG_RE = /#[^\s#./\\:[\]]{0,16}\s*$/;
+
+/** The leading apply-patch noise omp drops from a header path (`*** Update File: `, `Add file:`, bare
+ *  asterisks), so `[*** Update File: a.ts#1A2B]` edits `a.ts`. Matches the same text as omp's
+ *  expression with the optional `file`/`to` word grouped with its trailing run, which keeps matching
+ *  linear on a long run of punctuation. */
+const HASHLINE_PATH_NOISE_RE = /^\*{0,3}\s*(?:(?:update|add|delete|move)[^A-Za-z0-9]*(?:(?:file|to)[^A-Za-z0-9]*)?:)?\s*\*{0,3}\s*/i;
+
+/** Every path a trimmed header body can name: the body with a 4-hex tag stripped, which is also the
+ *  raw spelling when no tag follows, the path in front of a trailing placeholder tag, and each of
+ *  these without apply-patch noise. The host peels tag, quotes and noise in an order that depends on
+ *  the shape, so the gate grades every order; a form the host would not pick only adds scrutiny.
+ *  A well-formed header yields one path. Mirrors omp's `recover_header` (18.12.6). */
+function hashlineHeaderPaths(trimmedBody: string): string[] {
+	const forms = new Set<string>();
+	const addTagForms = (body: string): void => {
+		const tagless = stripHashlineTagAndQuotes(body);
+		if (tagless) forms.add(tagless);
+		const placeholder = HASHLINE_PLACEHOLDER_TAG_RE.exec(body);
+		const untagged = placeholder ? unquoteHashlinePath(hostTrim(body.slice(0, placeholder.index))) : null;
+		if (untagged) forms.add(untagged);
+	};
+	addTagForms(trimmedBody);
+	addTagForms(trimmedBody.replace(HASHLINE_PATH_NOISE_RE, ""));
+	for (const form of [...forms]) {
+		const clean = form.replace(HASHLINE_PATH_NOISE_RE, "");
+		if (clean) forms.add(clean);
+	}
+	return [...forms];
+}
+
+/** Whitespace as Rust's `trim` counts it, which omp's header parser uses: JavaScript's `\s` plus U+0085
+ *  (NEL). Scanned by index, so trimming is linear. */
+const isHostSpace = (ch: string | undefined): boolean => ch !== undefined && (ch === "\u0085" || /\s/.test(ch));
+
+function hostTrimEnd(text: string): string {
+	let end = text.length;
+	while (end > 0 && isHostSpace(text[end - 1])) end--;
+	return text.slice(0, end);
+}
+
+function hostTrim(text: string): string {
+	let start = 0;
+	while (start < text.length && isHostSpace(text[start])) start++;
+	return hostTrimEnd(text.slice(start));
+}
+
+/** The patch envelope markers omp consumes around a hashline header. */
+const HASHLINE_ENVELOPE_MARKERS = ["*** Begin Patch", "*** End Patch", "*** Abort"] as const;
+
+/** The row with leading bracketed envelope markers removed, closed (`[*** Begin Patch] [a#1A2B]`) or
+ *  unclosed (`[*** Begin Patch [a#1A2B]`), repeatedly; a row that is only markers comes back as the
+ *  last bare marker, and a row without one is returned unchanged. Scans by index, so it runs in
+ *  linear time. Mirrors omp's `unbracket_envelope_markers` (18.12.6). */
+function unbracketEnvelopeMarkers(line: string): string {
+	let at = 0;
+	for (;;) {
+		if (line[at] !== "[") return line.slice(at);
+		let inner = at + 1;
+		while (inner < line.length && isHostSpace(line[inner])) inner++;
+		const marker = HASHLINE_ENVELOPE_MARKERS.find((m) => line.startsWith(m, inner));
+		if (marker === undefined) return line.slice(at);
+		let tail = inner + marker.length;
+		while (tail < line.length && isHostSpace(line[tail])) tail++;
+		if (line[tail] === "]") tail++;
+		while (tail < line.length && isHostSpace(line[tail])) tail++;
+		if (tail >= line.length) return marker;
+		at = tail;
+	}
+}
+
 /** Unwrap a hashline-wrapped `[path#TAG]` value (`write` may carry one) to the
  *  inner path; anything outside the strict bracket shape returns unchanged —
- *  same contract as omp's `unwrapHashlineHeaderPath`. */
+ *  same contract as omp's `unwrapHashlineHeaderPath` (18.12.6), which trims the end first. */
 function unwrapHashlineHeaderPath(value: string): string {
-	if (!value.startsWith("[") || !value.endsWith("]")) return value;
-	return stripHashlineTagAndQuotes(value.slice(1, -1).trim()) ?? value;
+	const trimmed = hostTrimEnd(value);
+	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return value;
+	return stripHashlineTagAndQuotes(hostTrim(trimmed.slice(1, -1))) ?? value;
 }
 
 /** Parses hashline file headers (`[PATH]`/`[PATH#TAG]`, legacy `¶PATH`) and `MV
@@ -2230,12 +2360,17 @@ function parseHashlineTargets(text: string): string[] {
 	const targets: string[] = [];
 	const stripped = text.startsWith("\uFEFF") ? text.slice(1) : text;
 	for (const raw of stripped.split("\n")) {
-		const line = raw.replace(/\r$/, "");
-		if (line.startsWith("[") && line.endsWith("]")) {
-			const body = stripHashlineTagAndQuotes(line.slice(1, -1).trim());
-			if (body) targets.push(body);
-			continue;
+		// omp trims the line end before it reads a header, so `[path#TAG] ` is still a header.
+		const line = hostTrimEnd(raw);
+		// A header behind bracketed envelope markers is graded peeled and as written.
+		const peeled = unbracketEnvelopeMarkers(line);
+		let isHeader = false;
+		for (const row of peeled === line ? [line] : [peeled, line]) {
+			if (!row.startsWith("[") || !row.endsWith("]")) continue;
+			targets.push(...hashlineHeaderPaths(hostTrim(row.slice(1, -1))));
+			isHeader = true;
 		}
+		if (isHeader) continue;
 		const legacy = line.trimStart();
 		if (legacy.startsWith("¶")) {
 			let i = 0;
@@ -2676,7 +2811,8 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 // model output that must not flow back into agent context). Protected scope:
 //   - <agentDir>/config/pi-verdict.json (the gate's decision input)
 //   - <agentDir>/config/pi-verdict-trust.json (project-trust decisions)
-//   - the installed extension copy (pi under <agentDir>/extensions/, omp under
+//   - the installed extension copy, with its sibling jev-adapter.ts in the single-file
+//     form (pi under <agentDir>/extensions/, omp under
 //     plugins/node_modules/<pkg>/ in its config root — the install forms listed
 //     with resolveAgentDir; dev checkouts are not in scope)
 //   - <agentDir>/verdicts/ (write + read)
@@ -2688,6 +2824,9 @@ function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd: string
 // obfuscatable (honest declaration, ADR-0001): it raises the bar, it is not a
 // guarantee against a direct rewrite outside a tool call.
 // ============================================================================
+
+/** The module `pi-verdict.ts` value-imports from its own directory (`./jev-adapter`). */
+const JEV_ADAPTER_FILE = "jev-adapter.ts";
 
 interface ProtectedSet {
 	/** exact protected files (lexical absolute + realpath forms) */
@@ -2741,9 +2880,13 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 				if (!own.startsWith(extRoot + path.sep)) continue;
 				const segs = path.relative(extRoot, own).split(path.sep);
 				const singleFile = segs.length === 1;
-				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir
-				const target = singleFile ? own : path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1));
-				for (const f of baseForms(target)) {
+				// npm scopes are two-segment dirs (@scope/pkg): protect the package, not the whole scope dir.
+				// A single-file copy also protects the sibling adapter module it imports, since rewriting
+				// that changes the gate as surely as rewriting the main file.
+				const targets = singleFile
+					? [own, path.join(path.dirname(own), JEV_ADAPTER_FILE)]
+					: [path.join(extRoot, ...segs.slice(0, segs[0].startsWith("@") ? 2 : 1))];
+				for (const f of targets.flatMap((target) => baseForms(target))) {
 					(singleFile ? exact : prefixes).add(f);
 					extTargets.add(f);
 				}
@@ -2971,7 +3114,7 @@ function classifyByRules(
 	 *  to the classifier, whose allow is then withheld by adjudicate. */
 	policyDegraded: boolean,
 	/** True when the call names a user-declared protected path through a spelling the denyPaths
-	 *  tokeniser cannot extract, such as a braced home variable. */
+	 *  tokeniser cannot extract, such as a home variable behind a command substitution. */
 	namesProtectedPath: RedactorFn = () => false,
 ): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
@@ -3309,14 +3452,15 @@ const PROTECTED_PATH_MARKER = "<protected-path>";
  *  unknown tool's extracted targets too, F10), tested against the same dual-form set a
  *  denyPaths comparison uses (`denyPathForms`, anchored here once with `cwd`), and (2) the
  *  raw JSON of the arguments containing any base's spelling — absolute, `~/`, `$HOME`/`${HOME}`
- *  (the denyPaths tokeniser knows only `$HOME`, never `${HOME}` — F10 — so this raw check
- *  covers what the tokeniser structurally cannot), or the home-relative tail (e.g. a
+ *  (the denyPaths tokeniser reads `$HOME`, `"$HOME"` and a braced `${HOME}` before a `/`, but no
+ *  other expansion, so this raw check covers what the tokeniser cannot), or the home-relative tail (e.g. a
  *  `~/.ssh/` declaration's `.ssh/` tail), in both its literal and `cwd`-resolved spellings so
  *  a relative declaration still catches an absolute spelling of the same path. In transcript
  *  use (the default), over-redaction is harmless and under-redaction is a leak, so the
  *  conservative direction is wholesale. With `strict`, the raw spelling check also needs path-word
- *  boundaries, because the verdict's protected-path ask uses that form and a false positive there
- *  blocks a legitimate call. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
+ *  boundaries and leaves out the bare home-relative tail (`~/`, `$HOME` and `${HOME}` spellings stay),
+ *  because the verdict's protected-path ask uses that form and a false positive there blocks a
+ *  legitimate call. A redacted line is dropped for the fixed marker `<protected-path>`, a neutral
  *  privacy marker, not an injection framing (PC-review F9). Detected only literally:
  *  obfuscated spellings (command substitution, base64, archiving — ADR-0002's documented
  *  holes) are NOT redacted here; the classifier's existence hint stays the backstop for those
@@ -3335,11 +3479,13 @@ export function redactorFor(
 	for (const base of bases) {
 		for (const form of baseForms(base)) spellings.add(form);
 		// `~/` and `$HOME`/`${HOME}` spellings of the same base, plus the home-relative tail
-		// (e.g. `.ssh/`) when the base sits under the user's home directory.
+		// (e.g. `/.ssh/`) when the base sits under the user's home directory. The bare tail matches
+		// the same directory name in any other tree, so the strict ask match leaves it out.
 		const relativeToHome =
 			home && (fold(base) === fold(home) || fold(base).startsWith(fold(home + path.sep))) ? base.slice(home.length) : null;
 		if (relativeToHome !== null && relativeToHome !== "") {
-			for (const form of [relativeToHome, `~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`]) {
+			const prefixedForms = [`~${relativeToHome}`, `$HOME${relativeToHome}`, `{HOME}${relativeToHome}`];
+			for (const form of strict ? prefixedForms : [relativeToHome, ...prefixedForms]) {
 				spellings.add(form); // `{HOME}` + tail produces the literal ${HOME}… — F10's missed tokeniser form
 				for (const resolved of denyPathForms(form, cwd)) spellings.add(resolved); // literal + cwd-resolved, both ways
 			}
@@ -3390,10 +3536,27 @@ export interface RedactionPlatform {
 }
 const HOST_REDACTION_PLATFORM: RedactionPlatform = { caseInsensitive: CASE_INSENSITIVE_FS, win32: path.sep === "\\" };
 
-/** `bashPathTokens` knows only "/" separators; unify a Windows command's backslashes first, as
- *  denyPathCandidates does. A mis-read shell escape only adds candidates, which asks. */
+/** A `$HOME` or braced `${HOME}` expansion, with the quotes the shell joins around it, directly before
+ *  a `/`: `"$HOME"/x`, `$HOME"/x"`, `${HOME}'/x'`, `"$HOME""/x"`. Braces may carry a default that
+ *  expands to `$HOME` while it is set: `${HOME:-x}`, `${HOME-x}`, `${HOME:=x}`, `${HOME=x}`,
+ *  `${HOME:?x}` and `${HOME?x}`. `${HOME:+x}` is left alone because it expands to `x`, and a
+ *  single-quoted `'$HOME'` is literal in the shell (the lookbehind). The default text is capped so a
+ *  command full of unterminated `${HOME-` cannot make the scan quadratic. */
+const HOME_EXPANSION_BEFORE_SLASH = /(?<!')"?\$(?:HOME|\{HOME(?::?[-=?]([^}]{0,200}))?\})["']{0,3}(?=\/)/g;
+
+/** `bashPathTokens` knows only "/" separators and the bare `$HOME` spelling. The result holds the
+ *  command as written, a copy with each home expansion spelled `$HOME`, and each expansion's default
+ *  word on a line of its own (the tokenizer would glue `:-` onto it), so the tokens of all three are
+ *  candidates. A Windows command's backslashes are unified, as denyPathCandidates does. A mis-read
+ *  shell escape only adds candidates, which asks. */
 function commandForPathTokens(command: string, win32: boolean): string {
-	return win32 ? command.replace(/\\/g, "/") : command;
+	const defaults: string[] = [];
+	const canonical = command.replace(HOME_EXPANSION_BEFORE_SLASH, (_match, word: string | undefined) => {
+		if (word) defaults.push(word);
+		return "$HOME";
+	});
+	const all = canonical === command ? command : [command, canonical, ...defaults].join("\n");
+	return win32 ? all.replace(/\\/g, "/") : all;
 }
 
 /** Characters that end or begin a path word in a command or argument. */
@@ -3875,7 +4038,8 @@ export interface FallbackAudit {
 	reason: string | null;
 	durationMs: number;
 	error: string | null;
-	/** enforce mode only: the verdict applied (pre headless-degradation) */
+	/** the verdict applied (pre headless-degradation); absent for a shadow-mode cascade, and "deny" for a
+	 *  subagent ask in shadow mode, where the opinion is recorded but never applied */
 	effective?: "allow" | "ask" | "deny";
 }
 
@@ -4075,8 +4239,8 @@ export interface Verdict {
 	 *  owns the single finalize: append with userAnswer/answeredAt, or without them when
 	 *  presentation throws. Unset for every non-interactive verdict. */
 	pendingAudit?: AuditRecord;
-	/** Set on every ask: how the ask resolves without a human (subagent auto/timeout). "consult" = ask the second model; "allow"/"deny" = already decided by the cascade or not model-resolvable. */
-	autoResolve?: "consult" | "allow" | "deny";
+	/** Set on every ask: how the ask resolves without a human (subagent auto/timeout). "consult" = put it to the second model; "deny" = already ruled on by the cascade or not model-resolvable. */
+	autoResolve?: "consult" | "deny";
 }
 
 /** Per-call environment: host capabilities unrelated to presentation. model is lazily evaluated through getModel—preserving the original “resolve only for gray zone”
@@ -4221,7 +4385,8 @@ async function runConfidenceCascade(
 }
 
 /** Subagent gate: resolve an ask with no human answer. The UI-free counterpart of the
- *  cascade. Only an explicit second-model allow permits the call; every other outcome denies.
+ *  cascade. Only an explicit second-model allow in enforce mode permits the call; every other outcome
+ *  denies, and a shadow-mode opinion is recorded but never applied.
  *  Asks that did not come from the classifier (protected path, rule/fail-closed asks that
  *  exist only under autoDeny:false) never reach the model: `autoResolve` is "deny" there. */
 export async function resolveAskWithoutHuman(
@@ -4239,7 +4404,6 @@ export async function resolveAskWithoutHuman(
 		state.policyDegraded
 			? { verdict: "deny", reason: `${WITHHELD_ALLOW_PREFIX}${modelAllowReason}` }
 			: { verdict: "allow", reason: modelAllowReason };
-	if (v.autoResolve === "allow") return withhold(v.reason);
 	if (v.autoResolve !== "consult") return { verdict: "deny", reason: `no human answer — ${v.reason}` };
 	const rules = state.userRules;
 	if (!rules.classifierFallbackModel || !env.getFallbackModel) {
@@ -4283,12 +4447,18 @@ export async function resolveAskWithoutHuman(
 	);
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";
-	const result: { verdict: "allow" | "deny"; reason: string } = allowed
-		? withhold(`second model allows: ${outcome.reason}`)
-		: {
-				verdict: "deny",
-				reason: `second model did not approve (${outcome.source === "model" ? outcome.verdict : "error"}): ${outcome.reason}`,
-			};
+	const opinion = outcome.source === "model" ? outcome.verdict : "error";
+	// Shadow mode records the second model's opinion and never lets it change the outcome, so with no human
+	// the ask denies whatever the model said.
+	const result: { verdict: "allow" | "deny"; reason: string } =
+		rules.classifierFallbackMode === "shadow"
+			? {
+					verdict: "deny",
+					reason: `no human answer; classifierFallbackMode is shadow, so the second model's opinion (${opinion}) is recorded only — ${v.reason}`,
+				}
+			: allowed
+				? withhold(`second model allows: ${outcome.reason}`)
+				: { verdict: "deny", reason: `second model did not approve (${opinion}): ${outcome.reason}` };
 	return {
 		...result,
 		fb: {
@@ -4552,18 +4722,12 @@ export async function adjudicate(
 	// #62: an interactive ask defers the append to the handler finalize (ground truth);
 	// every other outcome appends immediately as before
 	if (env.hasUI && (effVerdict === "ask" || (effVerdict === "deny" && !state.userRules.autoDeny))) {
-		// Subagent gate: how this ask resolves without a human. ADR-0004 carve-out: a demoted deny is never auto-allowed.
-		// ADR-0004 carve-out: only an enforce-mode fallback may resolve a subagent ask.
-		// A shadow-mode opinion records without changing verdicts, so with no human it
-		// denies rather than auto-allowing (the pre-fix behavior let shadow allow).
+		// Subagent gate: how this ask resolves without a human. A cascaded ask (the second model already
+		// ruled) is never auto-allowed: its only route to an allow is the ADR-0004 carve-out, which turns a
+		// demoted ask or deny plus a second-model allow into an ask so that a human decides. Only an ask the
+		// cascade never reached may still be put to the second model.
 		const autoResolve: NonNullable<Verdict["autoResolve"]> =
-			effVerdict === "deny" || effSource !== "classifier"
-				? "deny"
-				: cascade.fb
-					? cascade.fb.mode === "enforce" && cascade.fb.verdict === "allow" && !(cascade.demoted && outcome.verdict === "deny")
-						? "allow"
-						: "deny"
-					: "consult";
+			effVerdict === "deny" || effSource !== "classifier" || cascade.fb ? "deny" : "consult";
 		return {
 			verdict: "ask",
 			reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason,

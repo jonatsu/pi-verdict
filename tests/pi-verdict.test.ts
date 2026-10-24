@@ -19,6 +19,7 @@ import autoMode, {
 	bashPathTokens,
 	bindCompletion,
 	budgetedTimeoutMs,
+	buildProtectedSet,
 	type CompletionFn,
 	computeTmpdirBases,
 	declineDetail,
@@ -27,6 +28,8 @@ import autoMode, {
 	expandHostPath,
 	gitPushForce,
 	hostPathForms,
+	hostReadPath,
+	isProtectedWritePath,
 	mentionsSpelling,
 	redactorFor,
 	renderFooter,
@@ -654,6 +657,63 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 			expect(h.calls.length).toBe(0);
 		});
 	}
+	// omp keeps its settings and auth store in a SQLite database under the agent dir, which its
+	// own `read` opens (with table selectors) and whose write-ahead files hold the same pages.
+	const AGENT_DB = "age" + "nt.db";
+	const AGENT_DB_CASES: Array<[string, string]> = [
+		[`~/.omp/agent/${AGENT_DB}`, "omp agent database"],
+		[`~/.pi/agent/${AGENT_DB}`, "pi agent database"],
+		[`~/.omp/agent/${AGENT_DB}-wal`, "agent database write-ahead log"],
+		[`~/.omp/agent/${AGENT_DB}-shm`, "agent database shared memory"],
+		[`~/.omp/agent/${AGENT_DB}-journal`, "agent database rollback journal"],
+		[`~/.omp/agent/${AGENT_DB}:1-5`, "agent database with a line selector"],
+		[`~/.omp/agent/${AGENT_DB}:settings`, "agent database with a table selector"],
+		[`~/.omp/agent/${AGENT_DB}?q=select 1`, "agent database with a query"],
+		// after `omp config init-xdg` the host flattens the agent dir into $XDG_DATA_HOME/omp
+		[`~/.local/share/omp/${AGENT_DB}`, "agent database in the XDG data home"],
+		[`~/.local/share/omp/${AGENT_DB}-wal`, "XDG agent database write-ahead log"],
+		[`~/.local/share/omp/${AGENT_DB}:settings`, "XDG agent database with a table selector"],
+		[`~/.local/share/omp/agent/${AGENT_DB}`, "agent database in an XDG agent subdirectory"],
+		[`~/.local/share/omp/agent/${AGENT_DB}-shm`, "XDG agent subdirectory shared memory"],
+		[path.join(TMP_AGENT, AGENT_DB), "agent database in a custom agent dir"],
+		[path.join(TMP_AGENT, `${AGENT_DB}-wal`), "write-ahead log in a custom agent dir"],
+		[path.join(TMP_AGENT, `${AGENT_DB}:settings`), "custom agent dir database with a table selector"],
+	];
+	for (const [p, label] of AGENT_DB_CASES) {
+		test(`read ${label} → S0 deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "read", { path: p });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("S0");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	test("a directory that merely ends in omp is not the XDG data home", async () => {
+		await withTempDir(
+			".pv-s0db-",
+			async (cwd) => {
+				fs.mkdirSync(path.join(cwd, "pomp"));
+				fs.writeFileSync(path.join(cwd, "pomp", AGENT_DB), "x");
+				const h = session({}, { cwd });
+				expect(await toolCall(h, "read", { path: `pomp/${AGENT_DB}` })).toBeUndefined();
+				expect(h.calls.length).toBe(0);
+			},
+			os.homedir(),
+		);
+	});
+	test("a project file that merely shares the name keeps its rule allow", async () => {
+		await withTempDir(
+			".pv-s0db-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, AGENT_DB), "x");
+				fs.writeFileSync(path.join(cwd, `${AGENT_DB}.bak`), "x");
+				const h = session({}, { cwd });
+				for (const p of [AGENT_DB, `${AGENT_DB}.bak`]) expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				expect(h.calls.length).toBe(0);
+			},
+			os.homedir(),
+		);
+	});
 	test("write under the XDG gnupg home → S0 deny", async () => {
 		const h = session({});
 		const r = await toolCall(h, "write", { path: "~/.config/gnupg/private-keys-v1.d/x.key", content: "x" });
@@ -3692,6 +3752,30 @@ describe("self-protection layer (ADR-0005)", () => {
 		expect(await toolCall(h, "write", { path: path.join(TMP_AGENT, "proj", "src", "a.ts"), content: "x" })).toBeUndefined();
 	});
 
+	test("a single-file install also protects the jev-adapter.ts the gate imports", async () => {
+		await withTempDir("pv-sp-copy-", async (agentDir) => {
+			const ext = path.join(agentDir, "extensions");
+			const gate = path.join(ext, "pi-verdict.ts");
+			const adapter = path.join(ext, "jev-adapter.ts");
+			const prot = buildProtectedSet(agentDir, gate);
+			expect(isProtectedWritePath(gate, "/proj", prot)).toBe(true);
+			expect(isProtectedWritePath(adapter, "/proj", prot)).toBe(true);
+			expect(prot.bashPatterns.some((re) => re.test(`cp x ${adapter}`))).toBe(true);
+			// only the sibling the gate imports, not every file beside it
+			expect(isProtectedWritePath(path.join(ext, "other.ts"), "/proj", prot)).toBe(false);
+		});
+	});
+
+	test("a directory install protects the package, adapter included; a dev checkout protects no adapter", async () => {
+		await withTempDir("pv-sp-copy-", async (agentDir) => {
+			const pkg = path.join(agentDir, "plugins", "node_modules", "@jonatsu", "pi-verdict");
+			const prot = buildProtectedSet(agentDir, path.join(pkg, "extensions", "pi-verdict.ts"));
+			expect(isProtectedWritePath(path.join(pkg, "extensions", "jev-adapter.ts"), "/proj", prot)).toBe(true);
+			const dev = buildProtectedSet(agentDir, "/proj/extensions/pi-verdict.ts");
+			expect(isProtectedWritePath("/proj/extensions/jev-adapter.ts", "/proj", dev)).toBe(false);
+		});
+	});
+
 	test("reads of the trust store are denied; the policy still reads (R6)", async () => {
 		const h = session({});
 		const r = await toolCall(h, "read", { path: TRUST() });
@@ -4626,15 +4710,63 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		});
 	});
 
-	test("auto: a call naming a protected path through a spelling the tokeniser misses is held without any model call", async () => {
+	test("ADR-0004 carve-out holds for subagents: a demoted first-layer ask is never auto-allowed", async () => {
+		const jevAsk40 = { text: "<verdict>ask</verdict> jev: ask 60% (confidence 40%; allow 30%, deny 10%)" };
+		const cfg = { classifierMinConfidence: 50, classifierFallbackModel: "mock/fb" };
+		for (const gate of ["auto", "normal"] as const) {
+			// "normal" with no root UI resolves without a human, like "auto"
+			await withBridge(
+				{ ...cfg, subagentGate: gate },
+				async (_root, sub) => {
+					sub.responses = [jevAsk40, ALLOW];
+					const r = await toolCall(sub, "bash", { command: "cargo build" });
+					expect(r?.block).toBe(true);
+					expect(String(r.reason)).toContain("second opinion allows");
+					expect(sub.calls.length).toBe(2);
+				},
+				{ rootHasUI: gate === "auto" },
+			);
+		}
+	});
+
+	test("shadow mode keeps the second model advisory for subagents: it is consulted and recorded, never decisive", async () => {
+		clearAudit();
+		try {
+			await withBridge(
+				{ audit: true, subagentGate: "auto", classifierFallbackMode: "shadow", classifierFallbackModel: "mock/fb" },
+				async (root, sub) => {
+					sub.responses = [ASK, ALLOW];
+					const r = await toolCall(sub, "bash", { command: "cargo build" });
+					expect(r?.block).toBe(true);
+					expect(String(r.reason)).toContain("shadow");
+					expect(sub.calls.length).toBe(2); // the second model still ran
+					expect(root.confirms).toBe(0);
+					const rec = readAudit().at(-1);
+					expect(rec.fallback).toMatchObject({ mode: "shadow", triggeredBy: "subagent-ask", verdict: "allow", effective: "deny" });
+				},
+			);
+			// the same setup under enforce is unchanged: an explicit second-model allow permits
+			await withBridge(
+				{ subagentGate: "auto", classifierFallbackMode: "enforce", classifierFallbackModel: "mock/fb" },
+				async (_root, sub) => {
+					sub.responses = [ASK, ALLOW];
+					expect(await toolCall(sub, "bash", { command: "cargo build" })).toBeUndefined();
+				},
+			);
+		} finally {
+			clearAudit();
+		}
+	});
+
+	test("auto: a call naming a protected path through a braced home variable is held without any model call", async () => {
 		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb", denyPaths: ["~/.ssh/"] }, async (_root, sub) => {
 			sub.responses = [ASK, ALLOW];
-			// The ${HOME} spelling defeats the denyPaths tokeniser; the redactor still sees it, so the
-			// gate holds the call itself and no model, classifier or second, receives the action.
+			// A braced ${HOME} spelling reaches the denyPaths ask like $HOME; the gate holds the call
+			// itself and no model, classifier or second, receives the action.
 			const r = await toolCall(sub, "bash", { command: `cat \${HOME}/.ssh/id_rsa` });
 			expect(r?.block).toBe(true);
 			expect(sub.calls.length).toBe(0);
-			expect(r?.reason).toContain("names a user-declared protected path");
+			expect(r?.reason).toContain("user-declared protected path");
 			expect(r?.reason).not.toContain("/.ssh/");
 		});
 	});
@@ -5152,8 +5284,8 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 	});
 
 	test(`a \${HOME}-spelled protected path asks without a model call and never reaches a notification`, async () => {
-		// The denyPaths bash tokeniser knows $HOME but not ${HOME}; the redactor still matches the
-		// call, so the gate asks deterministically instead of sending a marker to the classifier.
+		// The denyPaths bash tokeniser reads ${HOME} as $HOME and the redactor matches the call too,
+		// so the gate asks deterministically instead of sending a marker to the classifier.
 		const h = session({ denyPaths: ["~/.ssh/"] });
 		h.responses = [{ text: "<verdict>allow</verdict> mock" }];
 		h.confirmAnswer = false;
@@ -5163,6 +5295,110 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		expect(r?.block).toBe(true);
 		expect(r?.reason).not.toContain("/.ssh/id_rsa");
 		expect(h.notifies.some(([m]) => m.includes("/.ssh/id_rsa"))).toBe(false);
+	});
+
+	test("a home-relative declaration does not make the same tail inside another tree a protected path", async () => {
+		const home = os.homedir();
+		const tail = ".pv-strict-tail";
+		await withTempDir("pv-strict-cwd-", async (cwd) => {
+			fs.mkdirSync(path.join(cwd, tail), { recursive: true });
+			fs.writeFileSync(path.join(cwd, tail, "data"), "x");
+			const h = session({ denyPaths: [`~/${tail}/`] }, { cwd });
+			h.confirmAnswer = false;
+			// the project's own `.pv-strict-tail/data` is another tree: no protected-path ask
+			expect(await toolCall(h, "read", { path: path.join(cwd, tail, "data") })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+			// every spelling of the declared home path still asks
+			for (const [tool, input] of [
+				["read", { path: `~/${tail}/x` }],
+				["read", { path: `${home}/${tail}/x` }],
+				["bash", { command: `cat \${HOME}/${tail}/x` }],
+				["bash", { command: `cat $HOME/${tail}/x` }],
+				["bash", { command: `cat ~/${tail}/x` }],
+			] as const) {
+				h.confirms = 0;
+				expect((await toolCall(h, tool, input))?.block).toBe(true);
+				expect(h.confirms).toBe(1);
+			}
+		});
+		// a relative spelling from a cwd that is the home directory still names the declared path
+		const h = session({ denyPaths: [`~/${tail}/`] }, { cwd: home });
+		h.confirmAnswer = false;
+		expect((await toolCall(h, "bash", { command: `cat ${tail}/x` }))?.block).toBe(true);
+		expect(h.confirms).toBe(1);
+	});
+
+	test("quoted and braced $HOME spellings in a command still reach a denyPaths ask", async () => {
+		const tail = ".pv-strict-tail";
+		const h = session({ denyPaths: [`~/${tail}/`] });
+		h.confirmAnswer = false;
+		for (const command of [
+			`cat "$HOME"/${tail}/x`,
+			`cat "\${HOME}"/${tail}/x`,
+			`cat \${HOME}/${tail}/x`,
+			`cat "\${HOME}/${tail}/x"`,
+			`cat \${HOME:-/x}/${tail}/x`,
+			`cat \${HOME-/x}/${tail}/x`,
+			`cat "\${HOME:=/x}"/${tail}/x`,
+			`cat $HOME/${tail}/x`,
+		]) {
+			h.confirms = 0;
+			expect((await toolCall(h, "bash", { command }))?.block).toBe(true);
+			expect(h.confirms).toBe(1);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a quote between the $HOME expansion and its slash still reaches the denyPaths ask", async () => {
+		const tail = ".pv-strict-tail";
+		const h = session({ denyPaths: [`~/${tail}/`] });
+		h.confirmAnswer = false;
+		for (const command of [
+			`cat $HOME"/${tail}/x"`,
+			`cat \${HOME}'/${tail}/x'`,
+			`cat "$HOME""/${tail}/x"`,
+			`cat "$HOME"'/${tail}/x'`,
+			`cat "\${HOME:-/x}"'/${tail}/x'`,
+		]) {
+			h.confirms = 0;
+			expect((await toolCall(h, "bash", { command }))?.block).toBe(true);
+			expect(h.confirms).toBe(1);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("the default word of a braced HOME expansion is still a path candidate", async () => {
+		const base = "/tmp/pv-default-word-base";
+		const h = session({ denyPaths: [base] });
+		h.confirmAnswer = false;
+		for (const command of [`HOME=; cat \${HOME:-${base}}/x`, `cat "\${HOME-${base}}"/x`, `cat \${HOME:=${base}}/x`]) {
+			h.confirms = 0;
+			expect((await toolCall(h, "bash", { command }))?.block).toBe(true);
+			expect(h.confirms).toBe(1);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a single-quoted or non-defaulting $HOME is not read as the home directory", async () => {
+		const tail = ".pv-strict-tail";
+		const h = session({ denyPaths: [`~/${tail}/`] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		for (const command of [`cat '$HOME'/${tail}/x`, `cat \${HOME:+/x}/${tail}/x`]) {
+			h.confirms = 0;
+			h.calls.length = 0;
+			expect(await toolCall(h, "bash", { command })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+			expect(h.calls).toHaveLength(1); // the classifier, not a protected-path ask
+		}
+	});
+
+	test("transcript redaction keeps the home-relative tail while the strict ask match drops it", () => {
+		const home = os.homedir();
+		const base = `${home}/.pv-strict-tail`;
+		const call = { path: "/work/.pv-strict-tail/data" };
+		expect(redactorFor("/work", [base])(call)).toBe(true);
+		expect(redactorFor("/work", [base], undefined, true)(call)).toBe(false);
+		expect(redactorFor("/work", [base], undefined, true)({ command: `cat \${HOME}/.pv-strict-tail/x` })).toBe(true);
 	});
 
 	test("a call only the wide redactor matches reaches the classifier as the marker, not the path", async () => {
@@ -5812,6 +6048,66 @@ describe("host path spelling (ADR-0009)", () => {
 		expect(hostPathForms(".env:raw")).toEqual([".env:raw"]);
 	});
 
+	test("hostPathForms peels mixed range and tail selector lists and folded list colons", () => {
+		const peel = { peelSelector: true };
+		for (const p of ["a.ts:1-12,-15", "a.ts:-15,1-12", "a.ts:1-12,-15,30", "a.ts:raw:1-5,-3", "a.ts:1-5,-3:raw"]) {
+			expect(hostPathForms(p, peel)).toEqual([p, "a.ts"]);
+		}
+		expect(hostPathForms("a.ts:1-30,:-30", peel)).toEqual(["a.ts:1-30,:-30", "a.ts", "a.ts:1-30,"]);
+		expect(hostPathForms("a.ts:1-2,:-3:raw", peel)).toContain("a.ts");
+		expect(hostPathForms("a.ts:1-2,:3-4,:-5", peel)).toContain("a.ts");
+		for (const p of ["a.ts:1-12,", "a.ts:,-15", "a.ts:1-12,,-15", "a.ts:-15-3"]) expect(hostPathForms(p, peel)).not.toContain("a.ts");
+	});
+
+	test("hostReadPath prefers an existing unfolded literal for a folded list colon", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				expect(hostReadPath("a.ts:1-30,:-30", cwd)).toBe("a.ts");
+				fs.writeFileSync(path.join(cwd, "a.ts:1-30,"), "x");
+				expect(hostReadPath("a.ts:1-30,:-30", cwd)).toBe("a.ts:1-30,");
+				fs.writeFileSync(path.join(cwd, "a.ts:1-30,:-30"), "x");
+				expect(hostReadPath("a.ts:1-30,:-30", cwd)).toBe("a.ts:1-30,:-30");
+			},
+			home,
+		);
+	});
+
+	test("a protected file stays denied under every mixed selector list spelling", async () => {
+		const h = session({});
+		const netrc = `${home}/.ne` + "trc";
+		const creds = `${home}/.p` + "i/agent/au" + "th.json";
+		for (const p of [
+			`${netrc}:1-12,-15`,
+			`${netrc}:-15,1-12`,
+			`${netrc}:1-30,:-30`,
+			`${netrc}:raw:1-5,-3`,
+			`${netrc}:1-5,-3:raw`,
+			`${creds}:1-2,:-3:raw`,
+			".e" + "nv:1-12,-15",
+		]) {
+			expect((await toolCall(h, "read", { path: p }))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a benign project file with a mixed selector list keeps its rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.mkdirSync(path.join(cwd, "src"));
+				fs.writeFileSync(path.join(cwd, "src", "a.ts"), "x");
+				const h = session({}, { cwd });
+				for (const p of ["src/a.ts:1-12,40-50", "src/a.ts:1-12,-15", "src/a.ts:-15,1-12", "src/a.ts:1-30,:-30", "src/a.ts:raw:1-5,-3"]) {
+					expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				}
+				expect(h.calls).toHaveLength(0);
+				expect(h.confirms).toBe(0);
+			},
+			home,
+		);
+	});
+
 	test("a read or grep path with a selector suffix is graded as the file the host opens", async () => {
 		const h = session({});
 		for (const [tool, input] of [
@@ -6067,6 +6363,67 @@ describe("host path spelling (ADR-0009)", () => {
 		);
 	});
 
+	test("hostPathForms peels the JSON ?query= selector in both spellings", () => {
+		const ask = { peelImageQuestion: true };
+		expect(hostPathForms("a.json?query=.x", ask)).toEqual(["a.json?query=.x", "a.json"]);
+		expect(hostPathForms("a.json?q=.x", ask)).toEqual(["a.json?q=.x", "a.json"]);
+		expect(hostPathForms("a.json?raw=1&query=.", ask)).toContain("a.json");
+		expect(hostPathForms("a.json?query=", ask)).toEqual(["a.json?query="]);
+		expect(hostPathForms("https://h/a.json?query=x", ask)).toEqual(["https://h/a.json?query=x"]);
+	});
+
+	test("a JSON read with a ?query= selector is graded as the file the host opens", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				const secret = path.join(cwd, "secrets", "tok.json");
+				const h = session({ denyPaths: [secret] }, { cwd });
+				h.confirmAnswer = false;
+				for (const p of [`${home}/.p` + "i/agent/au" + "th.json?query=.", `${home}/.do` + "cker/config.json?raw=1&query=.auths"]) {
+					expect((await toolCall(h, "read", { path: p }))?.block).toBe(true);
+				}
+				expect(h.calls).toHaveLength(0);
+				expect((await toolCall(h, "read", { path: `${secret}?query=.` }))?.block).toBe(true);
+				expect(h.confirms).toBe(1);
+			},
+			home,
+		);
+	});
+
+	test("hostReadPath peels ?query= only for a JSON file, as the host does", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				expect(hostReadPath("data.json?query=.a", cwd)).toBe("data.json");
+				expect(hostReadPath("data.jsonl?query=.a", cwd)).toBe("data.jsonl");
+				expect(hostReadPath("data.ndjson?raw=1&query=.", cwd)).toBe("data.ndjson");
+				expect(hostReadPath("a.txt?query=x", cwd)).toBe("a.txt?query=x");
+				expect(hostReadPath("a.txt?q=x", cwd)).toBe("a.txt");
+				// grading still widens: both spellings are graded for every file
+				expect(hostPathForms("a.txt?query=x", { peelImageQuestion: true })).toContain("a.txt");
+			},
+			home,
+		);
+	});
+
+	test("a read of an existing file with a ?query= suffix is not a rule allow unless it is JSON", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.writeFileSync(path.join(cwd, "a.txt"), "x");
+				fs.writeFileSync(path.join(cwd, "data.json"), "{}");
+				const h = session({}, { cwd });
+				h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+				expect(await toolCall(h, "read", { path: "data.json?query=." })).toBeUndefined();
+				expect(await toolCall(h, "read", { path: "a.txt?q=x" })).toBeUndefined();
+				expect(h.calls).toHaveLength(0);
+				expect((await toolCall(h, "read", { path: "a.txt?query=x" }))?.block).toBe(true);
+				expect(h.calls).toHaveLength(1);
+			},
+			home,
+		);
+	});
+
 	test("a target in a registered internal scheme is never a rule allow, even under a user allow", async () => {
 		await withTempDir(
 			"pv-hps-",
@@ -6087,6 +6444,21 @@ describe("host path spelling (ADR-0009)", () => {
 			},
 			home,
 		);
+	});
+
+	test("a merge-request URL target is never a rule allow, like pr:// and issue://", async () => {
+		const h = session({ allow: ["^.*$"], tools: ["read", "grep"] });
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		for (const [tool, input] of [
+			["read", { path: "mr://1/diff" }],
+			["read", { path: "@mr://1" }],
+			["grep", { pattern: "x", path: "mr://1/diff" }],
+			["read", { path: "MR://1/diff" }],
+		] as const) {
+			h.calls.length = 0;
+			expect((await toolCall(h, tool, input))?.block).toBe(true);
+			expect(h.calls).toHaveLength(1);
+		}
 	});
 
 	test("hostPathForms removes shell escapes for read paths only", () => {
@@ -6127,5 +6499,145 @@ describe("host path spelling (ADR-0009)", () => {
 			},
 			home,
 		);
+	});
+});
+
+describe("hashline header spellings (ADR-0009)", () => {
+	const header = (h: string): { input: string } => ({ input: `[${h}]\n1:x\n` });
+	const dotEnv = ".e" + "nv";
+
+	test("a placeholder tag never hides the edit target from the floor", async () => {
+		const h = session({});
+		for (const spelling of [".git/config#AUTO", dotEnv + "#????", ".gitmodules#0", ".git/config#", dotEnv + "rc#AUTO "]) {
+			expect((await toolCall(h, "edit", header(spelling)))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a placeholder-tagged header behind a benign one is graded too", async () => {
+		const h = session({});
+		const r = await toolCall(h, "edit", { input: "[src/a.ts#1A2B]\n1:x\n[.git/config#AUTO]\n1:y\n" });
+		expect(r?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a placeholder-tagged header over a denyPaths file reaches the ask", async () => {
+		await withTempDir(
+			"pv-hl-",
+			async (cwd) => {
+				const h = session({ denyPaths: [path.join(cwd, "secrets", "tok.json")] }, { cwd });
+				h.confirmAnswer = false;
+				const r = await toolCall(h, "edit", header("secrets/tok.json#AUTO"));
+				expect(h.confirms).toBe(1);
+				expect(r?.block).toBe(true);
+			},
+			os.homedir(),
+		);
+	});
+
+	test("a benign placeholder-tagged header keeps its rule allow", async () => {
+		const h = session({});
+		expect(await toolCall(h, "edit", header("src/a.ts#AUTO"))).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("trailing whitespace after a header does not hide its target", async () => {
+		const h = session({});
+		for (const tail of [" ", "\t", "  \t", "\r"]) {
+			const r = await toolCall(h, "edit", { input: `[src/a.ts#1A2B]\n1:x\n[.git/config#ABCD]${tail}\n1:y\n` });
+			expect(r?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("an apply-patch prefix inside a header does not hide its target", async () => {
+		const h = session({});
+		for (const spelling of [
+			"*** Update File: .git/config#ABCD",
+			"*** Update File: .git/config#AUTO",
+			"Update File: .git/config#ABCD",
+			"*** Add File: " + dotEnv + "#ABCD",
+			"***Delete file:.git/config#ABCD",
+			"*** Move to: .git/config#ABCD",
+			'*** Update File: ".git/config"#ABCD',
+			'"*** Update File: .git/config"#ABCD',
+		]) {
+			expect((await toolCall(h, "edit", header(spelling)))?.block).toBe(true);
+		}
+		const second = await toolCall(h, "edit", { input: "[src/a.ts#1A2B]\n1:x\n[*** Update File: .git/config#ABCD]\n1:y\n" });
+		expect(second?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a benign header with an apply-patch prefix keeps its rule allow", async () => {
+		const h = session({});
+		for (const spelling of ["*** Update File: src/a.ts#1A2B", "add/x.ts#1A2B", "update/file: x.ts#1A2B"]) {
+			expect(await toolCall(h, "edit", header(spelling))).toBeUndefined();
+		}
+		expect(h.confirms).toBe(0);
+	});
+
+	test("a benign header with trailing whitespace keeps its rule allow", async () => {
+		const h = session({});
+		expect(await toolCall(h, "edit", { input: "[src/a.ts#1A2B] \n1:x\n[src/b.ts#3C4D]\t\n1:y\n" })).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+		expect(h.confirms).toBe(0);
+	});
+
+	test("an envelope marker before a header does not hide its target", async () => {
+		const h = session({});
+		for (const row of [
+			"[*** Begin Patch] [.git/config#ABCD]",
+			"[*** Begin Patch [.git/config#ABCD]",
+			"[  *** Begin Patch   ]   [.git/config#ABCD]",
+			"[*** Begin Patch][*** Begin Patch] [.git/config#ABCD]",
+			"[*** End Patch] [.git/config#ABCD]",
+			"[*** Abort] [.git/config#AUTO] ",
+			"[*** Begin Patch] [*** Update File: .git/config#ABCD]",
+		]) {
+			expect((await toolCall(h, "edit", { input: `${row}\n+x\n` }))?.block).toBe(true);
+		}
+		const behind = await toolCall(h, "edit", { input: "[src/a.ts#1A2B]\n1:x\n[*** Begin Patch] [.git/config#ABCD]\n1:y\n" });
+		expect(behind?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("whitespace that Rust trims but JavaScript does not (U+0085) does not hide a header target", async () => {
+		const h = session({});
+		const nel = "\u0085";
+		for (const row of [
+			`[${nel}.git/config#ABCD]`,
+			`[.git/config#ABCD${nel}]`,
+			`[.git/config#ABCD]${nel}`,
+			`[${nel}*** Begin Patch${nel}]${nel}[.git/config#ABCD]`,
+			`[.git/config${nel}#AUTO${nel}]`,
+			`[.git/config${nel}#ABCD]`,
+		]) {
+			expect((await toolCall(h, "edit", { input: `[src/a.ts#1A2B]\n1:x\n${row}\n1:y\n` }))?.block).toBe(true);
+		}
+		for (const p of [`[${nel}.git/config]`, `[.git/config]${nel}`]) {
+			expect((await toolCall(h, "write", { path: p, content: "x" }))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a bracketed write path with trailing whitespace is graded as the file it names", async () => {
+		const h = session({});
+		for (const p of ["[.git/config] ", "[.git/config#ABCD]\t", `[${dotEnv}] \r`, "[~/.ssh/id_rsa] "]) {
+			expect((await toolCall(h, "write", { path: p, content: "x" }))?.block).toBe(true);
+		}
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const bashrc = await toolCall(h, "write", { path: "[~/.ba" + "shrc] ", content: "x" });
+		expect(bashrc).toBeUndefined();
+		expect(h.calls).toHaveLength(1); // graded as the persistence entry point: the classifier, not a rule allow
+		expect(await toolCall(session({}), "write", { path: "[src/a.ts] ", content: "x" })).toBeUndefined();
+	});
+
+	test("a benign header behind an envelope marker keeps its rule allow", async () => {
+		const h = session({});
+		for (const row of ["[*** Begin Patch] [src/a.ts#1A2B]", "[*** Begin Patch [src/a.ts#1A2B]"]) {
+			expect(await toolCall(h, "edit", { input: `${row}\n1:x\n` })).toBeUndefined();
+		}
+		expect(h.confirms).toBe(0);
 	});
 });

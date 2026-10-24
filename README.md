@@ -110,7 +110,7 @@ The first run writes this file from a template that holds every key with its def
 - `audit: true` records every gray-zone adjudication, and protected-path asks, as local JSONL under `<agentDir>/verdicts/`; the agent can neither read nor write that directory.
 - `notifyAllows: true` notifies on every classifier allow; the default keeps passes silent.
 - `classifierMinConfidence`, `classifierFallbackModel` and `classifierFallbackMode` set the **confidence floor** and the second-layer classifier it cascades to ([ADR-0004](docs/adr/0004-classifier-fallback-cascade.md)). A natural pairing is jev first and a haiku-class fallback.
-- `subagentGate` and `subagentAskTimeoutMs` (omp only) decide how asks raised inside subagents are answered: on the root session's UI, or without a human through `classifierFallbackModel`, which denies everything it does not explicitly allow.
+- `subagentGate` and `subagentAskTimeoutMs` (omp only) decide how asks raised inside subagents are answered: on the root session's UI, or without a human through `classifierFallbackModel`. Without a human, a subagent ask is allowed only when an `enforce`-mode second model explicitly allows it; a `shadow`-mode opinion is recorded but never decides, and an ask the confidence cascade already ruled on is denied.
 
 No built-in allowlist — every "always allow" claim is yours ([why](docs/configuration.md#why-no-built-in-allowlist)). Full reference: [docs/configuration.md](docs/configuration.md).
 
