@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-10-24
+
+Patch release for omp 18.12.6: path spellings the new host version resolves, its SQLite credential store, and two subagent auto-resolve holes.
+
 ### Fixed
 
 - The first-run config template's `_hint` text links this repository's `docs/configuration.md` instead of upstream's, names the real `classifierFallbackModel` triggers (a fail-closed first layer, or a jev confidence below `classifierMinConfidence`) in place of the removed `classifierFallbackConfidence`, and no longer offers `task` as an example `tools` entry, since listing `task` would let subagent launches bypass the subagent gate. Existing configs are not rewritten.
@@ -417,7 +421,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/jonatsu/pi-verdict/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/jonatsu/pi-verdict/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jonatsu/pi-verdict/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jonatsu/pi-verdict/compare/v0.15.0...v0.16.0
