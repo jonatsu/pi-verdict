@@ -75,7 +75,7 @@ import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
-import type { ThinkingLevel } from "./classifier.ts";
+import type { ModelChoice, ThinkingLevel } from "./classifier.ts";
 import { type AutoModeDeps, completeForClassifier } from "./completion.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
@@ -778,7 +778,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  session-model fallback. If unavailable, fall back to the session model and warn once; null means no session model either →
 	 *  fail-closed. Called lazily through AdjudicateEnv.getModel (only in the gray zone), so fallback warnings do not appear
 	 *  on calls already decided by rules. */
-	function resolveClassifier(ctx: ExtensionContext): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
+	function resolveClassifier(ctx: ExtensionContext): ModelChoice {
 		const raw = (pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
 		let thinking: ThinkingLevel = "off";
 		if (raw) {
@@ -809,9 +809,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  judgment twice instead of adding a second opinion. Unresolvable → one-time warning
 	 *  + null (shadow: inert; enforce: triggered calls fail-closed, see runFallbackCascade).
 	 *  Resolved lazily via AdjudicateEnv.getFallbackModel, only after the gate fires. */
-	function resolveFallbackClassifier(
-		ctx: ExtensionContext,
-	): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
+	function resolveFallbackClassifier(ctx: ExtensionContext): ModelChoice {
 		const raw = state.userRules.classifierFallbackModel;
 		if (!raw) return null;
 		const { specPart, level } = parseModelSpec(raw, (msg) => {
@@ -837,7 +835,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	/** EXPLAIN-GATE role model: config `explainGateModel`, else inherit the session model (the call is
 	 *  user-initiated, so unlike the second-layer classifier there is no double-billing concern). An
 	 *  unavailable configured model falls back to the session model with a one-time warning. */
-	function resolveExplainGate(ctx: ExtensionContext): { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null {
+	function resolveExplainGate(ctx: ExtensionContext): ModelChoice {
 		const raw = state.userRules.explainGateModel;
 		let thinking: ThinkingLevel = "off";
 		if (raw) {

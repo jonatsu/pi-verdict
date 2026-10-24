@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sanitize } from "./action-line.ts";
-import { buildTranscript, callClassifierOnce, type PipelineHost, type ThinkingLevel } from "./classifier.ts";
+import { buildTranscript, callModelOnce, type PipelineHost, type ThinkingLevel } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import type { RedactorFn } from "./redaction.ts";
 
@@ -60,7 +60,7 @@ export async function explainGate(a: ExplainGateArgs): Promise<ExplainGateResult
 		? `Answer this specific question from the human about the held action: ${sanitize(question)}`
 		: (a.defaultPrompt ?? EXPLAIN_GATE_DEFAULT_PROMPT);
 	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine, a.redact)}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
-	const r = await callClassifierOnce(
+	const r = await callModelOnce(
 		a.host,
 		a.signal,
 		a.complete,

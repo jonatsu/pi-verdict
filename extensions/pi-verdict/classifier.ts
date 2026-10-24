@@ -146,6 +146,9 @@ function temperatureRejection(r: { ok: true; stopReason: string; errorMessage?: 
 /** Classifier thinking levels (pi's native vocabulary; suffix syntax aligned with pi --model provider/id:thinking). */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+/** A resolved model and its thinking level, or null when none is configured or authenticated. */
+export type ModelChoice = { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null;
+
 /**
  * Single classifier attempt: reasoning "off" by default (see options below);
  * failures return an error string instead of throwing. A provider rejection
@@ -153,7 +156,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  * (#47) — models that accept it keep the temperature 0 determinism pin,
  * models that deprecate it self-heal instead of fail-closing every call.
  */
-export async function callClassifierOnce(
+export async function callModelOnce(
 	host: PipelineHost,
 	signal: AbortSignal | undefined,
 	complete: CompletionFn,
@@ -266,7 +269,7 @@ export async function classifyWithModel(
 		if (signal?.aborted) break; // User canceled; do not retry
 		// item 7: the attempt's cap, as far as the shared deadline allows.
 		const attemptMs = budget ? budgetedTimeoutMs(timeoutMs, budget.deadlineAt - Date.now(), budget.reserveMs) : timeoutMs;
-		const r = await callClassifierOnce(host, signal, complete, model, userMessage, maxTokens, thinking, systemPrompt, attemptMs);
+		const r = await callModelOnce(host, signal, complete, model, userMessage, maxTokens, thinking, systemPrompt, attemptMs);
 		if (r.timedOut && !r.ok) {
 			// item 7: a timeout is a budget verdict, not a compatibility failure — retrying inside
 			// the same deadline only spends the remainder the fallback needs. A response that still

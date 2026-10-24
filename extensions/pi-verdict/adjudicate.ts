@@ -1,4 +1,3 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseJevConfidence } from "../jev-adapter.ts";
 import { actionCallLine } from "./action-line.ts";
 import type { AuditRecord, FallbackAudit } from "./audit.ts";
@@ -8,8 +7,8 @@ import {
 	type ClassifierOutcome,
 	classifyWithModel,
 	FALLBACK_TIMEOUT_MS,
+	type ModelChoice,
 	type PipelineHost,
-	type ThinkingLevel,
 } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
@@ -51,11 +50,11 @@ export interface Verdict {
 export interface AdjudicateEnv {
 	cwd: string;
 	hasUI: boolean;
-	getModel: () => { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null;
+	getModel: () => ModelChoice;
 	complete: CompletionFn;
 	host: PipelineHost;
 	signal?: AbortSignal;
-	getFallbackModel?: () => { model: NonNullable<ExtensionContext["model"]>; thinking: ThinkingLevel } | null;
+	getFallbackModel?: () => ModelChoice;
 	/** Live-status hook: called right before each gray-zone model call; UI-free (the handler renders it). */
 	onPhase?: (phase: "classifier" | "fallback", modelId: string) => void;
 	/** Transcript redaction predicate (item 6b, Phase 5) — built once per call by adjudicate
