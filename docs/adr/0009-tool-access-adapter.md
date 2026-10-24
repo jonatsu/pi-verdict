@@ -386,3 +386,18 @@ changed:
 - *Bracketed write paths.* A `write` path wrapped as a header (`[path] `) is unwrapped after the line end is
   trimmed, as omp's `unwrapHashlineHeaderPath` does.
 - *Registered schemes.* `mr` (GitLab merge-request diffs) joins the registered scheme list.
+- *Indented apply-patch headers.* omp trims both ends of an apply-patch hunk header before it matches
+  one, so an indented `  *** Update File: x` is a header and its path a write target (fixed after v0.20.0;
+  before, a patch with one flush-left and one indented header got a rule allow for the indented target).
+
+*Further accepted residuals (2026-10-24).*
+- A video `read` selector is peeled by the host without the base existing, so a selector spelling of a
+  protected video file is matched only by a `denyPaths` entry for the exact file, not by a directory
+  entry's subtree check through the peeled form.
+- A target in a registered internal scheme (`local://`, `memory://`, `skill://`, `vault://`) is graded as
+  its URL text, so a `denyPaths` base that covers the directory backing the scheme does not match it. A
+  read or scope call there is held back from a rule allow and reaches the classifier; a `write` or `edit`
+  there is graded as an in-project write and allowed by rule (verified 2026-10-24: `write local://notes.md`
+  and `write memory://x` are `allow`). Writes into a scheme whose backing directory the user protects are
+  therefore not asked; see `TODO.md` item 3. The transcript redactor still hides a base spelled
+  in it.
