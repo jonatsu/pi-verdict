@@ -59,3 +59,12 @@ During a gray-zone model call the `tool_call` handler shows a one-row status wid
 (`ui.setWidget("verdict", …)`), fed by the UI-free `AdjudicateEnv.onPhase` hook, and clears it before
 presenting the verdict. The row carries the phase, the tool name and the model id only, never command or
 path text (ADR-0002).
+
+## Input rewritten after the gate
+
+The gate adjudicates the input its `tool_call` handler receives and assumes no later handler changes it. Both hosts
+allow a later change. On omp a handler may return a replacement `input`; every handler sees the original input, and
+when several return one the last wins (`extensibility/shared-events.ts`, 18.12.6), so load order does not help. On pi a
+handler may mutate `event.input`, so a handler that runs after pi-verdict can change it. Either way an extension
+can make the executed call differ from the adjudicated one. The gate cannot prevent this, so install only
+extensions that do not rewrite tool input.
