@@ -602,19 +602,30 @@ This settles the tool-access plan's open loader question.
   - UI (dialog, footer).
 
   `extensions/jev-adapter.ts` stays where it is.
+
+  The measured module map (2026-10-24) has 20 modules, because the ~800-line limit and the import cycles rule out
+  coarser groups: `shell`, `paths`, `agent-dir`, `trust`, `config`, `floor`, `access` (host path spelling and the
+  tool-access adapter, which import each other), `deny-paths`, `self-protection`, `classifier`, `rules`
+  (`classifyByRules`), `audit`, `state`, `adjudicate`, `explain`, `subagent`, `ui/config-editor`, `ui/dialog`,
+  `ui/footer` and `index`. Five symbols leave their banner section to break cycles, and `rootUi` stays in `index.ts`
+  because `autoMode` assigns it. `index.ts` stays near 1,000 lines until the simplification pass after the split (`TODO.md`) shrinks
+  `autoMode`.
 - **Order.** Split first, before item 9 (reordered 2026-10-07; the file had grown to 6,285 lines). Cut along the
   file's existing banner sections, one module per commit, by mechanical moves with no behaviour change and probe
   parity. The call-model module does not exist yet; item 9 creates it inside the split layout, and may move code
-  between modules when it redraws a seam. Re-verify the loader facts above against the installed omp (18.6.1 on
-  2026-10-07) before the first move.
+  between modules when it redraws a seam. The loader facts above were re-verified against omp 18.12.6 and pi 0.84.3
+  on 2026-10-24: `extensions/pi-verdict/index.ts` loads as `pi-verdict`, and neither host loads the sibling modules
+  as extensions. A stale single-file copy beside the new directory still loads on pi, and on omp it most likely
+  shadows the new gate (omp keeps the first extension of a name), so the migration note says to delete it first.
 - **Module-level state.** Move it into `SessionState` or an injected platform object (home, case-insensitivity,
   realpath), so that tests can vary it.
 
 **What must change with the layout:**
 
-- **Self-protection.** `buildProtectedSet` protects the installed copy as a single exact file when
-  `ownFile` is a file under `extensions/`. After the split, `ownFile` is `index.ts`, and the sibling modules would be
-  unprotected. The protected target must become the module directory. Pin it with a test before the first move.
+- **Self-protection.** Checked 2026-10-24: `buildProtectedSet` already protects the whole module directory, bash
+  signature included, when `ownFile` is `<agentDir>/extensions/pi-verdict/index.ts`, and the package root for an omp
+  plugin install. The first commit therefore pins that with a test (proven by breaking the code), and the commit that
+  moves the file adds a test that the sibling modules of the installed copy are protected.
 - **Publishing and provenance.** Update the `package.json` `files` whitelist to the directory. `tools/provenance.ts`
   hashes a fixed two-file list and must hash every shipped file. The consumer's single-file sha256 check changes
   with it.
