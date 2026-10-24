@@ -90,6 +90,10 @@ pi 0.84.3 (`dist/`) on 2026-10-24.
   and the floor already treats `.env` files as S0.
 - **Indirect shell writes.** `cd ~/.omp/agent && echo … > extensions/x.ts` names no path token in
   the set, the same residual `denyPaths` accepts. OS-level sandboxing is the backstop.
+- **A broad `ast_edit` scope.** A scope tool that writes is matched against the existing locations
+  under the agent directories, the plugin roots and the scope's own `.omp/` and `.pi/`, not against
+  every directory beneath it, so an `ast_edit` over `~/src` that reaches a project's
+  `.omp/extensions/` does not ask.
 - **pi's legacy global npm root** (`npm root -g`) sits outside the agent directory and is not
   covered.
 - **Host drift.** The set is a point-in-time reading of omp 18.12.6 and pi 0.84.3; a host upgrade
