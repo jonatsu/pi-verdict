@@ -65,6 +65,7 @@ The host never opens a filesystem path for an `xd://` URL. The scheme is device-
 
 - A `read` of any `xd://` URL can be a rule allow: its result is documentation the host generates.
 - A `write` to `xd://<name>` can be a rule allow when `<name>` is not one of the four built-in devices, because the tool it runs is adjudicated as its own call. The root, a topic URL and a malformed name fail in the host and stay with the classifier.
+- The name the handler sees is the WHATWG-parsed href (`CA/internal-urls/parse.ts:59`, `CA/internal-urls/xd-protocol.ts:79`), not the raw text. Parsing drops empty credentials and an empty port and strips tab, LF, CR and edge C0 controls, so `xd://:@resolve` or `xd://res\tolve` reaches `resolve`. Only a name made of letters, digits, `_` and `-` survives parsing unchanged, so only such a name can be a rule allow (added after review, 2026-10-25).
 - `resolve`, `reject`, `propose` and `report_issue` stay with the classifier. Applying a staged preview runs code that the staging tool chose earlier, and the gate sees no other call for it.
 - The deny-side layers still read the URL text. They match it only as a path under the session directory, because the host never resolves it to a file.
 

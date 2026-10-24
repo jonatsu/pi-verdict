@@ -36,7 +36,8 @@ On omp, an `xd://` device URL is not graded as a file. A `read` of one returns d
 generates, and a `write xd://<tool>` runs the tool as its own gated `tool_call`, so the floor grades both as
 allow and the internal-URL shape does not withhold it. The floor grades these gray instead: a write to
 `xd://resolve`, `xd://reject`, `xd://propose` or `xd://report_issue` (host code with no nested call), to the
-root `xd://` or to a topic URL, and a name holding `/`, `?` or `#`. A device URL given to any tool other than
+root `xd://` or to a topic URL, and a write to a name with any character outside letters, digits, `_` and
+`-`, since omp's URL parsing can rewrite such a name (`xd://:@resolve` reaches `resolve`). A device URL given to any tool other than
 `read` and `write` is held back like every internal URL. On pi, which has no `xd` scheme, the text is a
 relative path and takes the path grades, S0 included
 ([research/2026-10-25-xd-device-dispatch.md](../research/2026-10-25-xd-device-dispatch.md)).

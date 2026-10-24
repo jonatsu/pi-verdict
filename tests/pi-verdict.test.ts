@@ -7610,6 +7610,16 @@ describe("omp xd:// device calls (ADR-0009)", () => {
 		}
 	});
 
+	test("a device name that URL parsing rewrites to an excluded device is not a rule allow", async () => {
+		// omp dispatches on the WHATWG-parsed href, which drops empty credentials and port, and strips tab,
+		// newline and edge control characters, so each spelling reaches `xd://resolve`.
+		const h = session({}, OMP);
+		h.responses = [{ text: "<verdict>deny</verdict> gray" }];
+		for (const p of ["xd://@resolve", "xd://:@resolve", "xd://resolve:", "xd://res\tolve", "xd://re\nsolve", "xd://resolve\u0001"]) {
+			await expectClassifier(h, "write", { path: p, content: "apply it" });
+		}
+	});
+
 	test("the @ shorthand and an upper-case scheme grade like the plain URL", async () => {
 		const h = session({}, OMP);
 		h.responses = [{ text: "<verdict>deny</verdict> gray" }];

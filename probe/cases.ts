@@ -1058,6 +1058,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		},
 		{
+			label: "write to an xd:// name that URL parsing rewrites to xd://resolve still reaches the classifier",
+			family: "host-path",
+			tool: "write",
+			input: { path: "xd://:@resolve", content: "apply the preview" },
+			ref: "ADR-0009",
+			expected: { layer: "classifier" },
+		},
+		{
 			label: "grep over an xd:// device URL is never a rule allow",
 			family: "host-path",
 			tool: "grep",

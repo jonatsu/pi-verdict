@@ -205,6 +205,10 @@ const DEVICE_TARGET = /^xd:\/\/([^/?#]*)(?:\/([^/?#]+))?$/i;
  *  report) without a nested tool call for the gate to see. */
 const UNDISPATCHED_DEVICES: ReadonlySet<string> = new Set(["resolve", "reject", "propose", "report_issue"]);
 
+/** Matches a device name that WHATWG URL parsing leaves as written: no credentials, port, whitespace or
+ *  control characters that omp's `new URL(...).href` would drop to reach another device. */
+const PLAIN_DEVICE_NAME = /^[A-Za-z0-9_-]+$/;
+
 /** True for an `xd://` URL in any scheme case; on omp it names a tool device. */
 export function isDeviceUrl(target: string): boolean {
 	return DEVICE_URL.test(target);
@@ -212,14 +216,15 @@ export function isDeviceUrl(target: string): boolean {
 
 /** Grades an omp `xd://` device URL, which names no file: a read returns generated documentation, and a
  *  write runs the named tool as its own gated tool call, so both are a rule allow. A write to a device
- *  that runs host code directly, or a URL the host rejects, stays gray for the classifier
+ *  that runs host code directly, a URL the host rejects, or a name outside `PLAIN_DEVICE_NAME` (which
+ *  URL parsing may rewrite into an excluded device) stays gray for the classifier
  *  (research/2026-10-25-xd-device-dispatch.md, ADR-0009). */
 function classifyDeviceUrl(rawPath: string, isWrite: boolean): RuleResult {
 	const gray: RuleResult = { verdict: "gray", reason: "host tool device URL, not a file path" };
 	const target = DEVICE_TARGET.exec(rawPath);
 	if (target === null) return gray;
 	const [, name, topic] = target;
-	if (isWrite && (name === "" || topic !== undefined || UNDISPATCHED_DEVICES.has(name.toLowerCase()))) return gray;
+	if (isWrite && (topic !== undefined || !PLAIN_DEVICE_NAME.test(name) || UNDISPATCHED_DEVICES.has(name.toLowerCase()))) return gray;
 	return { verdict: "allow" };
 }
 
