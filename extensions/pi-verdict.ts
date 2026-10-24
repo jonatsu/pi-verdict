@@ -3114,7 +3114,7 @@ function classifyByRules(
 	 *  to the classifier, whose allow is then withheld by adjudicate. */
 	policyDegraded: boolean,
 	/** True when the call names a user-declared protected path through a spelling the denyPaths
-	 *  tokeniser cannot extract, such as a braced home variable. */
+	 *  tokeniser cannot extract, such as a home variable behind a command substitution. */
 	namesProtectedPath: RedactorFn = () => false,
 ): RuleResult {
 	const sp = selfProtectCheck(toolName, input, cwd, prot);
@@ -3452,8 +3452,8 @@ const PROTECTED_PATH_MARKER = "<protected-path>";
  *  unknown tool's extracted targets too, F10), tested against the same dual-form set a
  *  denyPaths comparison uses (`denyPathForms`, anchored here once with `cwd`), and (2) the
  *  raw JSON of the arguments containing any base's spelling — absolute, `~/`, `$HOME`/`${HOME}`
- *  (the denyPaths tokeniser knows only `$HOME`, never `${HOME}` — F10 — so this raw check
- *  covers what the tokeniser structurally cannot), or the home-relative tail (e.g. a
+ *  (the denyPaths tokeniser reads `$HOME`, `"$HOME"` and a braced `${HOME}` before a `/`, but no
+ *  other expansion, so this raw check covers what the tokeniser cannot), or the home-relative tail (e.g. a
  *  `~/.ssh/` declaration's `.ssh/` tail), in both its literal and `cwd`-resolved spellings so
  *  a relative declaration still catches an absolute spelling of the same path. In transcript
  *  use (the default), over-redaction is harmless and under-redaction is a leak, so the
@@ -3536,10 +3536,19 @@ export interface RedactionPlatform {
 }
 const HOST_REDACTION_PLATFORM: RedactionPlatform = { caseInsensitive: CASE_INSENSITIVE_FS, win32: path.sep === "\\" };
 
-/** `bashPathTokens` knows only "/" separators; unify a Windows command's backslashes first, as
- *  denyPathCandidates does. A mis-read shell escape only adds candidates, which asks. */
+/** A double-quoted `"$HOME"` or a braced `${HOME}` (with an optional closing quote) directly before a
+ *  `/`, including the forms that expand to `$HOME` while it is set: `${HOME:-x}`, `${HOME-x}`,
+ *  `${HOME:=x}`, `${HOME=x}`, `${HOME:?x}` and `${HOME?x}`. `${HOME:+x}` is left alone because it expands
+ *  to `x`, and a single-quoted `'$HOME'` is literal in the shell. The default text is capped so a
+ *  command full of unterminated `${HOME-` cannot make the scan quadratic. */
+const HOME_EXPANSION_BEFORE_SLASH = /"\$HOME"(?=\/)|"?\$\{HOME(?::?[-=?][^}]{0,200})?\}"?(?=\/)/g;
+
+/** `bashPathTokens` knows only "/" separators and the bare `$HOME` spelling: spell a quoted or braced
+ *  home expansion as `$HOME`, and unify a Windows command's backslashes, as denyPathCandidates does.
+ *  A mis-read shell escape only adds candidates, which asks. */
 function commandForPathTokens(command: string, win32: boolean): string {
-	return win32 ? command.replace(/\\/g, "/") : command;
+	const home = command.replace(HOME_EXPANSION_BEFORE_SLASH, "$$HOME");
+	return win32 ? home.replace(/\\/g, "/") : home;
 }
 
 /** Characters that end or begin a path word in a command or argument. */

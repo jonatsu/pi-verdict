@@ -4758,15 +4758,15 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		}
 	});
 
-	test("auto: a call naming a protected path through a spelling the tokeniser misses is held without any model call", async () => {
+	test("auto: a call naming a protected path through a braced home variable is held without any model call", async () => {
 		await withBridge({ subagentGate: "auto", classifierFallbackModel: "mock/fb", denyPaths: ["~/.ssh/"] }, async (_root, sub) => {
 			sub.responses = [ASK, ALLOW];
-			// The ${HOME} spelling defeats the denyPaths tokeniser; the redactor still sees it, so the
-			// gate holds the call itself and no model, classifier or second, receives the action.
+			// A braced ${HOME} spelling reaches the denyPaths ask like $HOME; the gate holds the call
+			// itself and no model, classifier or second, receives the action.
 			const r = await toolCall(sub, "bash", { command: `cat \${HOME}/.ssh/id_rsa` });
 			expect(r?.block).toBe(true);
 			expect(sub.calls.length).toBe(0);
-			expect(r?.reason).toContain("names a user-declared protected path");
+			expect(r?.reason).toContain("user-declared protected path");
 			expect(r?.reason).not.toContain("/.ssh/");
 		});
 	});
@@ -5284,8 +5284,8 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 	});
 
 	test(`a \${HOME}-spelled protected path asks without a model call and never reaches a notification`, async () => {
-		// The denyPaths bash tokeniser knows $HOME but not ${HOME}; the redactor still matches the
-		// call, so the gate asks deterministically instead of sending a marker to the classifier.
+		// The denyPaths bash tokeniser reads ${HOME} as $HOME and the redactor matches the call too,
+		// so the gate asks deterministically instead of sending a marker to the classifier.
 		const h = session({ denyPaths: ["~/.ssh/"] });
 		h.responses = [{ text: "<verdict>allow</verdict> mock" }];
 		h.confirmAnswer = false;
@@ -5326,6 +5326,40 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 		h.confirmAnswer = false;
 		expect((await toolCall(h, "bash", { command: `cat ${tail}/x` }))?.block).toBe(true);
 		expect(h.confirms).toBe(1);
+	});
+
+	test("quoted and braced $HOME spellings in a command still reach a denyPaths ask", async () => {
+		const tail = ".pv-strict-tail";
+		const h = session({ denyPaths: [`~/${tail}/`] });
+		h.confirmAnswer = false;
+		for (const command of [
+			`cat "$HOME"/${tail}/x`,
+			`cat "\${HOME}"/${tail}/x`,
+			`cat \${HOME}/${tail}/x`,
+			`cat "\${HOME}/${tail}/x"`,
+			`cat \${HOME:-/x}/${tail}/x`,
+			`cat \${HOME-/x}/${tail}/x`,
+			`cat "\${HOME:=/x}"/${tail}/x`,
+			`cat $HOME/${tail}/x`,
+		]) {
+			h.confirms = 0;
+			expect((await toolCall(h, "bash", { command }))?.block).toBe(true);
+			expect(h.confirms).toBe(1);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a single-quoted or non-defaulting $HOME is not read as the home directory", async () => {
+		const tail = ".pv-strict-tail";
+		const h = session({ denyPaths: [`~/${tail}/`] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		for (const command of [`cat '$HOME'/${tail}/x`, `cat \${HOME:+/x}/${tail}/x`]) {
+			h.confirms = 0;
+			h.calls.length = 0;
+			expect(await toolCall(h, "bash", { command })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+			expect(h.calls).toHaveLength(1); // the classifier, not a protected-path ask
+		}
 	});
 
 	test("transcript redaction keeps the home-relative tail while the strict ask match drops it", () => {
