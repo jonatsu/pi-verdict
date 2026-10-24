@@ -77,20 +77,34 @@ const SHELL_OPERATORS: Record<string, true> = { ";": true, ";;": true, "&": true
  *
  * A construct the scanner cannot resolve faithfully emits the `UNSOUND` sentinel word instead of a
  * misleading parse. The sound path stays faithful: an unquoted backslash-newline is a line
- * continuation (consumed, appends nothing), unquoted `<`/`>`/`>>` end a word without ending a
- * segment, and unquoted `(`/`)` remain plain operators. `gitPushInWords` treats a sentinel as a
- * hit, so the deny only ever stands (the monotonicity rule).
+ * continuation (consumed, appends nothing), a redirection (`>`, `>>`, `<`, `>&`, `<&`, `&>`, `&>>`,
+ * `>|`, `<>`, with its fd digits and target word) is dropped without ending a segment, and unquoted
+ * `(`/`)` remain plain operators. `gitPushInWords` treats a sentinel as a hit, so the deny only ever
+ * stands (the monotonicity rule).
  */
 export function shellWords(command: string): string[] {
 	const words: string[] = [];
 	let cur = "";
 	let inWord = false;
+	// The next word is a redirection target: the shell opens it, it is not an argument.
+	let redirectTarget = false;
 	const flush = () => {
 		if (inWord) {
-			words.push(cur);
+			if (redirectTarget) redirectTarget = false;
+			else words.push(cur);
 			cur = "";
 			inWord = false;
 		}
+	};
+	const redirection = (length: number, takesFd: boolean) => {
+		if (takesFd && inWord && /^\d+$/.test(cur)) {
+			cur = ""; // `2>&1`: the digits name a file descriptor, not an argument
+			inWord = false;
+		} else {
+			flush();
+		}
+		redirectTarget = true;
+		i += length;
 	};
 	const unsound = () => {
 		flush();
@@ -165,15 +179,20 @@ export function shellWords(command: string): string[] {
 			continue;
 		}
 		if (ch === "<" || ch === ">") {
-			// redirection: a word break, dropped (NOT a segment separator). `>>`/`<<` drop two.
-			flush();
-			if (ch === "<" && command[i + 1] === "<") {
+			const next = command[i + 1];
+			if (ch === "<" && next === "<") {
+				flush();
 				unsound(); // here-document: body not re-parsed
 				i += 2;
 				continue;
 			}
-			if (command[i + 1] === "<" || command[i + 1] === ">") i += 2;
-			else i += 1;
+			// The `&` of `>&`/`<&` and the `|` of `>|` belong to the redirection, not a command operator.
+			const twoChar = ch === ">" ? next === ">" || next === "&" || next === "|" : next === "&" || next === ">";
+			redirection(twoChar ? 2 : 1, true);
+			continue;
+		}
+		if (ch === "&" && command[i + 1] === ">") {
+			redirection(command[i + 2] === ">" ? 3 : 2, false); // `&>`/`&>>`: stdout and stderr, not a background `&`
 			continue;
 		}
 		if (ch === " " || ch === "\t" || ch === "\r") {
@@ -183,6 +202,7 @@ export function shellWords(command: string): string[] {
 		}
 		if (ch === "\n" || SHELL_OPERATORS[ch] === true) {
 			flush();
+			redirectTarget = false;
 			const two = ch + (command[i + 1] ?? "");
 			if (two === "&&" || two === "||" || two === ";;") {
 				words.push(two);
@@ -374,6 +394,9 @@ export function allowAdmits(command: string): boolean {
 	// (c) redirection other than to /dev/null — checked on the raw text: the scanner drops `<`/`>`.
 	const stripped = command.replace(/\d?&?>>?\s*\/dev\/null/g, "").replace(/<\s*\/dev\/null/g, "");
 	if (/[<>]/.test(stripped)) return false;
+	// POSIX sh reads `&>` as a background `&` and then a redirection, so a word after it may run as
+	// a second command; only the shell-word view reads it as one redirection.
+	if (command.includes("&>")) return false;
 	const words = shellWords(command);
 	// (b) an unsound parse: the scanner could not resolve a construct faithfully.
 	if (words.includes(UNSOUND)) return false;

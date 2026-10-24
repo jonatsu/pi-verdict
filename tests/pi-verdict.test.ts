@@ -614,6 +614,26 @@ describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
 	test("--force still denies alongside --force-if-includes", async () => {
 		await denyRule("git push --force --force-if-includes origin main");
 	});
+	// The `&` or `|` inside a redirection is not a command operator, so a force flag after it
+	// stays in the same command.
+	test("a force flag after a redirection holding & or | → floor deny", async () => {
+		const G = "git push origin main ";
+		const F = " --" + "force";
+		await denyRule(G + "2>&1" + F);
+		await denyRule(G + ">&2" + F);
+		await denyRule(G + "<&0" + F);
+		await denyRule(G + "&>/dev/null" + F);
+		await denyRule(G + "&>> log" + F);
+		await denyRule(G + ">|out" + F);
+		await denyRule(G + "<>f" + F);
+		await denyRule(G + "2>&1 -" + "f");
+	});
+	test("&&, a background & and |& still separate commands", () => {
+		expect(gitPushForce("git push origin main & echo --" + "force")).toBe(false);
+		expect(gitPushForce("git push origin main && echo --" + "force")).toBe(false);
+		expect(gitPushForce("git push origin main |& echo --" + "force")).toBe(false);
+		expect(shellWords("a 2>&1 b && c & d |& e")).toEqual(["a", "b", "&&", "c", "&", "d", "|", "&", "e"]);
+	});
 	// Anti-regression pins: these passed before and must keep passing.
 	test("five-deep unquoted substitution still denies", async () => {
 		await denyRule("$($($($($(git " + P + ")))))");
@@ -660,6 +680,9 @@ describe("simple-command allow guard (audit F2)", () => {
 	});
 	test("a single & hiding a command is not rule-allowed", async () => {
 		await reachesClassifier(["^ls\\b"], "ls & npm install evil-pkg");
+	});
+	test("&> is not rule-allowed: POSIX sh reads it as a background & before a redirection", async () => {
+		await reachesClassifier(["^ls\\b"], "ls &>/dev/null bash /tmp/evil.sh");
 	});
 	test("a pipeline is not ruled-allowed (more than one simple command)", async () => {
 		await reachesClassifier(["^ls\\b"], "ls | tee /tmp/x");
