@@ -1,5 +1,7 @@
 # Rule-Layer Security Audit Report
 
+> Dated record. The status below is as of 2026-08-26; all eight findings were fixed in 0.2.0 (`CHANGELOG.md`, `[0.2.0]`).
+
 Audit date: 2026-08-26 (first round) / 2026-08-26 (re-scan review, repository renamed pi-verdict, pre-open-source window)
 Audit target: `extensions/auto-mode.ts` rule layer (bash allowlist + path sensitivity grading)
 Status: **All 8 vulnerabilities remain unfixed**—re-scan testing confirms all attack payloads still return `allow`
