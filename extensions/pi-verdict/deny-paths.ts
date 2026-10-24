@@ -213,7 +213,7 @@ export function callPathCandidates(
  *  sits inside the searched subtree (cwd-inside-declaration, declaration-under-cwd).
  *  False positives ask — the safe direction. read/write/edit and bash tokens stay
  *  one-directional: single-target semantics. */
-export function hitDenyPaths(toolName: string, input: Record<string, unknown>, cwd: string, bases: string[]): string | null {
+export function hitDenyPaths(toolName: string, input: Record<string, unknown>, cwd: string, bases: readonly string[]): string | null {
 	if (bases.length === 0) return null;
 	const subtree = toolAccess(toolName, input).scope;
 	for (const candidate of callPathCandidates(toolName, input, cwd)) {

@@ -424,7 +424,7 @@ type ToolAccessKind = "command" | "file" | "code" | null;
  *  version-targeted branch citing a specific documented host fact, never the
  *  development host's own state. `command` carries either the command text
  *  (`kind:"command"`) or the code text (`kind:"code"`) — a call is never both. */
-interface ToolAccess {
+export interface ToolAccess {
 	direction: ToolDirection;
 	kind: ToolAccessKind;
 	reads: string[];

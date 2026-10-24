@@ -299,16 +299,14 @@ export async function adjudicate(
 ): Promise<Verdict> {
 	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
 	// the wide transcript redactor below, where over-redaction is harmless.
-	const rule = classifyByRules(
-		call.toolName,
-		call.input,
-		env.cwd,
-		state.userRules,
-		state.prot,
-		state.anchoredDenyPathBases(env.cwd),
-		state.policyDegraded, // item 6c (Phase 6): suspend user allow/tools while the policy is degraded (ADR-0010)
-		redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd), HOST_REDACTION_PLATFORM, true),
-	);
+	const rule = classifyByRules(call.toolName, call.input, {
+		cwd: env.cwd,
+		user: state.userRules,
+		prot: state.prot,
+		denyPathBases: state.anchoredDenyPathBases(env.cwd),
+		policyDegraded: state.policyDegraded,
+		namesProtectedPath: redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd), HOST_REDACTION_PLATFORM, true),
+	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") {
 		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI)
