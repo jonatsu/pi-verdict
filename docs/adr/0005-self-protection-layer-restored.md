@@ -98,9 +98,13 @@ The gate now ships as the module directory `extensions/pi-verdict/` beside `exte
 - **Directory prefix and the sibling adapter.** A copy install protects `<root>/pi-verdict/` by prefix
   and the sibling `<root>/jev-adapter.ts` as an exact path and in bash commands; the prefix does not
   reach the adapter.
-- **Decoy entry file.** The host dedupes extensions by name, keeps the first, and discovers top-level
+- **Decoy entry file.** omp dedupes extensions by name, keeps the first, and discovers top-level
   files before `*/index.ts`, so a planted `<root>/pi-verdict.ts` or `<root>/pi-verdict.js` would replace
-  the gate. Both names are protected beside the module directory.
+  the gate. Both names are protected beside the module directory. This covers only those two names:
+  omp also adds extensions declared in a sibling directory's `package.json` before `*/index.ts`, so a
+  planted `<root>/<dir>/package.json` naming its own `pi-verdict.ts` still shadows a copy install on
+  omp. pi loads a same-named decoy beside the gate instead of replacing it. Writes into the host's
+  extension roots as a class are the subject of the code-loading ask (`TODO.md`).
 - **Root spellings.** Each install root counts as one family of spellings (lexical and realpath). A match
   under any spelling protects the same relative targets under all of them, so a symlinked `extensions`
   directory under another name no longer drops the adapter.

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Self-protection ([ADR-0005](docs/adr/0005-self-protection-layer-restored.md) amendment) covers the new layout and two install forms it missed: the sibling `jev-adapter.ts` stays protected when `<agentDir>/extensions` is a symlink whose target has another name (the lexical and realpath spellings of an install root are now one family); a decoy entry file `pi-verdict.ts` or `pi-verdict.js` beside the module directory is write-denied, since the host keeps the first extension of a name and loads top-level files first; and a pi `npm` or `git` package install (`<agentDir>/npm/node_modules/<pkg>`, `<agentDir>/git/<host>/<path>`) is protected by package root.
+- Self-protection ([ADR-0005](docs/adr/0005-self-protection-layer-restored.md) amendment) covers the new layout and two install forms it missed: the sibling `jev-adapter.ts` stays protected when `<agentDir>/extensions` is a symlink whose target has another name (the lexical and realpath spellings of an install root are now one family); a decoy entry file `pi-verdict.ts` or `pi-verdict.js` beside the module directory is write-denied, since omp keeps the first extension of a name and loads top-level files first; and a pi `npm` or `git` package install (`<agentDir>/npm/node_modules/<pkg>`, `<agentDir>/git/<host>/<path>`) is protected by package root.
 
 ## [0.18.1] - 2026-10-24
 
