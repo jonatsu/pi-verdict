@@ -676,6 +676,14 @@ describe("monotone floor: tripwire + sound-gated word view (audit F4)", () => {
 		await denyRule(G + "<>f" + F);
 		await denyRule(G + "2>&1 -" + "f");
 	});
+	// Only unquoted digits name a file descriptor; a quoted or escaped digit is an argument.
+	test("a quoted or escaped digit before a redirection stays an argument → floor deny", async () => {
+		const R = "+" + "main";
+		await denyRule("git push origin -o '1'>/dev/null " + R);
+		await denyRule('git push origin -o "1">/dev/null ' + R);
+		await denyRule("git push origin -o \\1>/dev/null " + R);
+		await denyRule("git -C '2'>/dev/null push origin " + R);
+	});
 	test("&&, a background & and |& still separate commands", () => {
 		expect(gitPushForce("git push origin main & echo --" + "force")).toBe(false);
 		expect(gitPushForce("git push origin main && echo --" + "force")).toBe(false);

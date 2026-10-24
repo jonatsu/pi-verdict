@@ -126,6 +126,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["plus refspec with dst", "git push origin +HEAD:main", { ref: "F24" }],
 		["plus refspec after --", "git push -- origin +main", { ref: "F24" }],
 		["force flag after 2>&1", "git push origin main 2>&1 --force", {}],
+		["quoted digit before a redirection is an argument", "git -C '2'>/dev/null push origin +main", {}],
 	];
 	for (const [label, command, extra] of forcePush) {
 		const { open, item, ref, ...expect } = extra;

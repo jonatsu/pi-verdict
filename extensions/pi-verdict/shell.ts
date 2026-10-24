@@ -88,6 +88,8 @@ export function shellWords(command: string): string[] {
 	let inWord = false;
 	// The next word is a redirection target: the shell opens it, it is not an argument.
 	let redirectTarget = false;
+	// The current word holds a quoted or escaped character, so it cannot be a redirection's fd prefix.
+	let curQuoted = false;
 	const flush = () => {
 		if (inWord) {
 			if (redirectTarget) redirectTarget = false;
@@ -95,11 +97,13 @@ export function shellWords(command: string): string[] {
 			cur = "";
 			inWord = false;
 		}
+		curQuoted = false;
 	};
 	const redirection = (length: number, takesFd: boolean) => {
-		if (takesFd && inWord && /^\d+$/.test(cur)) {
-			cur = ""; // `2>&1`: the digits name a file descriptor, not an argument
+		if (takesFd && inWord && !curQuoted && /^\d+$/.test(cur)) {
+			cur = ""; // `2>&1`: unquoted digits name a file descriptor, not an argument
 			inWord = false;
+			curQuoted = false;
 		} else {
 			flush();
 		}
@@ -122,6 +126,7 @@ export function shellWords(command: string): string[] {
 			}
 			cur += command.slice(i + 1, end);
 			inWord = true;
+			curQuoted = true;
 			i = end + 1;
 			continue;
 		}
@@ -164,6 +169,7 @@ export function shellWords(command: string): string[] {
 			}
 			if (!closed) unsound(); // unterminated double quote
 			inWord = true;
+			curQuoted = true;
 			continue;
 		}
 		if (ch === "\\" && i + 1 < n) {
@@ -175,6 +181,7 @@ export function shellWords(command: string): string[] {
 			}
 			cur += nx;
 			inWord = true;
+			curQuoted = true;
 			i += 2;
 			continue;
 		}
