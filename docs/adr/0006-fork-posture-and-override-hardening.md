@@ -141,3 +141,12 @@ allowed.
 
 Pinned by the `project override direction table` and `project override subagentAskTimeoutMs`
 tests in the `project trust prompt` suite.
+
+## Amendment (2026-10-24): subagent resolution and the starter list
+
+Two statements in decisions 2 and 3 no longer hold. `task` is not in the starter `tools` list: listing it
+would let a subagent launch skip the subagent gate (`DEFAULT_ALLOWED_TOOLS`). The `autoResolve: "allow"`
+shortcut is removed: a cascaded subagent ask never resolves to allow without a human, because the ADR-0004
+carve-out turns a demoted verdict that the fallback would allow into an ask so that a human decides. A
+non-cascaded subagent ask is put to the second model, and only an `enforce`-mode allow permits it; a
+`shadow`-mode opinion is recorded and the call is denied.

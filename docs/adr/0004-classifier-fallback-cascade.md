@@ -101,3 +101,12 @@ Recorded as a minimum bar plus a human decision, never an automatic threshold: a
   ask-degradation products on the early fail-closed path, not every headless outcome.
   Analysis scripts must treat `verdict` on `fail-closed` rows as version-dependent.
 
+
+## Amendment (2026-10-24): subagent asks without a human
+
+The carve-out above turns a demoted first-layer ask or deny that the fallback would allow into an ask, so
+that a human decides. A subagent ask that no human answers therefore never resolves to allow once the
+cascade has ruled on it; the earlier code allowed a demoted ask there, which bypassed the carve-out. A
+subagent ask that did not cascade is put to the second model directly: under `enforce` its explicit allow
+permits the call, and under `shadow` its opinion is recorded in the audit `fallback` object and the call is
+denied, because a shadow opinion never changes an outcome.

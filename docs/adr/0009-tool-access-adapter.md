@@ -366,3 +366,23 @@ writes; these are left alone on purpose.
   host would have read the literal name.
 - A deliberately obfuscated spelling is left to the classifier and to the future OS-level sandboxing
   (`docs/plans/os-level-sandboxing-draft.md`); the gate does not chase every way to write a path.
+
+## Amendment (2026-10-24): omp 18.12.6 spellings
+
+The host moved to omp 18.12.6, and the host path spelling rules above now mirror that version where it
+changed:
+
+- *JSON filters.* omp routes a `.json`, `.jsonl` or `.ndjson` `read` with a `q` or `query` parameter to jq,
+  so `?query=` is peeled like `?q=`: `read ~/.pi/agent/auth.json?query=.` grades as the credential file. The
+  peeled form is graded for every path, while the missing-target check peels `?query=` only for those JSON
+  extensions, as the host does.
+- *Selector lists.* The read-selector grammar follows omp's mixed range and tail lists (`:1-12,-15`) and its
+  folded list colons (`:1-30,:-30`). Both the folded and the unfolded peel are graded, and an existing
+  unfolded literal is preferred, as the host prefers it.
+- *Hashline headers.* A header is graded in its raw form and in the forms omp recovers: the tag stripped,
+  a placeholder tag stripped (`#AUTO`, `#????`, `#0`, a bare `#`), an apply-patch prefix stripped
+  (`*** Update File:`), and an envelope marker in front unwrapped (`[*** Begin Patch] [path#TAG]`, closed or
+  not). The body is trimmed as Rust trims it, U+0085 included.
+- *Bracketed write paths.* A `write` path wrapped as a header (`[path] `) is unwrapped after the line end is
+  trimmed, as omp's `unwrapHashlineHeaderPath` does.
+- *Registered schemes.* `mr` (GitLab merge-request diffs) joins the registered scheme list.
