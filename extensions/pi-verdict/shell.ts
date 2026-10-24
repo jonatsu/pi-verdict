@@ -414,7 +414,11 @@ function gitPushInWords(words: string[], depth: number): boolean {
 		for (let i = 0; i + 1 < seg.length; i++) {
 			if (wordBasename(seg[i]) !== "git") continue;
 			const sub = gitSubcommandIndex(seg, i);
-			if (sub === undefined) return true; // an unmodelled git option may hide the subcommand: unsound
+			if (sub === undefined) {
+				// An unreadable subcommand is unsound only if a later `push` word could be it.
+				if (seg.slice(i + 1).some((word) => word.toLowerCase() === "push")) return true;
+				continue;
+			}
 			if (sub !== -1 && seg[sub].toLowerCase() === "push" && pushArgsForce(seg.slice(sub + 1))) return true;
 		}
 		for (let i = 0; i < seg.length; i++) {

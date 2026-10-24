@@ -530,6 +530,13 @@ describe("git push force-flag precision (fork)", () => {
 			expect(h.calls.length).toBe(1);
 		});
 	}
+	test("an unread git word with no push after it is not a force push (gray → classifier)", async () => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "bash", { command: "grep -rn git --include=*.md . | grep 'push -" + "f'" });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
 	test("a forced refspec after an option value, and push after git's global options, still deny", () => {
 		expect(gitPushForce("git push -o ci.skip origin +main")).toBe(true);
 		expect(gitPushForce("git push --push-option=x origin +main")).toBe(true);

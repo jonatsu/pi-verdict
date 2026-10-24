@@ -178,6 +178,13 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		},
 		{
+			label: "unreadable git options with no push word after them",
+			family: "force-push",
+			tool: "bash",
+			input: { command: "grep -rn git --include=*.md . | grep 'push -" + "f'" },
+			expected: { layer: "classifier" },
+		},
+		{
 			label: "push option value starting with +",
 			family: "force-push",
 			tool: "bash",
