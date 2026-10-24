@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { collectStrings, commandText, isCommandTool, MUTATING_TOOL_NAMES, OBSERVING_TOOL_NAMES, toolAccess } from "./access.ts";
-import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
+import { escapeRegExp } from "./agent-dir.ts";
 import { expandHome, toRuleForm } from "./floor.ts";
 import { baseForms, isWithin, kernelForms, rebuiltForms, relativeBeneath } from "./paths.ts";
 import type { RuleResult } from "./shell.ts";
@@ -35,6 +35,8 @@ export interface ProtectedSet {
 	guardRoots: string[];
 	/** Shell command signatures, matched as substrings. */
 	bashPatterns: RegExp[];
+	/** The agent directory the set was built for; `$PI_CODING_AGENT_DIR` in a command expands to it. */
+	agentDir: string;
 }
 
 /**
@@ -81,7 +83,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 		for (const f of baseForms(root)) if (f !== path.parse(f).root) guardRoots.add(f);
 	}
 
-	return { exact: [...exact], prefixes: [...prefixes], writePatterns, readDenied, guardRoots: [...guardRoots], bashPatterns };
+	return { exact: [...exact], prefixes: [...prefixes], writePatterns, readDenied, guardRoots: [...guardRoots], bashPatterns, agentDir };
 }
 
 type InstallKind = "extensions" | "npm" | "git";
@@ -284,7 +286,7 @@ export function selfProtectCheck(toolName: string, input: Record<string, unknown
 	const direction = selfProtectDirection(toolName);
 	if (direction === "command") {
 		const cmd = commandText(input);
-		const cdHit = bashDirectoryTargets(cmd, agentDirPath()).some((t) => isProtectedReadPath(t, cwd, prot));
+		const cdHit = bashDirectoryTargets(cmd, prot.agentDir).some((t) => isProtectedReadPath(t, cwd, prot));
 		return prot.bashPatterns.some((re) => re.test(cmd)) || cdHit ? selfDeny(COMMAND_TOUCHES_GATE) : null;
 	}
 	const strings = collectStrings(input);

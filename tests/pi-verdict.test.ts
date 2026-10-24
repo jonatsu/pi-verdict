@@ -3830,6 +3830,25 @@ describe("self-protection layer (ADR-0005)", () => {
 		});
 	});
 
+	test("a cd through $PI_CODING_AGENT_DIR is graded against the session's own agent directory", async () => {
+		await withTempDir("pv-sp-agent-", async (agentDir) => {
+			setConfig({});
+			const env: AdjudicateEnv = {
+				cwd: "/proj",
+				hasUI: false,
+				getModel: () => null,
+				complete: async () => {
+					throw new Error("unreachable");
+				},
+				host: { getBranch: () => [], getSessionId: () => "s1" },
+			};
+			const command = "cd $PI_CODING_AGENT_DIR && cat verdicts/" + "s.jsonl";
+			const verdict = await adjudicate(new SessionState(undefined, agentDir), { toolName: "bash", input: { command } }, env);
+			expect(verdict).toMatchObject({ verdict: "deny", source: "rule" });
+			expect(verdict.reason).toContain("self-protection layer");
+		});
+	});
+
 	test("an agent directory directly under the root keeps a root listing readable", () => {
 		const agentDir = path.join(path.parse(TMP_AGENT).root, "pv-agent-under-root");
 		const prot = buildProtectedSet(agentDir, null);
