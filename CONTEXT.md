@@ -14,7 +14,7 @@ The enabled state of the Auto Mode gate: session-memory state, enabled by defaul
 
 ### adjudication pipeline
 
-The complete decision process from `tool_call` to a three-state verdict, in order: self-protection layer (layer 0) → built-in floor → user deny → optional `.omp` gate (`gateOmpDir`, off by default) ask → `denyPaths` ask → user allow → gray zone sent to the classifier; ask degradation (no UI → deny) and fail-closed are built into the pipeline semantics. Implementation form: `adjudicate(session, call, env) → Verdict`, a pure function and a deep module with no UI dependencies; presentation (`notify`/`confirm`/`select`) is handled by the extension handler. _Avoid_: verdict pipeline (use adjudication pipeline throughout the repository).
+The complete decision process from `tool_call` to a three-state verdict, in order: self-protection layer (layer 0) → built-in floor → user deny → optional `.omp` gate (`gateOmpDir`, off by default) ask → `denyPaths` ask → over-cap ask → user allow and `tools` exemption → opaque-call ask → gray zone sent to the classifier → withholding of a model allow while the policy is degraded; ask degradation (no UI → deny) and fail-closed are built into the pipeline semantics. `docs/layers.md` holds the authoritative layer map. Implementation form: `adjudicate(session, call, env) → Verdict`, a pure function and a deep module with no UI dependencies; presentation (`notify`/`confirm`/`select`) is handled by the extension handler. _Avoid_: verdict pipeline (use adjudication pipeline throughout the repository).
 
 ### self-protection layer
 
@@ -30,15 +30,27 @@ The gate's channel for presenting information to the user, carrying only **notew
 
 ### verdict audit records
 
-Opt-in JSONL decision records for gray-zone verdicts (#54). They are enabled by setting `"audit": true` in `pi-verdict.json`; each record is self-contained (timestamp / session ID / cwd / model / tool and input / action line / thinking level / full transcript / raw response / parsed verdict / source / degraded flag), stored per session at `<agentDir>/verdicts/<sessionId>.jsonl`, with the 20 most recent retained. Starting with #62, the audit scope expanded to protected-path asks—the user's response provides feedback on the quality of the `denyPaths` declaration—and interactive asks record ground truth (`userAnswer`/`answeredAt` are persisted after the confirmation is answered, while `ts` remains the verdict time; a session interrupted during confirmation drops that record); rule-layer allow/deny decisions are still not audited. Records are append-only and do not feed back into verdict inputs; they preserve all details (protected-path plaintext is stored locally only, per the ADR-0002 boundary note). The self-protection layer prevents the agent from reading or writing this directory; write failures are fail-soft and do not affect verdicts.
+Opt-in JSONL decision records (#54, #62), enabled by `"audit": true` in `pi-verdict.json` and stored per session under `<agentDir>/verdicts/`. A record covers a gray-zone verdict or a rule-layer ask and is self-contained; an interactive ask also records the user's answer. Rule-layer allows and denies are not recorded. Records are append-only and never feed back into verdict inputs; protected-path plaintext is stored locally only (ADR-0002). The self-protection layer denies the agent any access to the directory, and a failed write is fail-soft.
 
 ### rule layer
 
-The first stage of the adjudication pipeline: deterministic rules return hard allow or deny decisions. It consists of two parts: the **built-in deny floor** (dangerous bash regexes + file-path sensitivity tiers, making deny-only claims so false positives err on the safe side) and **user rules** (allow/deny regexes configured and endorsed by the user). The built-in layer provides no allowlist (since 0.2.0; the security-audit conclusion is that allowlist soundness requires shell AST analysis).
+The first stage of the adjudication pipeline: deterministic rules return hard allow, deny or ask decisions, or hand a gray call to the classifier. It consists of two parts: the **built-in deny floor** (dangerous bash regexes + file-path sensitivity tiers, making deny-only claims so false positives err on the safe side) and **user rules** (allow/deny regexes configured and endorsed by the user). The built-in layer provides no allowlist (since 0.2.0; the security-audit conclusion is that allowlist soundness requires shell AST analysis).
 
 ### tool-access adapter
 
-A pure, host-agnostic function (`toolAccess(toolName, input) → ToolAccess`, ADR-0009) modeling what a tool call touches: `direction` (observing/mutating/unknown, by tool name), `kind` (file/command/code, by payload shape), `reads`/`writes` (every target the payload names — a singular `path`, a plural `paths` array, or the targets parsed out of a free-text patch's hashline headers / apply-patch lines), `command` (the command or code text), `opaque`, and `scope` (subtree search, drives the bidirectional denyPaths/`.omp`-gate compare). Every file-tool consumer (user rules, denyPaths, the built-in floor, self-protection) reads from it instead of `input.path` alone, closing the gap where a multi-header `edit` leaves omp's derived `path` unset.
+A pure, host-agnostic function (`toolAccess(toolName, input) → ToolAccess`, ADR-0009) modeling what a tool call touches: `direction` (observing/mutating/unknown, by tool name), `kind` (file/command/code, by payload shape), `reads`/`writes` (every target the payload names — a singular `path`, a plural `paths` array, or the targets parsed out of a free-text patch's hashline headers / apply-patch lines), the same targets in every **host spelling** (`gradedReads`/`gradedWrites`), `command` (the command or code text), `opaque`, and `scope` (the call is a **scope tool** search). Every layer that grades a file target reads it from the adapter instead of `input.path` alone.
+
+### scope tool
+
+A file tool whose `path` names a directory (or, for most of them, a glob) and whose search covers a subtree: `grep`, `find`, `ls`, `glob`, `ast_grep` and `ast_edit`. An omitted or empty path means the current working directory. A `denyPaths` declaration that sits inside the searched subtree matches a scope-tool call, as does one that contains the target; the `.omp` gate compares the target only.
+
+### host spelling
+
+A form a path target can take that the host resolves before it opens the file: the `@` shorthand, `~` and `file://` URLs, a trailing read selector, an image question (`?q=`), shell escapes, one entry of a delimited list, or a WSL drive alias. The gate grades a target in its raw form and in each host spelling, and the worst grade wins (ADR-0009). A user deny matches when any form matches; a user allow needs every form to match.
+
+### over-cap ask
+
+A rule-layer ask for an action whose counted text exceeds the match cap (`BASH_MAX_MATCH_LEN`), because the gate does not grade beyond that length. It precedes user allow, so no rule can allow an unread tail (`Verdict.source: "rule"`; headless → deny).
 
 ### opaque call
 
@@ -46,11 +58,11 @@ A known mutating call (write/edit/ast_edit) whose payload names no target at all
 
 ### dual-form matching
 
-The normalization discipline for path-based rule decisions: produce **all canonical forms** for the same target path—lexical absolute form + realpath form—and test each form against the rules; a match on any form takes effect. A symlink alias whose lexical form lies within cwd but whose real path escapes cwd must not thereby be allowed as a "project-local write" (both lexical and realpath forms must lie within cwd). The discipline has three tiers: **base tier** = realpath of the full path, falling back to the lexical form on failure (implemented by `baseForms`; `denyPaths` and every base-side dual-form set have followed this from the start, ADR-0002); **ancestor-rebuild tier** = when the target does not yet exist, rebuild the path step by step from the nearest existing ancestor's realpath (implemented by `rebuiltForms`; the path-sensitivity floor has followed this since #20—use the stronger tier when the cost of an allow is high); **kernel-true tier** = the spelling the kernel itself would open for a verbatim host input, walked component by component with symlinks resolved as the path descends and `..` applied to the already-resolved parent (implemented by `kernelWalk`; runs when the spelling contains `..` or its leaf is a symlink, and a loop or unreadable link target is **unresolved**—writes fail closed; used by the path-sensitivity floor and the self-protection checks (items 7–8), and by `denyPaths` and user-rule path targets for `..`-spellings (item 10: deny matches when any target matches, allow requires every target to match). `denyPaths` does not use ancestor rebuilding: writes through symlink aliases to non-existent targets do not match, and fall through to the classifier + existence hint. _Avoid_: single-form matching that checks only the lexical form (which bypasses symlink aliases entirely); attributing ancestor rebuilding to `denyPaths` (`denyPaths` is base tier plus the kernel-true tier for `..`-spellings, never ancestor rebuild — ADR-0002, pinned by regression tests).
+The normalization discipline for path-based rule decisions: produce **all canonical forms** for the same target path—lexical absolute form + realpath form—and test each form against the rules; a match on any form takes effect. A symlink alias whose lexical form lies within cwd but whose real path escapes cwd must not thereby be allowed as a "project-local write" (both lexical and realpath forms must lie within cwd). The discipline has three tiers: **base tier** = realpath of the full path, falling back to the lexical form on failure (`denyPaths` and every base-side dual-form set use it, ADR-0002); **ancestor-rebuild tier** = when the target does not yet exist, rebuild the path step by step from the nearest existing ancestor's realpath (the path-sensitivity floor and the self-protection checks use it—use the stronger tier when the cost of an allow is high); **kernel-true tier** = the spelling the kernel itself would open for a verbatim host input, walked component by component with symlinks resolved as the path descends and `..` applied to the already-resolved parent (it applies when the spelling contains `..` or its leaf is a symlink, and a loop or unreadable link target is **unresolved**—writes fail closed). The path-sensitivity floor and the self-protection checks use the kernel-true tier; `denyPaths` and user-rule path targets use it for `..`-spellings only (deny matches when any target matches, allow requires every target to match). `denyPaths` does not use ancestor rebuilding: writes through symlink aliases to non-existent targets do not match, and fall through to the classifier + existence hint. _Avoid_: single-form matching that checks only the lexical form (which bypasses symlink aliases entirely); attributing ancestor rebuilding to `denyPaths` (`denyPaths` is base tier plus the kernel-true tier for `..`-spellings, never ancestor rebuild — ADR-0002, pinned by regression tests).
 
 ### user rules
 
-Allow/deny regexes configured by the user in `<agentDir>/config/pi-verdict.json`: deny takes precedence over allow, and a blacklist match blocks; targets are full bash command strings / absolute paths for file-type tools. An allow matches only when its target is **one simple command** (ADR-0008): a compound command, a redirection, a re-parser, or a write-shaped `git` invocation falls through to the classifier instead. `builtinDenyFloor: false` disables the built-in deny floor entirely (at the user's own risk). The user, not the author, endorses security claims ("always allow").
+Allow/deny regexes configured by the user in `<agentDir>/config/pi-verdict.json`: deny takes precedence over allow, and a blacklist match blocks; targets are the full command string for bash and powershell, and the resolved absolute path of every host spelling of each target for a known file tool (a deny matches when any target form matches, an allow needs every form to match); the fields of an unlisted tool never reach them. An allow matches only when its target is **one simple command** (ADR-0008): a compound command, a redirection, a re-parser, or a write-shaped `git` invocation falls through to the classifier instead. `builtinDenyFloor: false` disables the built-in deny floor entirely (at the user's own risk; the self-protection layer stays on). The user, not the author, endorses security claims ("always allow").
 
 ### agentDir self-anchoring
 
@@ -66,7 +78,11 @@ A fixed background sentence injected into the classifier's system prompt: it tel
 
 ### forced .omp gate
 
-Optional rule-layer gate (`gateOmpDir`, default off): when enabled, a tool call whose file path or bash command resolves into a `.omp` path segment (lexical or realpath form, base tier) ends in a terminal ask (non-interactive → deny). It is a built-in declaration, not a user-listed path: it ranks after the built-in floor and user deny, before denyPaths and user allow. Unlike denyPaths it leaves no existence hint for the classifier (the ask is terminal) and scope tools (grep/find/ls) compare their own target only, not their subtree. Switchable from `/verdict` (the one scalar key it edits).
+Optional rule-layer gate (`gateOmpDir`, default off): when enabled, a tool call whose file path or bash command resolves into a `.omp` path segment (lexical or realpath form, base tier) ends in a terminal ask (non-interactive → deny). It is a built-in declaration, not a user-listed path: it ranks after the built-in floor and user deny, before denyPaths and user allow. Unlike denyPaths it leaves no existence hint for the classifier (the ask is terminal) and scope tools compare their own target only, not their subtree. Switchable from `/verdict`.
+
+### transcript redaction
+
+Replacing a past tool call in a model's transcript with the fixed marker `<protected-path>` when its arguments name a `denyPaths` path, so no protected-path plaintext reaches the classifier, the fallback classifier or the EXPLAIN-GATE role. It matches widely, because over-redaction is harmless and under-redaction leaks; user messages are never redacted. A stricter form of the same match, with path-word boundaries, also raises the `denyPaths` ask for a call that names a declared path in a spelling the path extractor misses, such as `${HOME}`.
 
 ### gray zone
 
@@ -76,13 +92,17 @@ The set of tool calls for which the rule layer reaches no hard conclusion and ha
 
 A model call that assesses risk for gray-zone tool calls. The model is **configurable** and defaults to **self-reflection**; backends need not be generative—typed-decision models are connected through the jev adapter via the same call interface.
 
+### adjudication budget
+
+The end-to-end time limit (`ADJUDICATION_BUDGET_MS`) for one gray-zone decision. The first classifier layer, its retry and the fallback cascade share one deadline, which sits below omp's default per-call handler timeout. Each classifier attempt also has its own cap (`CLASSIFIER_TIMEOUT_MS` for the first layer) that the remaining budget can shorten.
+
 ### self-reflection
 
 The classifier's default model source: inherit the provider/model currently used by the session for verdict calls, rather than using a fixed external model.
 
 ### EXPLAIN-GATE role
 
-A human-invoked model role behind the "Explain…" option of the ask dialog. It receives the held action, the transcript and the gate's stated reason and writes an advisory explanation for the human (a fixed system prompt plus a default task, or the human's own question). Configured by `explainGateModel` (default: the session model) and `explainGatePrompt`. Its output is display-only: it never reaches the agent, the verdict, the audit log or the classifier. Not offered for protected-path asks (ADR-0002: path plaintext stays off the model channel).
+A human-invoked model role behind the "Explain…" option of the ask dialog: it writes an advisory explanation of the held action for the human. Its output is display-only and never reaches the agent, the verdict, the audit log or the classifier. Not offered for protected-path asks (ADR-0002: path plaintext stays off the model channel).
 
 ### jev adapter
 
@@ -106,7 +126,7 @@ Handling of `ask` when no UI is available (non-interactive modes: `pi -p` / json
 
 ### ask provenance
 
-Where an ask came from — the Phase 0 seam every ask producer rides: `RuleResult.askSource` (`"protected-path"` for the `denyPaths`/`gateOmpDir` asks, `"rule"` for the opaque/over-cap asks, `"degraded-policy"` for withheld model allows under ADR-0010) maps to `Verdict.source` and `AuditRecord.source` inside `adjudicate`; an unset `askSource` maps to `"protected-path"`, preserving today's label for anything the seam does not yet know about. Presentation, notifications and the audit corpus key on this source rather than on verdict text — the layer map that names each value is `docs/layers.md`.
+Where an ask came from, carried as the `source` of the verdict and of its audit record: `protected-path` for `denyPaths` and `gateOmpDir` asks (and for any rule-layer ask that names no source), `rule` for the opaque-call and over-cap asks, `classifier` for a model ask, and `degraded-policy` for a model allow withheld under ADR-0010. Presentation, notifications and the audit corpus key on this source rather than on verdict text; `docs/layers.md` names each value.
 
 ### fail-closed
 
@@ -114,8 +134,7 @@ Default behavior for any exceptional path (classifier error, timeout, unparseabl
 
 ### policyDegraded
 
-Session state (ADR-0010) set when the user's own policy could not be fully loaded: a config parse failure, a load exception, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry. While set, **every model-originated allow is withheld** (the first classifier layer and the confidence-cascade fallback become an **ask** — `source: "degraded-policy"`, headless → deny; the subagent second model is **denied outright**, no human left to ask) and user `allow`/`tools` are suspended inside the rule layer, so a partially-loaded policy can never be more permissive than a healthy one. The built-in floor and every deny-side layer are unchanged. Named in the footer risk badge, `/automode` status, every block reason, and a session-start warning (the primary signal). Part of the `SessionState` reset list via `reloadRules`.
-
+Session state (ADR-0010) set when the user's own policy could not be fully loaded: a config parse failure, a load exception, a trusted-project parse/shape failure, or any skipped `deny`/`denyPaths` entry. While set, **every model-originated allow is withheld** (the first classifier layer and the confidence-cascade fallback become an **ask** — `source: "degraded-policy"`, headless → deny; the subagent second model is **denied outright**, no human left to ask) and user `allow`/`tools` are suspended inside the rule layer, so a partially-loaded policy can never be more permissive than a healthy one. The built-in floor and every deny-side layer are unchanged. Named in the footer risk badge, `/automode` status, every block reason, and a session-start warning (the primary signal).
 
 ### confidence demotion
 
@@ -127,4 +146,4 @@ The second layer of the cascade (`classifierFallbackModel` configuration), invol
 
 ### subagent gate
 
-omp only: subagent sessions have no UI of their own, and `subagentGate` determines where their asks go—`normal` (default) presents them in the root session UI with a subagent label; if no one responds within `subagentAskTimeoutMs` or the root has no UI, there is "no verdict"; `auto` always yields no verdict; `off` means subagent tool calls skip the rule layer, floor, and classifier. In the no-verdict case, only classifier-generated asks consult the fallback classifier, and only an explicit allow from the second layer in `enforce` mode can possibly permit the action; protected-path asks, `.omp` gate asks, and asks produced solely by `autoDeny:false` are always denied.
+omp only: subagent sessions have no UI of their own, and `subagentGate` determines where their asks go—`normal` (default) presents them in the root session UI with a subagent label; if no one responds within `subagentAskTimeoutMs` or the root has no UI, there is "no verdict"; `auto` always yields no verdict; `off` means subagent tool calls skip the rule layer, floor, and classifier. In the no-verdict case, only classifier-generated asks consult the fallback classifier, and only an explicit allow from the second layer in `enforce` mode can possibly permit the action; every other ask is denied.

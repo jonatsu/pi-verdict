@@ -30,18 +30,18 @@ case fails.
 
 `expected.layer` is the source that must decide the call:
 
-- `rule` — the deterministic rule layer (built-in floor, user rules, or an in-cwd/file allow).
-  Runs A and B assert `source: "rule"`.
-- `allow` — a deterministic **rule-layer allow** (`allow/rule`), the layer the code returns for a
-  non-S0/S1 read. This is distinct from a classifier allow.
+- `rule` — a deterministic rule-layer **deny** (self-protection, the built-in floor, or a user
+  `deny` rule). Runs A and B assert `rule/deny`.
+- `allow` — a deterministic **rule-layer allow** (`allow/rule`): a read or an in-project write the
+  floor admits, a user `allow` match, or a `tools` match. This is distinct from a classifier allow.
 - `classifier` — the gray zone. Run A (headless) asserts `fail-closed/deny`; run B asserts
   `classifier/allow`.
 - `protected-path` — a `denyPaths`/`gateOmpDir` match. Run A asserts `protected-path/deny` (the ask
   degraded headless); run B asserts `protected-path/ask`.
 - `rule-ask` — a rule-layer ask that is not a `denyPaths`/`gateOmpDir` match (e.g. the tool-access
-  adapter's opaque ask: a known mutating call naming no target at all, ADR-0009). Run B asserts
-  `rule/ask`; runs A and C assert `rule/deny` **with `degraded: true`** — a plain rule deny must
-  never pass as a degraded rule-ask.
+  adapter's opaque ask: a known mutating call naming no target at all, ADR-0009; or the over-cap
+  ask). Run B asserts `rule/ask`; runs A and C assert `rule/deny` **with `degraded: true`** — a
+  plain rule deny must never pass as a degraded rule-ask.
 - `degraded-policy` — a model-originated allow withheld because the user's own policy failed to
   load (parse/load/trusted-project failure or a skipped `deny`/`denyPaths` entry, ADR-0010). Only
   run B can produce it (it has the stub model): run B asserts `degraded-policy/ask`; runs A and C
