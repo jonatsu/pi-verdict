@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The first-run config template's `_hint` text links this repository's `docs/configuration.md` instead of upstream's, names the real `classifierFallbackModel` triggers (a fail-closed first layer, or a jev confidence below `classifierMinConfidence`) in place of the removed `classifierFallbackConfidence`, and no longer offers `task` as an example `tools` entry, since listing `task` would let subagent launches bypass the subagent gate. Existing configs are not rewritten.
+
 ## [0.18.0] - 2026-10-07
 
 Changes since `v0.17.0`: the tool-access adapter round ([ADR-0009](docs/adr/0009-tool-access-adapter.md), [ADR-0010](docs/adr/0010-policy-degraded.md)), the fixes from its review, and host path resolution, which grades each path the way omp 18.6.1 resolves it.
