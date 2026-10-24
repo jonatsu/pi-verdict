@@ -1138,6 +1138,20 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "allow" },
 		},
 		{
+			label: "read of a home credential file with a mixed range and tail selector list is denied like the plain name",
+			family: "host-path",
+			tool: "read",
+			input: { path: "~/.ne" + "trc:1-12,-15" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "read of an existing project file with a mixed range and tail selector list is a rule allow",
+			family: "host-path",
+			tool: "read",
+			input: { path: "src/a.ts:1-12,-15" },
+			expected: { layer: "allow" },
+		},
+		{
 			label: "read of an existing relative project file is still a rule allow",
 			family: "host-path",
 			tool: "read",

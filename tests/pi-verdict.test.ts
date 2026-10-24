@@ -27,6 +27,7 @@ import autoMode, {
 	expandHostPath,
 	gitPushForce,
 	hostPathForms,
+	hostReadPath,
 	mentionsSpelling,
 	redactorFor,
 	renderFooter,
@@ -5810,6 +5811,66 @@ describe("host path spelling (ADR-0009)", () => {
 	test("hostPathForms keeps a colon that does not start a selector", () => {
 		for (const p of ["foo:bar", "C:", ":raw", "a:xyz"]) expect(hostPathForms(p, { peelSelector: true })).toEqual([p]);
 		expect(hostPathForms(".env:raw")).toEqual([".env:raw"]);
+	});
+
+	test("hostPathForms peels mixed range and tail selector lists and folded list colons", () => {
+		const peel = { peelSelector: true };
+		for (const p of ["a.ts:1-12,-15", "a.ts:-15,1-12", "a.ts:1-12,-15,30", "a.ts:raw:1-5,-3", "a.ts:1-5,-3:raw"]) {
+			expect(hostPathForms(p, peel)).toEqual([p, "a.ts"]);
+		}
+		expect(hostPathForms("a.ts:1-30,:-30", peel)).toEqual(["a.ts:1-30,:-30", "a.ts", "a.ts:1-30,"]);
+		expect(hostPathForms("a.ts:1-2,:-3:raw", peel)).toContain("a.ts");
+		expect(hostPathForms("a.ts:1-2,:3-4,:-5", peel)).toContain("a.ts");
+		for (const p of ["a.ts:1-12,", "a.ts:,-15", "a.ts:1-12,,-15", "a.ts:-15-3"]) expect(hostPathForms(p, peel)).not.toContain("a.ts");
+	});
+
+	test("hostReadPath prefers an existing unfolded literal for a folded list colon", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				expect(hostReadPath("a.ts:1-30,:-30", cwd)).toBe("a.ts");
+				fs.writeFileSync(path.join(cwd, "a.ts:1-30,"), "x");
+				expect(hostReadPath("a.ts:1-30,:-30", cwd)).toBe("a.ts:1-30,");
+				fs.writeFileSync(path.join(cwd, "a.ts:1-30,:-30"), "x");
+				expect(hostReadPath("a.ts:1-30,:-30", cwd)).toBe("a.ts:1-30,:-30");
+			},
+			home,
+		);
+	});
+
+	test("a protected file stays denied under every mixed selector list spelling", async () => {
+		const h = session({});
+		const netrc = `${home}/.ne` + "trc";
+		const creds = `${home}/.p` + "i/agent/au" + "th.json";
+		for (const p of [
+			`${netrc}:1-12,-15`,
+			`${netrc}:-15,1-12`,
+			`${netrc}:1-30,:-30`,
+			`${netrc}:raw:1-5,-3`,
+			`${netrc}:1-5,-3:raw`,
+			`${creds}:1-2,:-3:raw`,
+			".e" + "nv:1-12,-15",
+		]) {
+			expect((await toolCall(h, "read", { path: p }))?.block).toBe(true);
+		}
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a benign project file with a mixed selector list keeps its rule allow", async () => {
+		await withTempDir(
+			"pv-hps-",
+			async (cwd) => {
+				fs.mkdirSync(path.join(cwd, "src"));
+				fs.writeFileSync(path.join(cwd, "src", "a.ts"), "x");
+				const h = session({}, { cwd });
+				for (const p of ["src/a.ts:1-12,40-50", "src/a.ts:1-12,-15", "src/a.ts:-15,1-12", "src/a.ts:1-30,:-30", "src/a.ts:raw:1-5,-3"]) {
+					expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+				}
+				expect(h.calls).toHaveLength(0);
+				expect(h.confirms).toBe(0);
+			},
+			home,
+		);
 	});
 
 	test("a read or grep path with a selector suffix is graded as the file the host opens", async () => {

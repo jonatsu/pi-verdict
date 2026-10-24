@@ -1878,29 +1878,50 @@ const HOST_PATH_FORMS_MAX_CHARS = BASH_MAX_MATCH_LEN;
 
 const SELECTOR_LINE_RANGE = String.raw`L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?`;
 const SELECTOR_RANGE_CHUNK = `${SELECTOR_LINE_RANGE}(?<=[\\d.-])`;
-const SELECTOR_RANGE_LIST = `${SELECTOR_RANGE_CHUNK}(?:,${SELECTOR_RANGE_CHUNK})*`;
 const SELECTOR_TAIL = String.raw`-\d+`;
-const SELECTOR_RE = new RegExp(`^(?:${SELECTOR_RANGE_LIST}|${SELECTOR_TAIL}|raw|conflicts|img)$`, "i");
-const SELECTOR_RANGE_ONLY_RE = new RegExp(`^(?:${SELECTOR_RANGE_LIST}|${SELECTOR_TAIL})$`, "i");
+// A comma list may mix ranges and tails (`1-12,-15`); a lone tail is a one-chunk list.
+const SELECTOR_LIST_CHUNK = `(?:${SELECTOR_RANGE_CHUNK}|${SELECTOR_TAIL})`;
+const SELECTOR_LIST = `${SELECTOR_LIST_CHUNK}(?:,${SELECTOR_LIST_CHUNK})*`;
+const SELECTOR_RE = new RegExp(`^(?:${SELECTOR_LIST}|raw|conflicts|img)$`, "i");
+const SELECTOR_RANGE_ONLY_RE = new RegExp(`^${SELECTOR_LIST}$`, "i");
 
-/** The path with a trailing read selector (`:N-M`, `:-N`, `:raw`, `:conflicts`, `:img`, or one range
- *  plus `:raw`) removed, or null when the text carries none; mirrors omp's splitPathAndSel (18.6.1).
- *  The host opens the peeled path, so `.env:raw` reads `.env`. */
-function peelHostSelector(target: string): string | null {
-	const colon = target.lastIndexOf(":");
-	if (colon <= 0 || !SELECTOR_RE.test(target.slice(colon + 1))) return null;
-	const candidate = target.slice(colon + 1);
-	let base = target.slice(0, colon);
-	const inner = base.lastIndexOf(":");
-	if (inner > 0) {
-		const innerCandidate = base.slice(inner + 1);
-		const innerIsRaw = /^raw$/i.test(innerCandidate);
-		const outerIsRaw = /^raw$/i.test(candidate);
-		const innerIsRange = SELECTOR_RANGE_ONLY_RE.test(innerCandidate);
-		const outerIsRange = SELECTOR_RANGE_ONLY_RE.test(candidate);
-		if ((innerIsRaw && outerIsRange) || (innerIsRange && outerIsRaw)) base = base.slice(0, inner);
+/** Moves a list that repeats its selector colon after a comma (`a:1-30,:-30`) out of the base, so the
+ *  base is the path in front of the whole list. */
+function foldRepeatedListColons(base: string): string {
+	let folded = base;
+	while (folded.endsWith(",")) {
+		const colon = folded.lastIndexOf(":");
+		if (colon < 1 || !SELECTOR_RANGE_ONLY_RE.test(folded.slice(colon + 1, -1))) break;
+		folded = folded.slice(0, colon);
 	}
-	return base;
+	return folded;
+}
+
+/** The path with a trailing read selector (a range and tail list such as `:1-12,-15`, `:raw`,
+ *  `:conflicts`, `:img`, or one list plus `:raw`) removed, or null when the text carries none; mirrors
+ *  omp's `splitPathAndSel` (18.12.6). `foldListColons: false` keeps a repeated list colon in the base
+ *  (`a:1-30,:-30` peels only `:-30`), the split the host takes when that shorter path is a real file.
+ *  The host opens the peeled path, so `.env:raw` reads `.env`. */
+function peelHostSelector(target: string, foldListColons = true): string | null {
+	const colon = target.lastIndexOf(":");
+	if (colon <= 0) return null;
+	const candidate = target.slice(colon + 1);
+	if (!SELECTOR_RE.test(candidate)) return null;
+	let base = target.slice(0, colon);
+	let rawSuffix = false;
+	if (/^raw$/i.test(candidate)) {
+		const inner = base.lastIndexOf(":");
+		if (inner > 0 && SELECTOR_RANGE_ONLY_RE.test(base.slice(inner + 1))) {
+			base = base.slice(0, inner);
+			rawSuffix = true;
+		}
+		if (!rawSuffix) return base;
+	} else if (!SELECTOR_RANGE_ONLY_RE.test(candidate)) {
+		return base;
+	}
+	if (foldListColons) base = foldRepeatedListColons(base);
+	const inner = base.lastIndexOf(":");
+	return !rawSuffix && inner > 0 && /^raw$/i.test(base.slice(inner + 1)) ? base.slice(0, inner) : base;
 }
 
 /** The tools whose path argument the host splits a read selector from. A tool the gate does not model
@@ -1990,10 +2011,11 @@ export function hostPathForms(target: string, how: HostPathFormOptions = {}): st
 			forms.add(expandHostPath(variant));
 			if (!how.peelSelector) continue;
 			for (const form of [variant, expandHostPath(variant)]) {
-				const peeled = peelHostSelector(form);
-				if (peeled === null) continue;
-				forms.add(peeled);
-				forms.add(expandHostPath(peeled));
+				for (const peeled of [peelHostSelector(form), peelHostSelector(form, false)]) {
+					if (peeled === null) continue;
+					forms.add(peeled);
+					forms.add(expandHostPath(peeled));
+				}
 			}
 		}
 	}
@@ -2056,11 +2078,15 @@ function readMayRelocate(entry: string, cwd: string): boolean {
 }
 
 /** The path omp's `read` opens for one entry, in the host's order: the image question is cut, then a
- *  trailing selector is cut unless the whole text names an existing file, then the path is expanded. */
+ *  trailing selector is cut unless the whole text names an existing file (a list that repeats its colon
+ *  keeps the shorter split when that one exists), then the path is expanded. */
 export function hostReadPath(entry: string, cwd: string): string {
 	const asked = peelImageQuestion(entry) ?? entry;
-	const peeled = peelHostSelector(asked);
-	const literalExists = peeled !== null && fs.existsSync(path.resolve(cwd, expandHostPath(asked)));
+	const folded = peelHostSelector(asked);
+	const unfolded = peelHostSelector(asked, false);
+	const exists = (p: string): boolean => fs.existsSync(path.resolve(cwd, expandHostPath(p)));
+	const peeled = folded !== null && folded !== unfolded && unfolded !== null && exists(unfolded) ? unfolded : folded;
+	const literalExists = peeled !== null && exists(asked);
 	const chosen = expandHostPath(peeled === null || literalExists ? asked : peeled);
 	const unescaped = unescapeShellPath(chosen);
 	return !fs.existsSync(path.resolve(cwd, chosen)) && fs.existsSync(path.resolve(cwd, unescaped)) ? unescaped : chosen;
