@@ -140,6 +140,12 @@ export function bashPathTokens(command: string): string[] {
 	return out;
 }
 
+/** A path spelling with a leading `~` or `$HOME` expanded, as denyPaths spellings accept them. User-rule
+ *  targets stay raw strings, with no `$` expansion. */
+export function expandPathSpelling(raw: string): string {
+	return expandHome(raw.replace(/^\$HOME(?=\/|$)/, os.homedir()));
+}
+
 /** Normalized forms of one path for denyPaths comparison: base tier (ADR-0002) plus, for
  *  `..`-spellings, the kernel-true spelling the host would open (item 10, ADR-0002 amendment):
  *  omp's file tools return an absolute input verbatim, so `subLink/../secret` opens
@@ -149,8 +155,7 @@ export function bashPathTokens(command: string): string[] {
  *  falls to the classifier + existence hint instead (pinned by a regression test). */
 export function denyPathForms(raw: string, cwd: string): string[] {
 	if (!raw) return [];
-	// denyPaths spellings accept $HOME/ as an alias for ~/ (user-rule targets stay raw strings — no $ expansion there)
-	const expanded = expandHome(raw.replace(/^\$HOME(?=\/|$)/, os.homedir()));
+	const expanded = expandPathSpelling(raw);
 	const forms = baseForms(path.resolve(cwd, expanded));
 	const kernel = kernelPath(expanded, cwd);
 	if (kernel !== null) for (const f of baseForms(kernel)) if (!forms.includes(f)) forms.push(f);

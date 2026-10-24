@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
+import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
 import autoMode, {
 	type AdjudicateEnv,
 	adjudicate,
@@ -4289,6 +4290,124 @@ describe("code-loading ask (ADR-0011)", () => {
 			expect(h.confirms).toBe(0);
 		} finally {
 			fs.rmSync(link, { force: true });
+		}
+	});
+
+	const expectAnyCodeLoadAsk = (r: any, h: Harness): void => {
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("host code-loading location");
+		expect(h.calls.length).toBe(0);
+	};
+
+	test("a command naming a root of the set asks: an agent directory, a .omp or .pi directory, a plugin root", async () => {
+		const prev = process.env.XDG_DATA_HOME;
+		process.env.XDG_DATA_HOME = path.join(BASE, "xdg");
+		try {
+			for (const command of [
+				"tar -xf /tmp/p.tar -C ~/.omp/agent",
+				"cp -r /tmp/stage/. ./.omp/",
+				"unzip -o x.zip -d ~/.omp",
+				"mv /tmp/fake ~/.omp/agent",
+				"ln -s ~/.omp/agent a",
+				"cp -r /tmp/stage " + path.join(BASE, "home", ".omp", "profiles", "work", "agent"),
+				"cp -r /tmp/stage " + path.join(PROJ, ".pi"),
+				"cp -r /tmp/stage " + TMP_AGENT,
+				"cp -r /tmp/stage " + path.join(BASE, "xdg", "omp"),
+				"cp -r /tmp/stage " + path.join(os.homedir(), ".omp", "plugins"),
+			]) {
+				const h = headless();
+				expectAnyCodeLoadAsk(await toolCall(h, "bash", { command }), h);
+			}
+		} finally {
+			if (prev === undefined) delete process.env.XDG_DATA_HOME;
+			else process.env.XDG_DATA_HOME = prev;
+		}
+	});
+
+	test.skipIf(process.platform === "win32")("a new file written through a symlink to an agent directory asks", async () => {
+		const link = path.join(PROJ, "a");
+		fs.symlinkSync(OMP_AGENT, link);
+		try {
+			const h = headless();
+			expectCodeLoadAsk(await toolCall(h, "write", { path: "a/extensions/evil.ts", content: "x" }), "agent directory code", h);
+		} finally {
+			fs.rmSync(link, { force: true });
+		}
+	});
+
+	test("only the LSP and DAP config names omp reads count; other lsp/dap files do not ask", async () => {
+		const asks: Array<[string, string]> = [
+			[path.join(PROJ, ".dap.json"), "working-directory launcher file"],
+			[path.join(OMP_AGENT, ".dap.yml"), "agent directory launcher file"],
+			[path.join(PROJ, ".omp", ".lsp.json"), "project launcher file"],
+			[path.join(PROJ, ".omp", ".dap.json"), "project launcher file"],
+		];
+		for (const [target, kind] of asks) {
+			const h = headless();
+			expectCodeLoadAsk(await toolCall(h, "write", { path: target, content: "x" }), kind, h);
+		}
+		const b = headless();
+		expectAnyCodeLoadAsk(await toolCall(b, "bash", { command: "echo {} > .dap.json" }), b);
+		for (const target of [path.join(PROJ, "lsp.ts"), path.join(PROJ, "dap.py"), path.join(OMP_AGENT, "lsp.md")]) {
+			const h = session({}, { cwd: PROJ });
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(h, "write", { path: target, content: "x" })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+		}
+		const t = session({}, { cwd: PROJ });
+		t.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(t, "bash", { command: "bun test lsp.test.ts" })).toBeUndefined();
+		expect(t.confirms).toBe(0);
+	});
+
+	test("the home directory's LSP and DAP config files and the profile plugin roots ask", async () => {
+		const prev = process.env.XDG_DATA_HOME;
+		process.env.XDG_DATA_HOME = path.join(BASE, "xdg");
+		try {
+			const rows: Array<[string, string]> = [
+				[path.join(os.homedir(), "lsp.json"), "home-directory launcher file"],
+				[path.join(os.homedir(), ".dap.yaml"), "home-directory launcher file"],
+				[path.join(os.homedir(), ".omp", "profiles", "work", "plugins", "node_modules", "x", "index.ts"), "plugin install root"],
+				[path.join(BASE, "xdg", "omp", "profiles", "work", "plugins", "x.ts"), "plugin install root"],
+			];
+			for (const [target, kind] of rows) {
+				const h = headless();
+				expectCodeLoadAsk(await toolCall(h, "write", { path: target, content: "x" }), kind, h);
+			}
+		} finally {
+			if (prev === undefined) delete process.env.XDG_DATA_HOME;
+			else process.env.XDG_DATA_HOME = prev;
+		}
+	});
+
+	test("a denyPaths path inside the set keeps the protected-path ask, with the path withheld (ADR-0002)", async () => {
+		const target = path.join(OMP_AGENT, "models.yml");
+		const h = headless({ denyPaths: [target] });
+		const r = await toolCall(h, "write", { path: target, content: "x" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("denyPaths");
+		expect(String(r?.reason)).not.toContain(target);
+		expect(h.notifies.some(([m]) => m.includes(target))).toBe(false);
+	});
+
+	test("a mutating scope tool over the filesystem root finds a location inside it", () => {
+		fs.mkdirSync(path.join(PROJ, ".omp", "extensions"), { recursive: true });
+		try {
+			expect(hitCodeLoadPath("ast_edit", { ops: [{ pat: "x", out: "y" }], path: "/" }, PROJ)).not.toBeNull();
+		} finally {
+			fs.rmSync(path.join(PROJ, ".omp"), { recursive: true, force: true });
+		}
+	});
+
+	test("$PWD and $PI_CODING_AGENT_DIR spellings in a command are expanded", async () => {
+		for (const command of [
+			"echo {} > $PWD/mcp.json",
+			'echo {} > "$' + '{PWD}/mcp.json"',
+			"cp x $PI_CODING_AGENT_DIR/extensions/x.ts",
+			"cp x $" + "{PI_CODING_AGENT_DIR}/models.yml",
+		]) {
+			const h = headless();
+			expectAnyCodeLoadAsk(await toolCall(h, "bash", { command }), h);
 		}
 	});
 });

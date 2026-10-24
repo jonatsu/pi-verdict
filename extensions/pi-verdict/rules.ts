@@ -18,8 +18,9 @@ import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./
  *      can be turned off via builtinDenyFloor)
  *   2. user deny → deny (beats allow; a code call's whole text is also a deny target)
  *   2a. gateOmpDir (default off): path/command/code text touching a `.omp` directory → ask
- *   2b. code-loading ask (ADR-0011): a write where the host loads code → ask; off with the floor
  *   3. denyPaths hit → terminal ask (ADR-0002: the declaring user adjudicates; before user allow)
+ *      then the code-loading ask (ADR-0011): a write where the host loads code → ask; off
+ *      with the floor
  *   3a. over-cap action → terminal ask (item 6a, Phase 4): never a mechanical allow on an
  *       action the floor could not fully read (F8's ordering gap)
  *   4. user allow → allow (never for kind "code": a code call always reaches the classifier
@@ -119,19 +120,6 @@ export function classifyByRules(
 				askSource: "protected-path",
 			};
 	}
-	// A write where the host loads code runs in every later session, which is more than the one
-	// action a classifier is asked about, so a human decides (ADR-0011). It is a built-in
-	// protection and goes off with the floor. The path is the agent's own target and names no
-	// user declaration, so it stays in the reason and Explain stays offered.
-	if (user.builtinDenyFloor) {
-		const code = hitCodeLoadPath(toolName, input, cwd);
-		if (code)
-			return {
-				verdict: "ask",
-				reason: `host code-loading location (${code.kind}): ${code.path} — the host runs it in later sessions, so a human must confirm the call (ADR-0011)`,
-				askSource: "rule",
-			};
-	}
 	// denyPaths hit → terminal ask (ADR-0002): after user deny, before user allow — a
 	// protected path is the user's exception to their own allow rules. Also not gated by
 	// `targets` (an unknown tool's extracted targets now hit this ask where today nothing
@@ -155,6 +143,19 @@ export function classifyByRules(
 			reason: "call names a user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
 			askSource: "protected-path",
 		};
+	}
+	// A write where the host loads code runs in every later session, which is more than the one
+	// action a classifier is asked about, so a human decides (ADR-0011). It is a built-in
+	// protection and goes off with the floor. Its reason carries the path, so it runs after both
+	// protected-path asks: a path the user declared keeps its withheld reason (ADR-0002).
+	if (user.builtinDenyFloor) {
+		const code = hitCodeLoadPath(toolName, input, cwd);
+		if (code)
+			return {
+				verdict: "ask",
+				reason: `host code-loading location (${code.kind}): ${code.path} — the host runs it in later sessions, so a human must confirm the call (ADR-0011)`,
+				askSource: "rule",
+			};
 	}
 	// Over-cap action → terminal ask (item 6a, Phase 4; Claude-review F8): after the deny-side
 	// layers (a dangerous prefix the floor DID read still denies above), before user allow —
