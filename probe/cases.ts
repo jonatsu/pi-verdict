@@ -40,7 +40,8 @@ export interface Case {
 		| "user-allow"
 		| "tool-access"
 		| "host-path"
-		| "policy-degraded";
+		| "policy-degraded"
+		| "code-loading";
 	tool: string;
 	input: Record<string, unknown>;
 	/** Additionally asserted under the consumer-policy fixture config (run C). */
@@ -1273,6 +1274,133 @@ export function buildCases(fx: FixtureTree): Case[] {
 			config: { denyPaths: 7 },
 			degradedConfig: true,
 			expected: { layer: "degraded-policy" },
+		},
+	);
+
+	// ---- code-loading (ADR-0011) ------------------------------------------------------
+	const codeLoad = (kind: string): Expectation => ({ layer: "rule-ask", reasonIncludes: `host code-loading location (${kind})` });
+	cases.push(
+		{
+			label: "write into an omp agent directory's extensions asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.root}/home/.omp/agent/extensions/evil.ts`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("agent directory code"),
+		},
+		{
+			label: "write of an omp agent directory's models.yml asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.root}/home/.omp/agent/models.yml`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("agent directory launcher file"),
+		},
+		{
+			label: "write of an omp agent directory's config.yml asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.root}/home/.omp/agent/config.yml`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("agent directory config file"),
+		},
+		{
+			label: "write into a pi agent directory's npm install root asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.root}/home/.pi/agent/npm/node_modules/p/index.js`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("agent directory code"),
+		},
+		{
+			label: "write into the resolved agent directory's extensions asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${agentDirSlice}/extensions/x.ts`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("agent directory code"),
+		},
+		{
+			label: "write into the omp plugin root asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: "~/.omp/plugins/node_modules/x/index.ts", content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("plugin install root"),
+		},
+		{
+			label: "write into a project's .omp/extensions asks, although the floor admits the in-project write",
+			family: "code-loading",
+			tool: "write",
+			input: { path: ".omp/extensions/x.ts", content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("project code directory"),
+		},
+		{
+			label: "write of a project's .omp/config.yml asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.work}/.omp/config.yml`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("project config file"),
+		},
+		{
+			label: "write into a project's .pi/extensions asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.work}/.pi/extensions/x.ts`, content: "x" },
+			ref: "ADR-0011",
+			expected: codeLoad("project code directory"),
+		},
+		{
+			label: "write of mcp.json in the working directory asks",
+			family: "code-loading",
+			tool: "write",
+			input: { path: "mcp.json", content: "{}" },
+			ref: "ADR-0011",
+			expected: codeLoad("working-directory launcher file"),
+		},
+		{
+			label: "write of mcp.json in a subdirectory stays an in-project write",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.work}/sub/mcp.json`, content: "{}" },
+			ref: "ADR-0011",
+			expected: { layer: "allow" },
+		},
+		{
+			label: "read of a project's .omp/extensions file does not ask",
+			family: "code-loading",
+			tool: "read",
+			input: { path: `${fx.work}/.omp/extensions/x.ts` },
+			ref: "ADR-0011",
+			expected: { layer: "allow" },
+		},
+		{
+			label: "bash read of an agent directory's extensions file asks (a token's direction is unknown)",
+			family: "code-loading",
+			tool: "bash",
+			input: { command: `cat ${fx.root}/home/.omp/agent/extensions/evil.ts` },
+			ref: "ADR-0011",
+			expected: codeLoad("agent directory code"),
+		},
+		{
+			label: "a user allow rule does not skip the code-loading ask",
+			family: "code-loading",
+			tool: "write",
+			input: { path: ".omp/extensions/x.ts", content: "x" },
+			config: { allow: [".*"] },
+			ref: "ADR-0011",
+			expected: codeLoad("project code directory"),
+		},
+		{
+			label: "builtinDenyFloor:false turns the code-loading ask off",
+			family: "code-loading",
+			tool: "write",
+			input: { path: `${fx.root}/home/.omp/agent/extensions/evil.ts`, content: "x" },
+			config: { builtinDenyFloor: false },
+			ref: "ADR-0011",
+			expected: { layer: "classifier" },
 		},
 	);
 

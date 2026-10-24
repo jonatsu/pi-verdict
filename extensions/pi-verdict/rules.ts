@@ -1,5 +1,6 @@
 import { isCommandTool, isHostInternalUrl, multiTargetDetailSuffix, readMayRelocate, toolAccess, userRuleTargets } from "./access.ts";
 import { ACTION_LINE_MAX_CHARS, actionCallLine, type RedactorFn } from "./classifier.ts";
+import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, s0DirectoryBeneath } from "./floor.ts";
@@ -17,6 +18,7 @@ import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./
  *      can be turned off via builtinDenyFloor)
  *   2. user deny → deny (beats allow; a code call's whole text is also a deny target)
  *   2a. gateOmpDir (default off): path/command/code text touching a `.omp` directory → ask
+ *   2b. code-loading ask (ADR-0011): a write where the host loads code → ask; off with the floor
  *   3. denyPaths hit → terminal ask (ADR-0002: the declaring user adjudicates; before user allow)
  *   3a. over-cap action → terminal ask (item 6a, Phase 4): never a mechanical allow on an
  *       action the floor could not fully read (F8's ordering gap)
@@ -104,7 +106,7 @@ export function classifyByRules(
 		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
 	}
 	// Forced .omp gate: terminal ask, after user deny, before denyPaths/user allow. Not gated
-	// by `targets` — denyPathCandidates (which hitOmpDir uses) also covers an unknown tool's
+	// by `targets` — callPathCandidates (which hitOmpDir uses) also covers an unknown tool's
 	// adapter-derived fields. Reason carries no path (it travels back into agent context); the
 	// path is UI-only detail.
 	if (user.gateOmpDir) {
@@ -115,6 +117,19 @@ export function classifyByRules(
 				reason: "forced gate: access to a .omp directory (gateOmpDir)",
 				detail: omp + multiTargetDetailSuffix(access),
 				askSource: "protected-path",
+			};
+	}
+	// A write where the host loads code runs in every later session, which is more than the one
+	// action a classifier is asked about, so a human decides (ADR-0011). It is a built-in
+	// protection and goes off with the floor. The path is the agent's own target and names no
+	// user declaration, so it stays in the reason and Explain stays offered.
+	if (user.builtinDenyFloor) {
+		const code = hitCodeLoadPath(toolName, input, cwd);
+		if (code)
+			return {
+				verdict: "ask",
+				reason: `host code-loading location (${code.kind}): ${code.path} — the host runs it in later sessions, so a human must confirm the call (ADR-0011)`,
+				askSource: "rule",
 			};
 	}
 	// denyPaths hit → terminal ask (ADR-0002): after user deny, before user allow — a

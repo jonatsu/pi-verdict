@@ -4043,6 +4043,256 @@ describe("gateOmpDir forced gate", () => {
 	});
 });
 
+// ── Code-loading ask (ADR-0011) ─────────────────────────
+
+describe("code-loading ask (ADR-0011)", () => {
+	const BASE = plannedTempDir(os.tmpdir(), "pv-code-load-");
+	const PROJ = path.join(BASE, "proj");
+	const OMP_AGENT = path.join(BASE, "home", ".omp", "agent");
+	const PI_AGENT = path.join(BASE, "home", ".pi", "agent");
+	beforeAll(() => {
+		fs.mkdirSync(path.join(OMP_AGENT, "extensions"), { recursive: true });
+		fs.mkdirSync(path.join(PROJ, "src"), { recursive: true });
+		fs.mkdirSync(PI_AGENT, { recursive: true });
+	});
+	afterAll(() => fs.rmSync(BASE, { recursive: true, force: true }));
+
+	/** A headless session in the fixture project: an ask degrades to a block, so the reason is observable. */
+	const headless = (cfg: Parameters<typeof setConfig>[0] = {}, cwd: string = PROJ): Harness => {
+		const h = session(cfg, { cwd });
+		h.ctx.hasUI = false;
+		return h;
+	};
+	const expectCodeLoadAsk = (r: any, kind: string, h: Harness): void => {
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain(`host code-loading location (${kind})`);
+		expect(h.calls.length).toBe(0);
+	};
+
+	const ROWS: Array<[string, string]> = [
+		// omp agent directory: code directories, launcher files, general config files
+		[path.join(OMP_AGENT, "extensions", "evil.ts"), "agent directory code"],
+		[path.join(OMP_AGENT, "hooks", "pre", "x.ts"), "agent directory code"],
+		[path.join(OMP_AGENT, "tools", "x.ts"), "agent directory code"],
+		[path.join(OMP_AGENT, "commands", "c", "index.ts"), "agent directory code"],
+		[path.join(BASE, "home", ".omp", "profiles", "work", "agent", "extensions", "x.ts"), "agent directory code"],
+		[path.join(OMP_AGENT, "mcp.json"), "agent directory launcher file"],
+		[path.join(OMP_AGENT, ".mcp.json"), "agent directory launcher file"],
+		[path.join(OMP_AGENT, "models.yml"), "agent directory launcher file"],
+		[path.join(OMP_AGENT, "lsp.json"), "agent directory launcher file"],
+		[path.join(OMP_AGENT, ".lsp.yaml"), "agent directory launcher file"],
+		[path.join(OMP_AGENT, "dap.yml"), "agent directory launcher file"],
+		[path.join(OMP_AGENT, "config.yml"), "agent directory config file"],
+		[path.join(OMP_AGENT, "settings.json"), "agent directory config file"],
+		// omp plugin root
+		[path.join(os.homedir(), ".omp", "plugins", "node_modules", "x", "index.ts"), "plugin install root"],
+		// any project's .omp tree
+		[path.join(PROJ, ".omp", "extensions", "x.ts"), "project code directory"],
+		[path.join(PROJ, ".omp", "hooks", "post", "x.ts"), "project code directory"],
+		[path.join(PROJ, ".omp", "tools", "x.ts"), "project code directory"],
+		[path.join(PROJ, ".omp", "commands", "c", "index.ts"), "project code directory"],
+		[path.join(PROJ, ".omp", "plugins", "node_modules", "x", "index.ts"), "project code directory"],
+		[path.join(BASE, "other", ".omp", "extensions", "x.ts"), "project code directory"],
+		[path.join(PROJ, ".omp", "mcp.json"), "project launcher file"],
+		[path.join(PROJ, ".omp", ".mcp.json"), "project launcher file"],
+		[path.join(PROJ, ".omp", "lsp.json"), "project launcher file"],
+		[path.join(PROJ, ".omp", "dap.json"), "project launcher file"],
+		[path.join(PROJ, ".omp", "config.yml"), "project config file"],
+		[path.join(PROJ, ".omp", "settings.json"), "project config file"],
+		// the call's working directory
+		[path.join(PROJ, "mcp.json"), "working-directory launcher file"],
+		[path.join(PROJ, ".mcp.json"), "working-directory launcher file"],
+		[path.join(PROJ, "lsp.json"), "working-directory launcher file"],
+		[path.join(PROJ, ".lsp.yml"), "working-directory launcher file"],
+		[path.join(PROJ, "dap.json"), "working-directory launcher file"],
+		// pi agent directory
+		[path.join(PI_AGENT, "extensions", "x.ts"), "agent directory code"],
+		[path.join(PI_AGENT, "npm", "node_modules", "p", "index.js"), "agent directory code"],
+		[path.join(PI_AGENT, "git", "github.com", "a", "b", "x.ts"), "agent directory code"],
+		[path.join(PI_AGENT, "bin", "git"), "agent directory code"],
+		[path.join(PI_AGENT, "models.json"), "agent directory launcher file"],
+		[path.join(PI_AGENT, "trust.json"), "agent directory launcher file"],
+		[path.join(PI_AGENT, "settings.json"), "agent directory config file"],
+		// any project's .pi tree
+		[path.join(PROJ, ".pi", "extensions", "x.ts"), "project code directory"],
+		[path.join(PROJ, ".pi", "npm", "node_modules", "p", "index.js"), "project code directory"],
+		[path.join(PROJ, ".pi", "git", "github.com", "a", "b", "x.ts"), "project code directory"],
+		[path.join(PROJ, ".pi", "settings.json"), "project config file"],
+	];
+
+	test("a write into every location of the set asks, naming the location class and the path", async () => {
+		for (const [target, kind] of ROWS) {
+			const h = headless();
+			const r = await toolCall(h, "write", { path: target, content: "x" });
+			expectCodeLoadAsk(r, kind, h);
+			expect(String(r?.reason)).toContain(target);
+		}
+	});
+
+	test("edit and an apply-patch header into the set ask too", async () => {
+		const target = path.join(PROJ, ".omp", "extensions", "x.ts");
+		const h = headless();
+		expectCodeLoadAsk(await toolCall(h, "edit", { path: target, oldText: "a", newText: "b" }), "project code directory", h);
+		const patch = "*** Begin Patch\n*** Add File: " + target + "\n+x\n*** End Patch";
+		const p = headless();
+		expectCodeLoadAsk(await toolCall(p, "edit", { input: patch }), "project code directory", p);
+	});
+
+	test("a relative write into the project's .omp tree asks", async () => {
+		const h = headless();
+		expectCodeLoadAsk(await toolCall(h, "write", { path: ".omp/extensions/x.ts", content: "x" }), "project code directory", h);
+	});
+
+	test("the XDG plugin root asks only when XDG_DATA_HOME is absolute", async () => {
+		const prev = process.env.XDG_DATA_HOME;
+		const target = path.join(BASE, "xdg", "omp", "plugins", "node_modules", "x", "index.ts");
+		try {
+			process.env.XDG_DATA_HOME = path.join(BASE, "xdg");
+			const h = headless();
+			expectCodeLoadAsk(await toolCall(h, "write", { path: target, content: "x" }), "plugin install root", h);
+			process.env.XDG_DATA_HOME = "xdg";
+			const rel = session({}, { cwd: PROJ });
+			rel.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(rel, "write", { path: target, content: "x" })).toBeUndefined();
+			expect(rel.calls.length).toBe(1);
+		} finally {
+			if (prev === undefined) delete process.env.XDG_DATA_HOME;
+			else process.env.XDG_DATA_HOME = prev;
+		}
+	});
+
+	test("a read of the same paths does not ask", async () => {
+		for (const target of [
+			path.join(OMP_AGENT, "extensions", "evil.ts"),
+			path.join(PROJ, ".omp", "mcp.json"),
+			path.join(PROJ, "mcp.json"),
+		]) {
+			const h = session({}, { cwd: PROJ });
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(h, "read", { path: target })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+		}
+	});
+
+	test("a bash write and a bash read of such a path both ask", async () => {
+		const target = path.join(OMP_AGENT, "extensions", "evil.ts");
+		for (const command of ["echo x > " + target, "cat " + target, "echo {} > mcp.json", "cp a .omp/hooks/pre/x.ts"]) {
+			const h = headless();
+			const r = await toolCall(h, "bash", { command });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("host code-loading location");
+			expect(h.calls.length).toBe(0);
+		}
+	});
+
+	test("an eval cell that names such a path asks", async () => {
+		const h = headless();
+		const code = `open("${path.join(PROJ, ".omp", "tools", "x.ts")}", "w").write("x")`;
+		expectCodeLoadAsk(await toolCall(h, "eval", { language: "py", code }), "project code directory", h);
+	});
+
+	test("an unlisted tool's write target in the set asks", async () => {
+		const h = headless();
+		const r = await toolCall(h, "mcp__fs__write_file", { path: path.join(PROJ, ".omp", "extensions", "x.ts"), content: "x" });
+		expectCodeLoadAsk(r, "project code directory", h);
+	});
+
+	test("a generic launcher name outside the working directory, and lookalike segments, do not ask", async () => {
+		for (const target of [
+			path.join(PROJ, "sub", "mcp.json"),
+			path.join(PROJ, "src", "lsp.json"),
+			path.join(PROJ, "omp", "extensions", "x.ts"),
+			path.join(PROJ, ".ompx", "extensions", "x.ts"),
+			path.join(PROJ, "src", "extensions", "x.ts"),
+			path.join(PROJ, ".omp", "notes.md"),
+		]) {
+			const h = session({}, { cwd: PROJ });
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(h, "write", { path: target, content: "x" })).toBeUndefined();
+			expect(h.confirms).toBe(0);
+		}
+	});
+
+	test("ast_edit over an agent directory, or over a project holding a .omp code directory, asks", async () => {
+		const h = headless();
+		expectCodeLoadAsk(await toolCall(h, "ast_edit", { ops: [{ pat: "x", out: "y" }], path: OMP_AGENT }), "agent directory code", h);
+		fs.mkdirSync(path.join(PROJ, ".omp", "extensions"), { recursive: true });
+		try {
+			const p = headless();
+			expectCodeLoadAsk(await toolCall(p, "ast_edit", { ops: [{ pat: "x", out: "y" }], path: PROJ }), "project code directory", p);
+		} finally {
+			fs.rmSync(path.join(PROJ, ".omp"), { recursive: true, force: true });
+		}
+		const plain = session({}, { cwd: PROJ });
+		plain.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(plain, "ast_edit", { ops: [{ pat: "x", out: "y" }], path: path.join(PROJ, "src") })).toBeUndefined();
+		expect(plain.confirms).toBe(0);
+	});
+
+	test("a user allow rule and a tools entry do not skip it", async () => {
+		const target = path.join(PROJ, ".omp", "extensions", "x.ts");
+		for (const cfg of [{ allow: [".*"] }, { tools: ["write"] }]) {
+			const h = headless(cfg);
+			expectCodeLoadAsk(await toolCall(h, "write", { path: target, content: "x" }), "project code directory", h);
+		}
+	});
+
+	test("interactive sessions get a rule ask; headless ones degrade it to a deny", async () => {
+		setConfig({});
+		const call = { toolName: "write", input: { path: "/proj/.omp/extensions/x.ts", content: "x" } };
+		const ask = await adjudicate(new SessionState(), call, adjudicateEnv({ hasUI: true }));
+		expect(ask).toMatchObject({ verdict: "ask", source: "rule", degraded: false });
+		expect(ask.reason).toContain("host code-loading location (project code directory)");
+		const deny = await adjudicate(new SessionState(), call, adjudicateEnv({ hasUI: false }));
+		expect(deny).toMatchObject({ verdict: "deny", source: "rule", degraded: true });
+	});
+
+	test("the ask dialog shows the reason, and an accepted ask lets the write through", async () => {
+		const h = session({}, { cwd: PROJ });
+		expect(await toolCall(h, "write", { path: path.join(PROJ, ".omp", "extensions", "x.ts"), content: "x" })).toBeUndefined();
+		expect(h.confirms).toBe(1);
+		expect(h.confirmMsgs[0]).toContain("host code-loading location (project code directory)");
+		expect(h.calls.length).toBe(0);
+	});
+
+	test("builtinDenyFloor:false turns the ask off", async () => {
+		const h = session({ builtinDenyFloor: false }, { cwd: PROJ });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "write", { path: path.join(OMP_AGENT, "extensions", "evil.ts"), content: "x" })).toBeUndefined();
+		expect(h.confirms).toBe(0);
+		expect(h.calls.length).toBe(1);
+	});
+
+	test("the resolved agent directory (PI_CODING_AGENT_DIR) is an agent directory of both hosts", async () => {
+		const rows: Array<[string, string]> = [
+			[path.join(TMP_AGENT, "extensions", "x.ts"), "agent directory code"],
+			[path.join(TMP_AGENT, "hooks", "pre", "x.ts"), "agent directory code"],
+			[path.join(TMP_AGENT, "npm", "node_modules", "p", "index.js"), "agent directory code"],
+			[path.join(TMP_AGENT, "models.yml"), "agent directory launcher file"],
+			[path.join(TMP_AGENT, "trust.json"), "agent directory launcher file"],
+			[path.join(TMP_AGENT, "config.yml"), "agent directory config file"],
+		];
+		for (const [target, kind] of rows) {
+			const h = headless();
+			expectCodeLoadAsk(await toolCall(h, "write", { path: target, content: "x" }), kind, h);
+		}
+	});
+
+	test("a write into the gate's own install directory stays a self-protection deny", async () => {
+		const link = path.join(TMP_AGENT, "extensions");
+		fs.symlinkSync(path.join(import.meta.dir, "..", "extensions"), link);
+		try {
+			const h = session({});
+			const r = await toolCall(h, "write", { path: path.join(link, "pi-verdict", "shell.ts"), content: "x" });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("self-protection");
+			expect(h.confirms).toBe(0);
+		} finally {
+			fs.rmSync(link, { force: true });
+		}
+	});
+});
+
 // ── /verdict config editor ──────────────────────────────
 
 describe("/verdict config editor", () => {

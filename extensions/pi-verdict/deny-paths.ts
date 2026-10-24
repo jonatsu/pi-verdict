@@ -160,11 +160,22 @@ export function denyPathForms(raw: string, cwd: string): string[] {
 /** Normalize the configured denyPaths against one cwd (ADR-0002: anchored once per session, never re-derived) */
 export const anchorDenyPaths = (paths: string[], cwd: string): string[] => paths.flatMap((b) => denyPathForms(b, cwd));
 
-/** Every path candidate a tool call exposes to denyPaths comparison, via the adapter
+/** Which targets `callPathCandidates` returns: every target the call touches, or only those it may
+ *  write. A command, a code cell and a tool the adapter cannot classify count as writing every
+ *  target, because their direction is unknown. */
+export type CandidateDirection = "touched" | "written";
+
+/** Every path candidate a tool call exposes to path comparison, via the adapter
  *  (an unknown tool's shape-inferred fields are included here, unlike userRuleTargets).
  *  Scope tools with an omitted/empty path contribute the cwd: their search scope
- *  IS the cwd subtree (#48). */
-function denyPathCandidates(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
+ *  IS the cwd subtree (#48). A known observing call contributes nothing when only
+ *  `written` targets are asked for. */
+export function callPathCandidates(
+	toolName: string,
+	input: Record<string, unknown>,
+	cwd: string,
+	direction: CandidateDirection = "touched",
+): string[] {
 	if (isCommandTool(toolName)) {
 		// win32: backslash-separated paths (`C:\proj\f`) are the native spelling; BASH_PATH_TOKENS is
 		// "/"-only, so unify separators first (drive letter is skipped by the absolute-path branch;
@@ -174,7 +185,10 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 	}
 	const access = toolAccess(toolName, input);
 	if (access.direction === "mutating") return access.gradedWrites;
-	if (access.direction === "observing") return access.gradedReads.length > 0 ? access.gradedReads : [cwd];
+	if (access.direction === "observing") {
+		if (direction === "written") return [];
+		return access.gradedReads.length > 0 ? access.gradedReads : [cwd];
+	}
 	// unknown: whatever targets the payload yields still feed denyPaths — the surviving
 	// BREAKING change (an unknown tool's extracted targets now hit this ask where today
 	// nothing grades them; `userRuleTargets` stays known-tool-only, see R2-2 above).
@@ -197,7 +211,7 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 export function hitDenyPaths(toolName: string, input: Record<string, unknown>, cwd: string, bases: string[]): string | null {
 	if (bases.length === 0) return null;
 	const subtree = toolAccess(toolName, input).scope;
-	for (const candidate of denyPathCandidates(toolName, input, cwd)) {
+	for (const candidate of callPathCandidates(toolName, input, cwd)) {
 		for (const c of denyPathForms(candidate, cwd)) {
 			for (const b of bases) {
 				if (pathEquals(c, b) || pathStartsWith(c, b) || (subtree && pathStartsWith(b, c))) return b;
@@ -223,13 +237,13 @@ export function hitOmpDir(toolName: string, input: Record<string, unknown>, cwd:
 		if (OMP_DIR_IN_COMMAND.test(command)) return ".omp referenced in the command";
 	}
 	// kind "code" (eval, item 4): the same word check runs directly over the code text —
-	// denyPathCandidates' token extraction alone could miss a bare ".omp" with no path
+	// callPathCandidates' token extraction alone could miss a bare ".omp" with no path
 	// separator around it (e.g. `dest = ".omp"`), same rationale as the command branch above.
 	const access = toolAccess(toolName, input);
 	if (access.kind === "code" && access.command !== null && OMP_DIR_IN_COMMAND.test(access.command)) {
 		return ".omp referenced in the code";
 	}
-	for (const candidate of denyPathCandidates(toolName, input, cwd)) {
+	for (const candidate of callPathCandidates(toolName, input, cwd)) {
 		for (const form of denyPathForms(candidate, cwd)) {
 			if (OMP_DIR_SEGMENT.test(form)) return form;
 		}
@@ -248,7 +262,7 @@ const HOME_EXPANSION_BEFORE_SLASH = /(?<!')"?\$(?:HOME|\{HOME(?::?[-=?]([^}]{0,2
 /** `bashPathTokens` knows only "/" separators and the bare `$HOME` spelling. The result holds the
  *  command as written, a copy with each home expansion spelled `$HOME`, and each expansion's default
  *  word on a line of its own (the tokenizer would glue `:-` onto it), so the tokens of all three are
- *  candidates. A Windows command's backslashes are unified, as denyPathCandidates does. A mis-read
+ *  candidates. A Windows command's backslashes are unified, as callPathCandidates does. A mis-read
  *  shell escape only adds candidates, which asks. */
 export function commandForPathTokens(command: string, win32: boolean): string {
 	const defaults: string[] = [];
