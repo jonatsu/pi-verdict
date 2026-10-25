@@ -805,6 +805,7 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 		["~/.config/gnupg/pubring.kbx", "XDG gnupg home"],
 		["~/.config/age/key.txt", "XDG age private key"],
 		["~/.config/sops/age/keys.txt", "XDG SOPS age key"],
+		["~/.config/gcloud/access_tokens.db", "gcloud OAuth access tokens"],
 		["~/.kube/config", "kube config"],
 		["~/.cargo/credentials.toml", "cargo token"],
 		["~/.pypirc", "pypi token"],
@@ -901,6 +902,17 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 		expect(write).toBeUndefined();
 		expect(hw.calls.length).toBe(1);
 	});
+	test("repository .config/gcloud is not S0", async () => {
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(TMP_AGENT, "repo", ".config", "gcloud", "x") });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+	test("a component spelled foo.config/gcloud is not S0", async () => {
+		const h = session({});
+		const r = await toolCall(h, "read", { path: path.join(TMP_AGENT, "foo.config", "gcloud", "access_tokens.db") });
+		expect(r).toBeUndefined();
+	});
 	test("a component spelled foo.config/age is not S0", async () => {
 		const h = session({});
 		const r = await toolCall(h, "read", { path: path.join(TMP_AGENT, "foo.config", "age", "data") });
@@ -936,7 +948,14 @@ describe("XDG config root (item 9)", () => {
 
 	test("XDG root set: the credential homes deny under $XDG_CONFIG_HOME like the dot forms", async () => {
 		setXdgConfigRootsForTests([xdg]);
-		for (const p of ["age/key.txt", "gnupg/pubring.kbx", "sops/age/keys.txt", "glab-cli/config.yml", "gh/config.yml"]) {
+		for (const p of [
+			"age/key.txt",
+			"gnupg/pubring.kbx",
+			"sops/age/keys.txt",
+			"glab-cli/config.yml",
+			"gh/config.yml",
+			"gcloud/access_tokens.db",
+		]) {
 			const h = session({});
 			const r = await toolCall(h, "read", { path: path.join(xdg, p) });
 			expect(r?.block).toBe(true);

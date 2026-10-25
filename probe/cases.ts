@@ -239,6 +239,27 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", reasonIncludes: "S0" },
 		},
 		{
+			label: "XDG gcloud",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.xdg}/gcloud/access_tokens.db` },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "home gcloud tokens",
+			family: "path-tier",
+			tool: "read",
+			input: { path: "~/.config/gcloud/access_tokens.db" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "repo .config/gcloud not S0",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.root}/repo/.config/gcloud/x` },
+			expected: { layer: "allow" },
+		},
+		{
 			label: "home age key still anchored with XDG set",
 			family: "path-tier",
 			tool: "read",

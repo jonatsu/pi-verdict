@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The built-in deny floor now grades `~/.config/gcloud` (and `$XDG_CONFIG_HOME/gcloud`) as S0, so a `read` or `write` of the gcloud OAuth tokens (`access_tokens.db`) and service-account keys is a rule deny with zero model calls (plan item 3); the entry joins `gnupg|age|sops` in the home-anchored pattern, so a repository's own `.config/gcloud/` still reaches the classifier, and the pattern follows jev-engineering's `hard_deny` list (`eugeniughelbur/jev-engineering@82655a6d`, MIT).
+
 ### Changed
 
 - The classifier transcript redacts and renders only the past tool calls it keeps (the last 10), instead of every tool call in the session branch, so the per-call cost of a gray-zone decision no longer grows with the session's length; the transcript itself is unchanged (plan finding `C36`)

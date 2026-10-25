@@ -63,18 +63,19 @@ const XDG_CONFIG_ROOTS: string[] = (() => {
 
 /** The two home-anchored S0 entries (the fork's dotless credential homes, glab) as unions over the
  *  XDG root. Anchored to the home rather than any `.config` substring: a repository that ships
- *  `.config/age/data` reaches the classifier instead of hard-denying. The home branch keeps the
- *  exact previous patterns; `gh` appears in the XDG branch only — the sibling segment-anywhere
- *  `.config/gh` entry already covers the non-XDG spelling. The sibling dot entries (`.ssh`, `.aws`,
- *  `.gnupg`) stay segment-anywhere by the established S0 discipline. An empty root list contributes
+ *  `.config/age/data` reaches the classifier instead of hard-denying. `gh` appears in the XDG
+ *  branch only — the sibling segment-anywhere `.config/gh` entry already covers the non-XDG
+ *  spelling. `gcloud` is the OAuth token and service-account key store. The sibling dot entries
+ *  (`.ssh`, `.aws`, `.gnupg`) stay segment-anywhere by the established S0 discipline. An empty root list contributes
  *  no alternation branch (conditional concat — an empty `|` arm would let the names match at string
  *  start). Rebuilt by `setXdgConfigRootsForTests`: the module-load evaluation would otherwise pin
  *  `XDG_CONFIG_HOME` and leave item 9 untestable under `bun test`. */
 const buildAnchoredS0 = (xdgRoots: string[]): [RegExp, RegExp] => {
 	const home = HOME_RULE_ROOTS.map((r) => `${r}/\\.config/`).join("|");
 	const xdg = xdgRoots.map((r) => `${r}/`).join("|");
+	// The gcloud entry follows eugeniughelbur/jev-engineering@82655a6d policy.json (MIT, Copyright (c) 2026 Eugeniu Ghelbur).
 	return [
-		new RegExp(`^(?:${home}(?:gnupg|age|sops)${xdgRoots.length > 0 ? `|${xdg}(?:gnupg|age|sops|gh)` : ""})(/|$)`, "i"),
+		new RegExp(`^(?:${home}(?:gnupg|age|sops|gcloud)${xdgRoots.length > 0 ? `|${xdg}(?:gnupg|age|sops|gh|gcloud)` : ""})(/|$)`, "i"),
 		new RegExp(`^(?:${home}glab-cli${xdgRoots.length > 0 ? `|${xdg}glab-cli` : ""})(/|$)`, "i"),
 	];
 };
@@ -113,7 +114,7 @@ const S0_SECRET = [
 	/\.ssh(\/|$)/i,
 	/\.aws(\/|$)/i,
 	/\.gnupg(\/|$)/i,
-	// Fork: the dotless credential homes (`~/.config/(gnupg|age|sops|glab-cli)`) and their XDG
+	// Fork: the dotless credential homes (`~/.config/(gnupg|age|sops|gcloud|glab-cli)`) and their XDG
 	// alternatives live in `anchoredS0` — see `buildAnchoredS0` below `HOME_RULE_ROOTS`.
 	/(^|\/)\.env(\.|$)/i,
 	/credentials?(\.|\/|$)/i,
@@ -336,6 +337,7 @@ const S0_HOME_DIRECTORIES = [
 	".config/sops",
 	".config/glab-cli",
 	".config/gh",
+	".config/gcloud",
 ];
 
 /** Does the target strictly contain one of S0_HOME_DIRECTORIES? A target that is or sits inside
