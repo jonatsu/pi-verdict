@@ -134,10 +134,11 @@ classifier instead of a silent allow.
 A user `allow` regex admits a bash or powershell command only after two checks, both run after the regex
 matches. `allowAdmits` (`shell.ts`) checks the shape: one simple command, no redirection, no re-parser and no
 git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the operands touch: it expands `~` and
-`$HOME`, refuses any other expansion, grades every operand as a read through `classifyPath` with the floor on,
-refuses home-relative operands once the session may have reassigned `HOME` (`RuleContext.homeReassigned`, read
-lazily from the session branch by `home-guard.ts`), and refuses a `git` call that injects configuration or reads
-outside the cwd. A refusal only sends the call on to the classifier (ADR-0008 and its amendment).
+`$HOME`, expands a one-segment glob to the cwd entries it matches, refuses any other expansion, grades every
+resulting path as a read through `classifyPath` with the floor on, refuses home-relative operands once the session
+may have reassigned `HOME` (`RuleContext.homeReassigned`, read lazily from the session branch by `home-guard.ts`),
+and refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`), that injects configuration,
+or that reads outside the cwd. A refusal only sends the call on to the classifier (ADR-0008 and its amendment).
 
 ### Known structural weakness
 

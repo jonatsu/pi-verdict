@@ -82,10 +82,19 @@ the shape check.
 **(f) Operand grading.** Every operand is graded as a read through the path-sensitivity floor
 (`classifyPath`), and the admission is refused unless each one grades `allow`; an S0 secret or an S1
 system path refuses it. An operand is each word after the command word that does not start with `-`,
-the `=`-attached value of an option (`--file=<v>`; `-f<v>` is not split) or of a leading assignment,
-and every word after `--`. A bare `.env` therefore counts, which a path-token extractor would miss.
-Grading every word over-extracts (`main` grades as `<cwd>/main`), which is the safe direction. More
-than 64 operands refuse the admission, so the filesystem work per call stays bounded.
+and also its value after an `=` (`dd if=~/x`: bash expands a tilde there); the value of a
+`--name=value` option or of a leading assignment; the text of a short option from its first `/`
+(`-f/home/u/.pypirc`); and every word after `--`. An option word that holds `$`, `~` or a glob
+character refuses the admission, because the gate cannot tell where its letters end and its value
+begins. A bare `.env` counts, which a path-token extractor would miss. Grading every word
+over-extracts (`main` grades as `<cwd>/main`), which is the safe direction. More than 64 graded paths
+(a glob's matches each count) refuse the admission, so the filesystem work per call stays bounded.
+
+**Where relative operands resolve.** omp's `bash` runs in its `cwd` argument when one is given, so
+every relative operand resolves from that directory, not the session cwd: `cat id_ed25519` with
+`cwd: "~/.ssh"` reads the key. The gate resolves the argument as omp does (`callCwd`) and grades
+every layer there, and a `cwd` it cannot resolve withholds the allow. This applies to every layer, not
+only this step; `docs/layers.md` records it.
 
 **The expansion rule.** The shell expands an operand before the command sees it, so the gate expands
 it first where the result is exact: a leading `~` or `~/`, `$HOME` and `${HOME}` become the home
@@ -96,13 +105,19 @@ refuses the admission: any other `$`, `~user`, a brace expansion (a `{` with a `
 runs an agent's bash calls in one persistent shell, started from the user's shell snapshot and the
 project's direnv `.envrc`, which the agent can write. Expanding from the gate's own environment would
 turn an unknown value into a wrong one. One glob is exact enough to keep: a glob with no `/` that does
-not start with `.` (`ls *.ts`) matches only visible entries of the cwd, so it grades as the cwd
-itself, and `cat *` inside `~/.ssh` is still refused.
+not start with `.` (`cat *.md`) matches only visible entries of the cwd, so the gate reads the cwd,
+matches the pattern case-insensitively (a superset of bash's default and of `nocaseglob`) and grades
+every match, so `cat *.pem` over a project key or `cat k*` over a project symlink to `~/.ssh` is
+refused. A glob that matches nothing (bash would pass the pattern itself), a cwd that cannot be read
+and a bracket form the gate does not model (`[[:alpha:]]`) refuse the admission. In a `powershell`
+command a backslash refuses the admission: the word view reads it as bash's escape, while PowerShell
+keeps it as a path separator.
 
 **The `HOME` guard.** In that persistent shell, `export HOME=~/.ssh` followed by `cat ~/id_rsa` reads
 the key while the gate grades the real home. Once the call itself or any earlier command call on the
 session branch may assign `HOME` (a plain or `+=` assignment, `${HOME:=…}`, `export`, `declare`,
-`typeset`, `readonly`, `local`, `read`, `unset`, `for HOME`, `printf -v HOME`), every home-relative
+`typeset`, `readonly`, `local`, `read`, `mapfile`, `readarray`, `unset`, `for HOME`, `printf -v HOME`),
+every home-relative
 operand refuses the admission. The scan is textual and over-matches on purpose: a false match costs
 one classifier call. A branch the host cannot hand over counts as reassigned (fail closed). The scan
 runs only when a home-relative operand needs it.
@@ -116,8 +131,11 @@ Refusing a `git diff` of two revisions spelled like outside paths only costs a c
 **(h) Git configuration injection.** Before the subcommand, `-c` (bare or attached), `--config-env` and
 `--exec-path=<dir>` refuse the admission, since `core.fsmonitor`, `core.pager`, `diff.external`,
 `core.sshCommand`, a `!` alias or a replaced exec path each run a program. A `-C <dir>` outside the cwd
-refuses it too, so retargeting cannot dodge (g). The documented `^git (status|log|diff)` regex never
-matched `git -c … status`; (h) matters for broader allows such as `^git\b`.
+refuses it too, so retargeting cannot dodge (g). git's global options are read by the same
+`gitSubcommandIndex` the force-push rule uses, so a global option it does not model refuses the
+admission instead of being skipped, which could hide the subcommand behind the option's value. The
+documented `^git (status|log|diff)` regex never matched `git -c … status`; (h) matters for broader
+allows such as `^git\b`.
 
 **Why not a floor deny.** The S0 patterns as a bash deny would also hit legitimate commands that name
 a key without printing it, such as `ssh -i ~/.ssh/id_x host` and `ssh-keygen -f`. A refused admission
@@ -127,8 +145,11 @@ here denies nothing.
 
 **Consequences.** BREAKING for a policy whose allows covered such commands: they now cost a classifier
 call and fail closed headless with no model. Nothing new is denied, and `cat README.md`, `git status`,
-`git log --oneline`, `git diff HEAD~1`, `ls -la` and `ls *.ts` stay zero-call rule allows. Pinned by
-the `allow operand grading (ADR-0008 amendment)` tests and the probe's `allow operand` cases in the
-`user-allow` family. A recursive search such as `grep -r x ~` under a `^grep\b` allow is not covered:
+`git log --oneline`, `git diff HEAD~1`, `ls -la` and a matching `ls *.md` stay zero-call rule allows.
+Pinned by the `allow operand grading (ADR-0008 amendment)` and `bash cwd argument` tests and the
+probe's `allow operand` cases in the `user-allow` family.
+
+Two residuals remain. A recursive search such as `grep -r x ~` under a `^grep\b` allow is admitted:
 the home directory itself is not S0, so the operand grades `allow` while the search walks into
-`~/.ssh`.
+`~/.ssh`. A short option with an attached relative value and no `/` (`git config -f.netrc --list`) is
+not graded, because its value cannot be told from its letters.
