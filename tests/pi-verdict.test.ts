@@ -1582,6 +1582,23 @@ describe("classifier model resolution", () => {
 		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("nope/missing"));
 		expect(warns.length).toBe(1); // Only once
 	});
+	test("an unavailable classifier model warns again after a new session starts", async () => {
+		const h = session({ classifierModel: "nope/missing" });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", { command: "cargo build" });
+		await h.handlers.session_start({}, h.ctx);
+		await toolCall(h, "bash", { command: "cargo build" });
+		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes('"nope/missing" unavailable'));
+		expect(warns.length).toBe(2);
+	});
+	test("an invalid suffix on an unavailable classifier model warns about both", async () => {
+		const h = session({ classifierModel: "prov/missing:bogus" });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", { command: "cargo build" });
+		const warnings = h.notifies.filter(([, l]) => l === "warning").map(([m]) => m);
+		expect(warnings.some((m) => m.includes('invalid thinking-level suffix "bogus"'))).toBe(true);
+		expect(warnings.some((m) => m.includes('classifier model "prov/missing:bogus" unavailable'))).toBe(true);
+	});
 	test("pi-native thinking suffix: zai/flash:low → effort low (adaptive)", async () => {
 		const h = session({ classifierModel: "zai/flash:low" });
 		h.findMap = { "zai/flash": { id: "glm-4-flash" } };
