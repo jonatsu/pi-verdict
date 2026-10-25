@@ -1,6 +1,8 @@
 import * as os from "node:os";
+import * as path from "node:path";
 import { classifyPath } from "./floor.ts";
-import { shellWords } from "./shell.ts";
+import { baseForms, isWithin } from "./paths.ts";
+import { shellWords, wordBasename } from "./shell.ts";
 
 // ============================================================================
 // Rule layer: the operands a user `allow` rule may admit (ADR-0008)
@@ -28,7 +30,8 @@ interface Expanded {
  * `builtinDenyFloor` off, because a refused admission only reaches the classifier.
  */
 export function allowOperandsAdmit(command: string, cwd: string, homeReassigned: () => boolean): boolean {
-	const operands = operandWords(shellWords(command));
+	const words = shellWords(command);
+	const operands = operandWords(words);
 	if (operands.length > MAX_GRADED_OPERANDS) return false;
 	for (const word of operands) {
 		const expanded = expandOperand(word, cwd);
@@ -36,7 +39,13 @@ export function allowOperandsAdmit(command: string, cwd: string, homeReassigned:
 		if (expanded.homeRelative && homeReassigned()) return false;
 		if (classifyPath(expanded.path, cwd, false, true).verdict !== "allow") return false;
 	}
-	return true;
+	const at = commandIndex(words);
+	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words.slice(at + 1), cwd);
+}
+
+/** Index of the command word, the first word that is not a leading assignment; -1 when there is none. */
+function commandIndex(words: readonly string[]): number {
+	return words.findIndex((word) => !ASSIGNMENT.test(word));
 }
 
 /** Returns every word a command may read as a path: each word after the command word that is not an
@@ -83,22 +92,86 @@ const GLOB_CHARS = /[*?[]/;
 function expandOperand(word: string, cwd: string): Expanded | null {
 	const home = os.homedir();
 	let homeRelative = false;
-	let path = word.replace(HOME_VARIABLE, () => {
+	let text = word.replace(HOME_VARIABLE, () => {
 		homeRelative = true;
 		return home;
 	});
-	if (path === "~" || path.startsWith("~/")) {
-		path = home + path.slice(1);
+	if (text === "~" || text.startsWith("~/")) {
+		text = home + text.slice(1);
 		homeRelative = true;
-	} else if (path.startsWith("~")) {
+	} else if (text.startsWith("~")) {
 		return null;
 	}
-	if (path.includes("$") || BRACE_EXPANSION.test(path)) return null;
-	if (GLOB_CHARS.test(path)) {
-		if (path.includes("/") || path.startsWith(".")) return null;
+	if (text.includes("$") || BRACE_EXPANSION.test(text)) return null;
+	if (GLOB_CHARS.test(text)) {
+		if (text.includes("/") || text.startsWith(".")) return null;
 		return { path: cwd, homeRelative };
 	}
-	return { path, homeRelative };
+	return { path: text, homeRelative };
+}
+
+/** git global options whose value is the next word. `-C` is handled on its own, and `-c` and
+ *  `--config-env` refuse the admission before their value matters. */
+const GIT_GLOBAL_WITH_VALUE: ReadonlySet<string> = new Set(["--git-dir", "--work-tree", "--namespace", "--super-prefix", "--attr-source"]);
+/** git subcommands that read any file named outside the work tree, with or without `--no-index`. */
+const GIT_NO_INDEX_SUBCOMMANDS: ReadonlySet<string> = new Set(["diff", "grep"]);
+
+/**
+ * Returns whether a git invocation stays inside the project, given the words after `git`. Refuses
+ * configuration a global option injects (`-c`, `--config-env`, `--exec-path=`), each of which can run a
+ * program; a `-C` that leaves the cwd; and, for `diff` and `grep`, `--no-index` or any operand outside
+ * the cwd, since git then reads arbitrary files and implies `--no-index` itself. Operands after a `-C`
+ * resolve from its directory, as git resolves them.
+ */
+function gitStaysInProject(args: readonly string[], cwd: string): boolean {
+	let base = path.resolve(cwd);
+	let k = 0;
+	for (; k < args.length && args[k].startsWith("-"); k++) {
+		const word = args[k];
+		if (injectsGitConfig(word)) return false;
+		if (word === "-C") {
+			const dir = args[k + 1] === undefined ? null : expandOperand(args[k + 1], cwd);
+			if (dir === null) return false;
+			base = path.resolve(base, dir.path);
+			if (!insideProject(base, cwd)) return false;
+			k++;
+		} else if (word.startsWith("-C")) {
+			return false;
+		} else if (GIT_GLOBAL_WITH_VALUE.has(word)) {
+			k++;
+		}
+	}
+	if (k >= args.length || !GIT_NO_INDEX_SUBCOMMANDS.has(args[k])) return true;
+	let optionsEnded = false;
+	for (const word of args.slice(k + 1)) {
+		if (!optionsEnded && word === "--") {
+			optionsEnded = true;
+			continue;
+		}
+		if (!optionsEnded && word.startsWith("-")) {
+			if (isNoIndexFlag(word)) return false;
+			continue;
+		}
+		const operand = expandOperand(word, cwd);
+		if (operand === null || !insideProject(path.resolve(base, operand.path), cwd)) return false;
+	}
+	return true;
+}
+
+/** True for a global option that sets git configuration or the directory git runs its commands from. */
+function injectsGitConfig(word: string): boolean {
+	return word.startsWith("-c") || word === "--config-env" || word.startsWith("--config-env=") || word.startsWith("--exec-path=");
+}
+
+/** True for `--no-index` or an abbreviation of it, which git's option parser accepts for `grep`. */
+function isNoIndexFlag(word: string): boolean {
+	return word.length >= "--no-i".length && "--no-index".startsWith(word);
+}
+
+/** True when every form of `target`, lexical and real, lies inside the cwd in one of its forms. */
+function insideProject(target: string, cwd: string): boolean {
+	const cwdForms = baseForms(path.resolve(cwd));
+	return baseForms(target).every((form) => cwdForms.some((c) => isWithin(form, c)));
 }
 
 /** Matches text that may assign `HOME`: a plain or `+=` assignment, a `${HOME:=…}` default, a declaring

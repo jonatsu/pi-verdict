@@ -912,6 +912,31 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	test("with builtinDenyFloor off, a secret operand still does not rule-allow", async () => {
 		await reachesClassifier(CAT_ALLOW, `cat ${SSH_KEY}`, { builtinDenyFloor: false });
 	});
+	test("git diff and git grep that read outside the project reach the classifier", async () => {
+		const GIT_ANY = ["^git\\b"];
+		await reachesClassifier(GIT_ANY, "git diff /dev/null /etc/" + "hostname");
+		await reachesClassifier(GIT_ANY, "git diff /dev/null /opt/notes.txt");
+		await reachesClassifier(GIT_ANY, "git diff --no-index a b");
+		await reachesClassifier(GIT_ANY, "git grep --no-index -e x /etc");
+		await reachesClassifier(GIT_ANY, "git grep --no-ind -e x");
+		await reachesClassifier(GIT_ANY, "git -C sub diff a ../../notes.txt");
+	});
+	test("git configuration injected through a global option reaches the classifier", async () => {
+		const GIT_ANY = ["^git\\b"];
+		await reachesClassifier(GIT_ANY, "git -c core.fsmonitor=x status");
+		await reachesClassifier(GIT_ANY, "git -ccore.pager=x log");
+		await reachesClassifier(GIT_ANY, "git --config-env=core.pager=EDITOR log");
+		await reachesClassifier(GIT_ANY, "git --exec-path=/opt/x status");
+		await reachesClassifier(GIT_ANY, "git -C / status");
+	});
+	test("git calls that stay inside the project stay rule-allowed", async () => {
+		const GIT_ANY = ["^git\\b"];
+		await staysAllowed(GIT_ANY, "git status");
+		await staysAllowed(GIT_ANY, "git diff HEAD~1");
+		await staysAllowed(GIT_ANY, "git diff -- src/x.ts");
+		await staysAllowed(GIT_ANY, "git -C . status");
+		await staysAllowed(GIT_ANY, "git grep -e x -- src");
+	});
 	test("plain commands over project files stay rule-allowed", async () => {
 		await staysAllowed(CAT_ALLOW, "cat README.md");
 		await staysAllowed(GIT_ALLOW, "git status");

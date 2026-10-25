@@ -591,6 +591,23 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		});
 	}
+	// A broad git allow: git reads files outside the work tree, or runs a configured program, from
+	// operands and global options that are no secret themselves.
+	const gitRows: [string, string][] = [
+		["git -c core.fsmonitor runs a program", "git -c core.fsmonitor=x status"],
+		["git diff outside the project (implicit --no-index)", `git diff /dev/null ${fx.root}/notes.txt`],
+	];
+	for (const [label, command] of gitRows) {
+		cases.push({
+			label: `allow operand: ${label}`,
+			family: "user-allow",
+			tool: "bash",
+			input: { command },
+			config: { allow: ["^git\\b"] },
+			ref: "ADR-0008",
+			expected: { layer: "classifier" },
+		});
+	}
 	for (const command of ["cat README.md", "git status", "git log --oneline", "ls -la", "ls *.ts"]) {
 		cases.push({
 			label: `allow operand control: ${command}`,

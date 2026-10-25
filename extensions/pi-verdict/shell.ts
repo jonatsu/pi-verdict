@@ -475,7 +475,8 @@ function gitPushInWords(words: string[], depth: number): boolean {
 
 /** git flags that turn a read-shaped invocation into a write (audit V7): `--output`/`-o` write a
  *  file, `--exec`/`--ext-diff`/`--textconv` run a program, `--git-dir`/`--work-tree` retarget the
- *  repository. Matched as bare or attached (`--output=…`, `-o…`). */
+ *  repository. Matched as bare or attached (`--output=…`, `-o…`). The reads outside the work tree and
+ *  the configuration that runs a program (`-c`, `--config-env`) are refused by `allowOperandsAdmit`. */
 const GIT_WRITE_FLAGS = ["--output", "-o", "--exec", "--ext-diff", "--textconv", "--git-dir", "--work-tree"];
 
 /**
@@ -485,7 +486,8 @@ const GIT_WRITE_FLAGS = ["--output", "-o", "--exec", "--ext-diff", "--textconv",
  * judgment, and a read-shaped `git log --output=<path>` would admit a write. An allow is granted
  * only for ONE simple command: false (allow skipped → the call reaches the classifier) on an
  * operator or newline, an unsound parse, a redirection other than to `/dev/null`, a re-parser in
- * command position (`xargs`, `find … -exec`), or a `git` invocation carrying a write flag.
+ * command position (`xargs`, `find … -exec`), or a `git` invocation carrying a write flag. It checks
+ * the shape only; `allowOperandsAdmit` grades what the operands touch.
  *
  * The narrowing direction is the safe one: a rejected allow never denies, it only defers to the
  * classifier. Redirect TARGETS are not graded here (they ride the classifier); deterministic target
