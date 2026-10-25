@@ -8,7 +8,7 @@ export function wordBasename(w: string): string {
 	return (i === -1 ? w : w.slice(i + 1)).toLowerCase();
 }
 
-const SHELL_NAMES: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true, ash: true };
+const SHELL_NAMES: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash"]);
 
 /**
  * Sentinel word for a construct the scanner cannot resolve faithfully (a command substitution it
@@ -24,11 +24,11 @@ export function hasUnsoundWord(words: readonly string[]): boolean {
 }
 
 /** Command operators: split words and end a command segment. */
-const SHELL_OPERATORS: Record<string, true> = { ";": true, ";;": true, "&": true, "&&": true, "|": true, "||": true, "(": true, ")": true };
+const SHELL_OPERATORS: ReadonlySet<string> = new Set([";", ";;", "&", "&&", "|", "||", "(", ")"]);
 
 /** Whether a scanned word is a command operator. */
 export function isShellOperator(word: string): boolean {
-	return SHELL_OPERATORS[word] === true;
+	return SHELL_OPERATORS.has(word);
 }
 
 /** Length of a backslash-newline line continuation starting at `i` (`\` then LF, CR or CRLF), 0 when there is none. */
@@ -55,6 +55,8 @@ function continuationLength(command: string, i: number): number {
  */
 export function shellWords(command: string): string[] {
 	const words: string[] = [];
+	const n = command.length;
+	let i = 0;
 	let cur = "";
 	let inWord = false;
 	// The next word is a redirection target: the shell opens it, it is not an argument.
@@ -85,8 +87,6 @@ export function shellWords(command: string): string[] {
 		flush();
 		words.push(UNSOUND);
 	};
-	let i = 0;
-	const n = command.length;
 	while (i < n) {
 		const ch = command[i];
 		if (ch === "'") {
@@ -174,7 +174,7 @@ export function shellWords(command: string): string[] {
 			i++;
 			continue;
 		}
-		if (ch === "\n" || SHELL_OPERATORS[ch] === true) {
+		if (ch === "\n" || SHELL_OPERATORS.has(ch)) {
 			flush();
 			redirectTarget = false;
 			const two = ch + (command[i + 1] ?? "");
@@ -202,7 +202,7 @@ function markReparsers(words: string[]): void {
 	let segStart = 0;
 	for (let i = 0; i <= words.length; i++) {
 		const atEnd = i === words.length;
-		if (!atEnd && SHELL_OPERATORS[words[i]] !== true) continue;
+		if (!atEnd && !SHELL_OPERATORS.has(words[i])) continue;
 		const first = words[segStart];
 		if (first !== undefined) {
 			const base = wordBasename(first);
@@ -326,11 +326,68 @@ export function gitRunsIn(seg: readonly string[], invocation: GitInvocation): bo
 	return false;
 }
 
+/** A predicate that is true for a word containing any of `names`, compared case-folded. */
+export function mentionsAny(names: readonly string[]): (word: string) => boolean {
+	return (word) => {
+		const folded = word.toLowerCase();
+		return names.some((name) => folded.includes(name));
+	};
+}
+
+/** Whether the first word after the options is one of `names`, or may expand to one. */
+export function firstOperandIs(args: readonly string[], names: readonly string[]): boolean {
+	const operand = args.find((arg) => !arg.startsWith("-"));
+	return operand !== undefined && (names.includes(operand.toLowerCase()) || mayExpand(operand));
+}
+
+/** A `gh <group> <action>` command, names lower case. */
+export interface GhInvocation {
+	readonly group: string;
+	readonly actions: readonly string[];
+}
+
+/** gh options that take the next word as their value, compared case-folded (`-R`). */
+const GH_OPTIONS_WITH_VALUE = new Set(["-r", "--repo"]);
+
+/** Index of the action word in `seg` from `from` on, read past `--repo` and its value; -1 when none
+ *  follows. Fails closed: another option may take a value, so it returns `undefined`. */
+function ghActionIndex(seg: readonly string[], from: number): number | undefined {
+	for (let k = from; k < seg.length; k++) {
+		const word = seg[k].toLowerCase();
+		if (!word.startsWith("-")) return k;
+		if (GH_OPTIONS_WITH_VALUE.has(word)) k++;
+		else if (!word.startsWith("--repo=") && !/^-r./.test(word)) return undefined;
+	}
+	return -1;
+}
+
+/** Whether a command segment runs `gh` with the invocation's group and one of its actions. Fails
+ *  closed: when a word before the group or the action cannot be read, a later word that contains the
+ *  group or an action name counts as a hit. */
+export function ghRunsIn(seg: readonly string[], invocation: GhInvocation): boolean {
+	for (let i = 0; i + 1 < seg.length; i++) {
+		if (wordBasename(seg[i]) !== "gh") continue;
+		const first = seg[i + 1].toLowerCase();
+		if (first.startsWith("-") || mayExpand(first)) {
+			if (seg.slice(i + 1).some(mentionsAny([invocation.group]))) return true;
+			continue;
+		}
+		if (first !== invocation.group) continue;
+		const action = ghActionIndex(seg, i + 2);
+		if (action === undefined) {
+			if (seg.slice(i + 2).some(mentionsAny(invocation.actions))) return true;
+		} else if (action !== -1 && firstOperandIs([seg[action]], invocation.actions)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function commandSegments(words: readonly string[]): string[][] {
 	const segs: string[][] = [];
 	let cur: string[] = [];
 	for (const w of words) {
-		if (SHELL_OPERATORS[w] === true) {
+		if (SHELL_OPERATORS.has(w)) {
 			if (cur.length) segs.push(cur);
 			cur = [];
 		} else {
@@ -348,10 +405,10 @@ const SHELL_OPTIONS_WITH_ARG = new Set(["-o", "+o", "--rcfile", "--init-file"]);
 type ShellScript = { kind: "none" } | { kind: "unsound" } | { kind: "script"; text: string | undefined };
 
 /**
- * Read the options after the shell at `seg[at]`. A `-c` bundle makes the next word a script the
- * shell runs (`text` is undefined when this scan finds none). Fails closed: an option this scan does not model may take a value, so it is unsound
- * (covers `bash --norc -c …`), and so is a script that references positionals, since it forwards
- * data the scanner cannot see.
+ * Read the options after the shell at `seg[at]`. A `-c` bundle makes the next word a script the shell
+ * runs (`text` is undefined when no word follows). Fails closed: an option this scan does not model
+ * may take a value, so it is unsound (`bash --norc -c …`), and so is a script that references
+ * positionals, since it forwards data the scanner cannot see.
  */
 function shellScriptAt(seg: readonly string[], at: number): ShellScript {
 	for (let j = at + 1; j < seg.length; j++) {
@@ -383,7 +440,7 @@ export function anyCommandIn(words: readonly string[], segmentHit: (seg: readonl
 	for (const seg of commandSegments(words)) {
 		if (segmentHit(seg)) return true;
 		for (let i = 0; i < seg.length; i++) {
-			if (SHELL_NAMES[wordBasename(seg[i])] !== true) continue;
+			if (!SHELL_NAMES.has(wordBasename(seg[i]))) continue;
 			const script = shellScriptAt(seg, i);
 			if (script.kind === "unsound") return true;
 			if (script.kind === "none") continue;
