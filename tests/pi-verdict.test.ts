@@ -1125,6 +1125,16 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 		["^cp\\b", "cp -r ~ backup"],
 		["^cp\\b", "cp -a ~ backup"],
 		["^rsync\\b", "rsync -a ~ backup"],
+		["^grep\\b", "grep -d recurse x ~"],
+		["^grep\\b", "grep --directories=recurse x ~"],
+		["^grep\\b", "grep --directories recurse x ~"],
+		["^7z\\b", "7z a out.7z ~"],
+		["^7za\\b", "7za a out.7z ~"],
+		["^7zz\\b", "7zz a out.7z ~"],
+		["^bsdtar\\b", "bsdtar -cf out.tar ~"],
+		["^gtar\\b", "gtar czf out.tgz ~"],
+		["^fd\\b", "fd x ~"],
+		["^fdfind\\b", "fdfind x ~"],
 	];
 	for (const [allow, command] of recursiveRows) {
 		test(`a recursive command over a directory holding a credential directory reaches the classifier: ${command}`, async () => {

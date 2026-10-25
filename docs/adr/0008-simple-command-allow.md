@@ -159,8 +159,10 @@ probe's `allow operand` cases in the `user-allow` family.
 
 **Recursive commands.** A recursive command walks below its directory operands, so an operand that is
 no secret can still reach one: `grep -r x ~` reads `~/.ssh`. When the command word and its options say
-the command recurses (`grep -r`/`-R`/`--recursive` and bundles such as `-rn`, `rg`, `ag`, `ack`, `find`,
-`du`, `tree`, `tar`, `ls -R`, `zip -r`, `cp -r`/`-R`/`-a`, `rsync -r`/`-a`, `scp -r`), an operand that
+the command recurses (`grep -r`/`-R`/`--recursive` and bundles such as `-rn`, any grep `-d` or
+`--directories`, whose `recurse` value may sit in the next word, `rg`, `ag`, `ack`, `fd`, `find`, `du`,
+`tree`, `tar`, `bsdtar`, `gtar`, `7z`/`7za`/`7zz`, `ls -R`, `zip -r`, `cp -r`/`-R`/`-a`, `rsync -r`/`-a`,
+`scp -r`), an operand that
 contains a credential directory refuses the admission, and so does a cwd that contains one, which a
 command naming no directory searches. This is the test a scope tool's search takes
 (`s0DirectoryBeneath`). A credential directory is any directory an S0 entry guards a file in, read

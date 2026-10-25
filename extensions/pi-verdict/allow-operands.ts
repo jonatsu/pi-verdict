@@ -24,14 +24,34 @@ const GLOB_CHARS = /[*?[]/;
 const OPTION_EXPANSION = /[$~*?[]/;
 
 /** Commands that walk every directory operand recursively whatever their options. */
-const ALWAYS_RECURSIVE: ReadonlySet<string> = new Set(["rg", "ag", "ack", "rgrep", "find", "du", "tree", "tar"]);
+const ALWAYS_RECURSIVE: ReadonlySet<string> = new Set([
+	"rg",
+	"ag",
+	"ack",
+	"rgrep",
+	"fd",
+	"fdfind",
+	"find",
+	"du",
+	"tree",
+	"tar",
+	"bsdtar",
+	"gtar",
+	"7z",
+	"7za",
+	"7zz",
+]);
+
+/** grep's recursive options. Any `-d`/`--directories` counts, since its `recurse` value may sit in the
+ *  next word. */
+const GREP_RECURSION = { short: /[rRd]/, long: ["--recursive", "--dereference-recursive", "--directories"] } as const;
 
 /** The options that make a command walk its directory operands: short letters (also inside a bundle
  *  such as `-rn`) and long names (also abbreviated, as getopt accepts a unique prefix). */
 const RECURSIVE_OPTIONS: Readonly<Record<string, { readonly short: RegExp; readonly long: readonly string[] }>> = {
-	grep: { short: /[rR]/, long: ["--recursive", "--dereference-recursive"] },
-	egrep: { short: /[rR]/, long: ["--recursive", "--dereference-recursive"] },
-	fgrep: { short: /[rR]/, long: ["--recursive", "--dereference-recursive"] },
+	grep: GREP_RECURSION,
+	egrep: GREP_RECURSION,
+	fgrep: GREP_RECURSION,
 	ls: { short: /R/, long: ["--recursive"] },
 	zip: { short: /[rR]/, long: ["--recurse-paths", "--recurse-patterns"] },
 	cp: { short: /[rRa]/, long: ["--recursive", "--archive"] },

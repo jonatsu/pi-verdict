@@ -663,6 +663,8 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["recursive grep of ~/.gem, which holds the RubyGems key", "^grep\\b", "grep -r api_key ~/.gem"],
 		["rg of ~/.docker, which holds the registry login", "^rg\\b", "rg token ~/.docker"],
 		["recursive grep of /proc/self, which holds the process environment", "^grep\\b", "grep -r AWS_ /proc/self"],
+		["fd of the home directory", "^fd\\b", "fd x ~"],
+		["grep -d recurse of the home directory", "^grep\\b", "grep -d recurse x ~"],
 	];
 	for (const [label, allow, command] of recursiveRows) {
 		cases.push({
