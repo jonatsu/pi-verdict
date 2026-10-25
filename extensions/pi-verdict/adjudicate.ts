@@ -1,5 +1,5 @@
 import { parseJevConfidence } from "../jev-adapter.ts";
-import { callCwd } from "./access.ts";
+import { resolveCommandCwd } from "./access.ts";
 import { actionCallLine } from "./action-line.ts";
 import type { AuditRecord, FallbackAudit } from "./audit.ts";
 import {
@@ -69,6 +69,7 @@ export type Verdict = AllowVerdict | DenyVerdict | AskVerdict;
  *  lazily, so a call the rule layer decides raises no model warning: `getModel` only for the gray zone,
  *  where null fails closed, and `getFallbackModel` only once the cascade fires (#63). */
 export interface AdjudicateEnv {
+	/** The session cwd (the host's `ctx.cwd`), not the directory a call may name for itself. */
 	cwd: string;
 	hasUI: boolean;
 	getModel: () => ModelChoice;
@@ -154,7 +155,7 @@ function modelCallFor(state: SessionState, env: AdjudicateEnv, actionLine: strin
 		complete: env.complete,
 		actionLine,
 		denyPathsActive: state.userRules.denyPaths.length > 0,
-		place: { cwd: env.cwd, host: env.hostKind },
+		session: { sessionCwd: env.cwd, host: env.hostKind },
 		classifierRules: state.userRules.classifierRules,
 		redact,
 	};
@@ -500,23 +501,23 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 	// the wide transcript redactor below, where over-redaction is harmless.
 	const denyPathBases = state.anchoredDenyPathBases(env.cwd);
 	// Every relative path of the call resolves from where it runs, which a `bash` call may name itself.
-	const where = callCwd(call.toolName, call.input, env.cwd, env.hostKind);
+	const { commandCwd, exact, displayedCwd } = resolveCommandCwd(call.toolName, call.input, env.cwd, env.hostKind);
 	const rule = classifyByRules(call.toolName, call.input, {
-		cwd: where.cwd,
-		cwdExact: where.exact,
-		projectRoot: env.cwd,
-		runsIn: where.shown,
+		commandCwd,
+		commandCwdExact: exact,
+		sessionCwd: env.cwd,
+		displayedCwd,
 		userRules: state.userRules,
 		protectedSet: state.protectedSet,
 		denyPathBases,
 		policyDegraded: state.policyDegraded,
-		namesProtectedPath: redactorFor(where.cwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
+		namesProtectedPath: redactorFor(commandCwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
 		host: env.hostKind,
 		homeReassigned: once(() => homeReassignedInSession(env.host, call.input)),
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	// The action under review is never elided: the rule layer already asked about an over-cap action.
-	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input, where.shown).line };
+	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input, displayedCwd).line };
 	switch (rule.verdict) {
 		case "deny":
 			// Rule allows and denies stay unaudited (#54).

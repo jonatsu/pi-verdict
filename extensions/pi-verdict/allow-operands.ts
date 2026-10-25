@@ -34,9 +34,9 @@ interface Expanded {
 /** What the operand grading reads besides the command. */
 export interface OperandContext {
 	/** The directory the command runs in, which its relative operands resolve from. */
-	readonly cwd: string;
-	/** The session cwd: the project a git call must stay inside. */
-	readonly projectRoot: string;
+	readonly commandCwd: string;
+	/** The session cwd. The gate grades it as the project, which a git call must stay inside. */
+	readonly sessionCwd: string;
 	/** True when the session may have reassigned `HOME`; read only for a home-relative operand. */
 	readonly homeReassigned: () => boolean;
 	readonly shell: "bash" | "powershell";
@@ -53,7 +53,7 @@ export interface OperandContext {
  * classifier.
  */
 export function allowOperandsAdmit(command: string, where: OperandContext): boolean {
-	const { cwd, projectRoot, homeReassigned, shell } = where;
+	const { commandCwd, sessionCwd, homeReassigned, shell } = where;
 	// The word view reads a backslash as bash's escape, while PowerShell keeps it as a path separator.
 	if (shell === "powershell" && command.includes("\\")) return false;
 	const words = shellWords(command);
@@ -62,14 +62,14 @@ export function allowOperandsAdmit(command: string, where: OperandContext): bool
 	if (operands === null) return false;
 	let graded = 0;
 	for (const word of operands) {
-		const expanded = expandOperand(word, cwd);
+		const expanded = expandOperand(word, commandCwd);
 		if (expanded === null) return false;
 		if (expanded.homeRelative && homeReassigned()) return false;
 		graded += expanded.paths.length;
 		if (graded > MAX_GRADED_OPERANDS) return false;
-		if (expanded.paths.some((p) => classifyPath(p, cwd, false, true).verdict !== "allow")) return false;
+		if (expanded.paths.some((p) => classifyPath(p, commandCwd, false, true).verdict !== "allow")) return false;
 	}
-	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, cwd, projectRoot);
+	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, commandCwd, sessionCwd);
 }
 
 /**
@@ -116,7 +116,7 @@ function valueAfterEquals(word: string): string {
  * `~user`, a brace expansion, or a glob. A glob with no `/` that does not start with `.` expands to the
  * cwd entries it matches (`cwdGlobMatches`), each of which is graded.
  */
-function expandOperand(word: string, cwd: string): Expanded | null {
+function expandOperand(word: string, commandCwd: string): Expanded | null {
 	const home = os.homedir();
 	const viaTilde = word === "~" || word.startsWith("~/");
 	if (!viaTilde && word.startsWith("~")) return null;
@@ -126,7 +126,7 @@ function expandOperand(word: string, cwd: string): Expanded | null {
 	if (text.includes("$") || BRACE_EXPANSION.test(text)) return null;
 	if (!GLOB_CHARS.test(text)) return { paths: [text], homeRelative };
 	if (text.includes("/") || text.startsWith(".")) return null;
-	const matches = cwdGlobMatches(text, cwd);
+	const matches = cwdGlobMatches(text, commandCwd);
 	return matches === null ? null : { paths: matches, homeRelative };
 }
 
@@ -137,12 +137,12 @@ function expandOperand(word: string, cwd: string): Expanded | null {
  * `shopt` settings, so `dotglob`, `GLOBIGNORE` or `nocaseglob` may be on, and the gate grades a superset of
  * what any of them can match.
  */
-function cwdGlobMatches(pattern: string, cwd: string): string[] | null {
+function cwdGlobMatches(pattern: string, commandCwd: string): string[] | null {
 	const re = globRegExp(pattern);
 	if (re === null) return null;
 	let names: string[];
 	try {
-		names = fs.readdirSync(cwd);
+		names = fs.readdirSync(commandCwd);
 	} catch {
 		return null;
 	}
@@ -185,41 +185,41 @@ const GIT_NO_INDEX_SUBCOMMANDS: ReadonlySet<string> = new Set(["diff", "grep"]);
  * Returns whether the git invocation whose `git` word is `words[at]` stays inside the project. Its global
  * options are read by `gitSubcommandIndex`, so an option it does not model refuses the admission (fails
  * closed). `gitRunsInProject` judges the directory git runs in and its global options, and
- * `gitReadsStayInProject` the operands of `diff` and `grep`. The project is `projectRoot`, the session cwd;
- * `cwd` is where the command runs, which a `bash` call may move.
+ * `gitReadsStayInProject` the operands of `diff` and `grep`. The project is graded as `sessionCwd`;
+ * `commandCwd` is where the command runs, which a `bash` call may move.
  */
-function gitStaysInProject(words: readonly string[], at: number, cwd: string, projectRoot: string): boolean {
+function gitStaysInProject(words: readonly string[], at: number, commandCwd: string, sessionCwd: string): boolean {
 	const sub = gitSubcommandIndex(words, at);
 	if (sub === undefined) return false;
-	const base = gitRunsInProject(words.slice(at + 1, sub === -1 ? words.length : sub), cwd, projectRoot);
+	const base = gitRunsInProject(words.slice(at + 1, sub === -1 ? words.length : sub), commandCwd, sessionCwd);
 	if (base === null) return false;
 	if (sub === -1 || !GIT_NO_INDEX_SUBCOMMANDS.has(words[sub])) return true;
-	return gitReadsStayInProject(words.slice(sub + 1), base, cwd, projectRoot);
+	return gitReadsStayInProject(words.slice(sub + 1), base, commandCwd, sessionCwd);
 }
 
 /** Returns the directory git runs in after its global options, or null when that directory, the command's
  *  cwd moved by each `-C`, lies outside the project, or when an option injects configuration that can run a
  *  program (`injectsGitConfig`). Outside the project git may run with no repository, which implies
  *  `--no-index`. */
-function gitRunsInProject(globals: readonly string[], cwd: string, projectRoot: string): string | null {
-	let base = path.resolve(cwd);
-	if (!insideProject(base, projectRoot)) return null;
+function gitRunsInProject(globals: readonly string[], commandCwd: string, sessionCwd: string): string | null {
+	let base = path.resolve(commandCwd);
+	if (!insideProject(base, sessionCwd)) return null;
 	for (let k = 0; k < globals.length; k++) {
 		if (injectsGitConfig(globals[k])) return null;
 		if (globals[k] !== "-C") continue;
-		const dir = expandOperand(globals[k + 1] ?? "", cwd);
+		const dir = expandOperand(globals[k + 1] ?? "", commandCwd);
 		k++;
 		if (dir === null || dir.paths.length !== 1) return null;
 		base = path.resolve(base, dir.paths[0]);
-		if (!insideProject(base, projectRoot)) return null;
+		if (!insideProject(base, sessionCwd)) return null;
 	}
 	return base;
 }
 
 /** Returns whether a `diff` or `grep` stays in the project: no `--no-index`, and every operand, resolved
- *  from `base` (a glob's matches are names in `cwd`), inside the project, since git implies `--no-index`
+ *  from `base` (a glob's matches are names in `commandCwd`), inside the project, since git implies `--no-index`
  *  for a path outside the work tree and then reads any file. */
-function gitReadsStayInProject(args: readonly string[], base: string, cwd: string, projectRoot: string): boolean {
+function gitReadsStayInProject(args: readonly string[], base: string, commandCwd: string, sessionCwd: string): boolean {
 	let optionsEnded = false;
 	for (const word of args) {
 		if (!optionsEnded && word === "--") {
@@ -227,8 +227,8 @@ function gitReadsStayInProject(args: readonly string[], base: string, cwd: strin
 		} else if (!optionsEnded && word.startsWith("-")) {
 			if (isNoIndexFlag(word)) return false;
 		} else {
-			const operand = expandOperand(word, cwd);
-			if (operand === null || !operand.paths.every((p) => insideProject(path.resolve(base, p), projectRoot))) return false;
+			const operand = expandOperand(word, commandCwd);
+			if (operand === null || !operand.paths.every((p) => insideProject(path.resolve(base, p), sessionCwd))) return false;
 		}
 	}
 	return true;
@@ -245,8 +245,8 @@ function isNoIndexFlag(word: string): boolean {
 	return word.length >= "--no-i".length && "--no-index".startsWith(word);
 }
 
-/** True when every form of `target`, lexical and real, lies inside the project root in one of its forms. */
-function insideProject(target: string, projectRoot: string): boolean {
-	const rootForms = baseForms(path.resolve(projectRoot));
-	return baseForms(target).every((form) => rootForms.some((r) => isWithin(form, r)));
+/** True when every form of `target`, lexical and real, lies inside the session cwd in one of its forms. */
+function insideProject(target: string, sessionCwd: string): boolean {
+	const sessionForms = baseForms(path.resolve(sessionCwd));
+	return baseForms(target).every((form) => sessionForms.some((s) => isWithin(form, s)));
 }

@@ -905,7 +905,7 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	const GIT_ALLOW = ["^git (status|log|diff)\\b"];
 	const CAT_ALLOW = ["^cat\\b"];
 	/** Operand grading for a bash command run in its project root, in a session that never assigned HOME. */
-	const operandContext = (cwd: string) => ({ cwd, projectRoot: cwd, homeReassigned: () => false, shell: "bash" as const });
+	const operandContext = (cwd: string) => ({ commandCwd: cwd, sessionCwd: cwd, homeReassigned: () => false, shell: "bash" as const });
 	/** A command under an allow list must reach the classifier (one stub model call). */
 	const reachesClassifier = async (allow: string[], command: string, cfg: { cwd?: string; builtinDenyFloor?: boolean } = {}) => {
 		const h = session({ allow, builtinDenyFloor: cfg.builtinDenyFloor }, { cwd: cfg.cwd });
@@ -6719,10 +6719,15 @@ describe("action line integrity (item 6a, Phase 4)", () => {
 			message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `/tmp/pv-kept-${i}.txt` } }] },
 		}));
 		let redactCalls = 0;
-		const t = buildTranscript({ getBranch: () => branch } as never, "bash: echo hi", () => {
-			redactCalls++;
-			return false;
-		});
+		const t = buildTranscript(
+			{ getBranch: () => branch } as never,
+			"bash: echo hi",
+			() => {
+				redactCalls++;
+				return false;
+			},
+			{ sessionCwd: "/proj", host: "omp" },
+		);
 		expect(redactCalls).toBe(10);
 		expect(t).toContain("/tmp/pv-kept-39.txt");
 		expect(t).not.toContain("/tmp/pv-kept-29.txt");

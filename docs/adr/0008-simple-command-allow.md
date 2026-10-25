@@ -92,7 +92,7 @@ over-extracts (`main` grades as `<cwd>/main`), which is the safe direction. More
 
 **Where relative operands resolve.** omp's `bash` runs in its `cwd` argument when one is given, so
 every relative operand resolves from that directory, not the session cwd: `cat id_ed25519` with
-`cwd: "~/.ssh"` reads the key. The gate resolves the argument as omp does (`callCwd`) and grades
+`cwd: "~/.ssh"` reads the key. The gate resolves the argument as omp does (`resolveCommandCwd`) and grades
 every layer there, and a `cwd` it cannot resolve withholds the allow. The classifier's action line,
 the ask dialog, notifications and past transcript lines end with `| cwd: <dir>` when the call runs
 outside the session cwd, so neither a model nor a human judges `cat config` without seeing that it

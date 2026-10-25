@@ -187,7 +187,7 @@ export function callPathCandidates(
 		// a mis-read shell escape only yields extra candidates — false positives ask, the safe direction)
 		const cmd = commandText(input);
 		const tokens = bashPathTokens(commandForPathTokens(cmd, path.sep === "\\"));
-		// A command that names the directory it runs in touches that directory (`callCwd` resolved it into `cwd`).
+		// A command that names the directory it runs in touches that directory (`resolveCommandCwd` resolved it into `cwd`).
 		return typeof input.cwd === "string" && input.cwd !== "" ? [cwd, ...tokens] : tokens;
 	}
 	const access = toolAccess(toolName, input);

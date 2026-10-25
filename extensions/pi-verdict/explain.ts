@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type SessionPlace, sanitize } from "./action-line.ts";
+import type { SessionDir } from "./access.ts";
+import { sanitize } from "./action-line.ts";
 import { buildTranscript } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import { callModelOnce, type PipelineHost, type ThinkingLevel } from "./model-call.ts";
@@ -51,7 +52,7 @@ export interface ExplainGateArgs {
 	 *  scrubbed like the classifier's (ADR-0002); required, so no caller can omit it. */
 	redact: RedactorFn;
 	/** The session, so a past command's own `cwd` shows on its transcript line. */
-	place: SessionPlace;
+	session: SessionDir;
 }
 
 export type ExplainGateResult = { ok: true; text: string } | { ok: false; error: string };
@@ -62,7 +63,7 @@ export async function explainGate(a: ExplainGateArgs): Promise<ExplainGateResult
 	const task = question
 		? `Answer this specific question from the human about the held action: ${sanitize(question)}`
 		: (a.defaultPrompt ?? EXPLAIN_GATE_DEFAULT_PROMPT);
-	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine, a.redact, a.place)}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
+	const userMessage = `<transcript>\n${buildTranscript(a.host, a.actionLine, a.redact, a.session)}\n</transcript>\n<action>\n${a.actionDetail}\n</action>\n<gate>\n${sanitize(a.reasonLine)}\n</gate>\nTask: ${task}`;
 	const r = await callModelOnce(
 		a.host,
 		a.signal,

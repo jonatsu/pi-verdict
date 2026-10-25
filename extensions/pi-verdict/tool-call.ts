@@ -1,5 +1,5 @@
 import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { callCwd } from "./access.ts";
+import { resolveCommandCwd } from "./access.ts";
 import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, type AskVerdict, adjudicate, resolveAskWithoutHuman, type Verdict } from "./adjudicate.ts";
 import type { AuditRecord } from "./audit.ts";
@@ -151,11 +151,13 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 	// Rebuilt after adjudication, so a `denyPaths` entry a `/verdict` edit added while the call was in flight is
 	// redacted too; it keeps the earlier redactor's matches, so it fails toward the marker (ADR-0002).
 	const redact = anyRedactor(adjudicationRedact, rt.state.redactor(ctx.cwd));
-	const action = toolCallLine(event.toolName, input, { cwd: ctx.cwd, host: rt.hostKind });
+	const { displayedCwd } = resolveCommandCwd(event.toolName, input, ctx.cwd, rt.hostKind);
+	const action = toolCallLine(event.toolName, input, displayedCwd);
 	const pc: PresentedCall = {
 		toolName: event.toolName,
 		input,
 		action,
+		displayedCwd,
 		displayAction: redactedOr(redact, input, action),
 		redact,
 		ctx,
@@ -262,11 +264,7 @@ async function finishWithoutHuman(
 ): Promise<GateBlock | undefined> {
 	// The second model judges the same uncapped action line the first classifier saw; `displayAction` is capped for
 	// notifications and could hide a payload in the middle.
-	const modelAction = redactedOr(
-		pc.redact,
-		pc.input,
-		actionCallLine(pc.toolName, pc.input, callCwd(pc.toolName, pc.input, pc.ctx.cwd, rt.hostKind).shown).line,
-	);
+	const modelAction = redactedOr(pc.redact, pc.input, actionCallLine(pc.toolName, pc.input, pc.displayedCwd).line);
 	const res = await resolveAskWithoutHuman(rt.state, ask.env, verdict, modelAction, ask.hostDeadlineAt);
 	audit.finalize({ subagent: { ...ask.sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 	if (res.verdict === "allow") {

@@ -357,33 +357,45 @@ export function isCommandTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "powershell";
 }
 
-/** Where a call runs: the directory its relative paths resolve from. */
-export interface CallCwd {
-	readonly cwd: string;
-	/** False when the call names a directory the gate cannot resolve, so `cwd` is only the session's. */
+/** The command cwd of a call: the directory it runs in, which its relative paths resolve from. */
+export interface CommandCwd {
+	readonly commandCwd: string;
+	/** False when the call names a directory the gate cannot resolve, so `commandCwd` is only the session cwd. */
 	readonly exact: boolean;
-	/** The directory to show the classifier beside the command, or null when it is the session cwd. */
-	readonly shown: string | null;
+	/** The command cwd as shown beside the command, or null when it is the session cwd. */
+	readonly displayedCwd: string | null;
+}
+
+/** The session a past or present call belongs to: what `resolveCommandCwd` needs besides the call. */
+export interface SessionDir {
+	readonly sessionCwd: string;
+	readonly host: HostKind;
 }
 
 /**
- * Returns the directory a command call runs in. omp's `bash` takes a `cwd` argument and runs there; an
- * empty one, or one of only slashes, runs in the session cwd. Mirrors omp's `resolveToCwd` (18.12.6). Fails
- * closed: a `cwd` that is not a string, an internal URL (omp runs the command in a virtual filesystem), or
- * any `cwd` on pi or for another command tool, whose schemas take none, leaves the session cwd with
- * `exact: false`, so no allow rule may vouch for the call.
+ * Returns the directory a command call runs in, given the session cwd. omp's `bash` takes a `cwd` argument
+ * and runs there; an empty one, or one of only slashes, runs in the session cwd. Mirrors omp's
+ * `resolveToCwd` (18.12.6). Fails closed: a `cwd` that is not a string, an internal URL (omp runs the
+ * command in a virtual filesystem), or any `cwd` on pi or for another command tool, whose schemas take
+ * none, leaves the session cwd with `exact: false`, so no allow rule may vouch for the call.
  */
-export function callCwd(toolName: string, input: Readonly<Record<string, unknown>>, sessionCwd: string, host: HostKind): CallCwd {
+export function resolveCommandCwd(
+	toolName: string,
+	input: Readonly<Record<string, unknown>>,
+	sessionCwd: string,
+	host: HostKind,
+): CommandCwd {
 	const raw = input.cwd;
-	if (!isCommandTool(toolName) || raw === undefined || raw === "") return { cwd: sessionCwd, exact: true, shown: null };
-	const expanded = typeof raw === "string" ? expandHostPath(raw) : "";
-	if (typeof raw !== "string" || host !== "omp" || toolName !== "bash" || isHostInternalUrl(raw) || isHostInternalUrl(expanded)) {
-		return { cwd: sessionCwd, exact: false, shown: typeof raw === "string" ? raw : JSON.stringify(raw) };
+	if (!isCommandTool(toolName) || raw === undefined || raw === "") return { commandCwd: sessionCwd, exact: true, displayedCwd: null };
+	if (typeof raw !== "string") return { commandCwd: sessionCwd, exact: false, displayedCwd: JSON.stringify(raw) };
+	const expanded = expandHostPath(raw);
+	if (host !== "omp" || toolName !== "bash" || isHostInternalUrl(raw) || isHostInternalUrl(expanded)) {
+		return { commandCwd: sessionCwd, exact: false, displayedCwd: raw };
 	}
 	const aliased = wslDriveAlias(expanded) ?? expanded;
-	if (/^\/+$/.test(aliased)) return { cwd: sessionCwd, exact: true, shown: null };
-	const cwd = path.resolve(sessionCwd, aliased);
-	return { cwd, exact: true, shown: cwd === sessionCwd ? null : cwd };
+	if (/^\/+$/.test(aliased)) return { commandCwd: sessionCwd, exact: true, displayedCwd: null };
+	const commandCwd = path.resolve(sessionCwd, aliased);
+	return { commandCwd, exact: true, displayedCwd: commandCwd === sessionCwd ? null : commandCwd };
 }
 
 /** Returns a command tool's command line as text; a missing command is the empty string. A non-string

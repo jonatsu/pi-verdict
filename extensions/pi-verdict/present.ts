@@ -43,6 +43,8 @@ export interface PresentedCall {
 	readonly input: Record<string, unknown>;
 	/** The call as a transcript line, shown in dialogs and block reasons. */
 	readonly action: string;
+	/** The directory the call runs in when it is not the session cwd (`CommandCwd.displayedCwd`). */
+	readonly displayedCwd: string | null;
 	/** `action`, or the protected-path marker when the call names a protected path: the only form a notification
 	 *  carries (ADR-0002). */
 	readonly displayAction: string;
@@ -210,6 +212,6 @@ async function explainAsk(
 		question,
 		// The EXPLAIN-GATE transcript is a model payload like the classifier's, so it takes the same redactor.
 		redact,
-		place: { cwd: pc.ctx.cwd, host: rt.hostKind },
+		session: { sessionCwd: pc.ctx.cwd, host: rt.hostKind },
 	});
 }

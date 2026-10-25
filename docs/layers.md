@@ -28,7 +28,7 @@ and no user rule covers reaches the classifier.
 
 Every layer resolves a relative path from the directory the call runs in. That is the session cwd,
 except for omp's `bash`, which runs in its `cwd` argument; the gate resolves it as omp's
-`resolveToCwd` does (`callCwd`). A `cwd` argument also counts as a path the command touches, so a
+`resolveToCwd` does (`resolveCommandCwd`). A `cwd` argument also counts as a path the command touches, so a
 declared path that contains it asks. A `cwd` the gate cannot resolve (an internal URL, a value that
 is not a string, or any `cwd` on pi or for `powershell`, whose schemas take none) leaves the
 session cwd in place and withholds every user `allow` rule and `tools` exemption. The classifier's

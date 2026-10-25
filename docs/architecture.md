@@ -98,11 +98,12 @@ model when one is configured (`FALLBACK_TIMEOUT_MS`, 15 s).
 
 ## The rule layer
 
-`adjudicate` first works out where the call runs (`callCwd`): the session cwd, or the `cwd` argument of omp's
-`bash`. That directory is `RuleContext.cwd`, so every step resolves the call's relative paths from it, and a
-`cwd` the gate cannot resolve withholds the allow steps. `classifyByRules` reads the call once into a `RuleCall`
-(`readCall`), then runs a chain of steps. Each step
-returns a result or `null` for "not mine", and the first result wins. The order encodes "deny beats allow": every
+`adjudicate` first works out the command cwd, the directory the call runs in (`resolveCommandCwd`): the session
+cwd, or the `cwd` argument of omp's `bash`. It is `RuleContext.commandCwd`, so every step resolves the call's
+relative paths from it, while `RuleContext.sessionCwd` stays the project a git allow must not leave. A `cwd` the
+gate cannot resolve withholds the allow steps. `classifyByRules` reads the call once into a `RuleCall`
+(`readCall`), then runs a chain of steps. Each step returns a result or `null` for "not mine", and the first
+result wins. The order encodes "deny beats allow": every
 deny-side step runs before any allow step. The numbers match the layer table in [layers.md](layers.md).
 
 ```mermaid

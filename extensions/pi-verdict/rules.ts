@@ -20,14 +20,15 @@ import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
 export interface RuleContext {
-	/** The directory the call runs in (`callCwd`), which every relative path of the call resolves from. */
-	readonly cwd: string;
+	/** The directory the call runs in (`resolveCommandCwd`), which every relative path of the call resolves
+	 *  from. It is the session cwd unless a `bash` call names its own. */
+	readonly commandCwd: string;
 	/** False when the call names a directory the gate cannot resolve; no allow rule may then vouch for it. */
-	readonly cwdExact: boolean;
-	/** The session cwd: the project a call's own `cwd` may leave, which a git allow must stay inside. */
-	readonly projectRoot: string;
-	/** The directory shown beside a command when it is not the session cwd. */
-	readonly runsIn: string | null;
+	readonly commandCwdExact: boolean;
+	/** The session cwd. The gate grades it as the project, which a git allow must stay inside. */
+	readonly sessionCwd: string;
+	/** The command cwd as shown beside a command, or null when it is the session cwd. */
+	readonly displayedCwd: string | null;
 	readonly userRules: UserRules;
 	readonly protectedSet: ProtectedSet;
 	readonly denyPathBases: readonly string[];
@@ -65,7 +66,7 @@ interface RuleCall {
  */
 export function classifyByRules(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleResult {
 	const call = readCall(toolName, input, ctx);
-	const selfProtected = selfProtectCheck(toolName, input, call.access, ctx.cwd, ctx.protectedSet);
+	const selfProtected = selfProtectCheck(toolName, input, call.access, ctx.commandCwd, ctx.protectedSet);
 	if (selfProtected) return selfProtected;
 
 	const floorGrade = withholdFloorAllow(gradeBase(call, ctx), call, ctx);
@@ -93,7 +94,8 @@ const DEVICE_TRANSPORTS: ReadonlySet<string> = new Set(["read", "write"]);
 /** Reads the call's targets once for every step. */
 function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleCall {
 	const access = toolAccess(toolName, input);
-	const relocatable = access.direction === "observing" && toolName === "read" && access.reads.some((t) => readMayRelocate(t, ctx.cwd));
+	const relocatable =
+		access.direction === "observing" && toolName === "read" && access.reads.some((t) => readMayRelocate(t, ctx.commandCwd));
 	// On omp a device URL is the floor's to grade only through the `read` and `write` transports omp
 	// drives devices with; any other tool naming one is held back like every internal URL.
 	const internalUrl = [...access.gradedReads, ...access.gradedWrites]
@@ -105,10 +107,10 @@ function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleCon
 		toolName,
 		input,
 		access,
-		targets: userRuleTargets(toolName, input, ctx.cwd),
+		targets: userRuleTargets(toolName, input, ctx.commandCwd),
 		relocatable,
 		internalUrl,
-		vouchable: ctx.cwdExact && !ctx.policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl,
+		vouchable: ctx.commandCwdExact && !ctx.policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl,
 	};
 }
 
@@ -120,9 +122,9 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
-		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.cwd, floorOn, ctx.host);
+		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.commandCwd, floorOn, ctx.host);
 	}
-	if (access.direction === "observing") return classifyReads(observedTargets(access, ctx.cwd), ctx.cwd, floorOn, ctx.host);
+	if (access.direction === "observing") return classifyReads(observedTargets(access, ctx.commandCwd), ctx.commandCwd, floorOn, ctx.host);
 	if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.
@@ -143,7 +145,11 @@ function withholdFloorAllow(grade: RuleResult, call: RuleCall, ctx: RuleContext)
 	if (grade.verdict !== "allow") return grade;
 	// A scope search below a credential directory's parent walks into it; a plain read of a
 	// directory is not a search.
-	if (access.direction === "observing" && access.scope && observedTargets(access, ctx.cwd).some((t) => s0DirectoryBeneath(t, ctx.cwd)))
+	if (
+		access.direction === "observing" &&
+		access.scope &&
+		observedTargets(access, ctx.commandCwd).some((t) => s0DirectoryBeneath(t, ctx.commandCwd))
+	)
 		return { verdict: "gray", reason: "search scope contains a credential directory" };
 	// The host reads a missing relative target from a workspace file it finds by suffix.
 	if (call.relocatable) return { verdict: "gray", reason: "relative read target does not exist (the host may open another file)" };
@@ -153,7 +159,7 @@ function withholdFloorAllow(grade: RuleResult, call: RuleCall, ctx: RuleContext)
 	// A glob target names files the prefix grade cannot see; the deny-side layers still run on the
 	// prefix. `glob` alone only lists names, so it keeps the allow while everything it can reach
 	// stays inside the project.
-	if (access.globbed && !(toolName === "glob" && globStaysInProject(access.gradedReads, ctx.cwd)))
+	if (access.globbed && !(toolName === "glob" && globStaysInProject(access.gradedReads, ctx.commandCwd)))
 		return { verdict: "gray", reason: "path contains glob metacharacters (not graded as a literal path)" };
 	return grade;
 }
@@ -175,7 +181,7 @@ function userDeny(call: RuleCall, ctx: RuleContext): RuleResult | null {
  *  to `detail` only, because the reason reaches the agent. */
 function forcedOmpGate(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (!ctx.userRules.gateOmpDir) return null;
-	const omp = hitOmpDir(call.toolName, call.input, ctx.cwd);
+	const omp = hitOmpDir(call.toolName, call.input, ctx.commandCwd);
 	if (!omp) return null;
 	return {
 		verdict: "ask",
@@ -189,7 +195,7 @@ function forcedOmpGate(call: RuleCall, ctx: RuleContext): RuleResult | null {
  *  exception to their own allow rules (ADR-0002). The path goes to `detail` only, because the reason
  *  reaches the agent and would leak the declaration. */
 function denyPathsAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
-	const hit = hitDenyPaths(call.toolName, call.input, ctx.cwd, ctx.denyPathBases);
+	const hit = hitDenyPaths(call.toolName, call.input, ctx.commandCwd, ctx.denyPathBases);
 	if (!hit) return null;
 	return {
 		verdict: "ask",
@@ -215,7 +221,7 @@ function protectedSpellingAsk(call: RuleCall, ctx: RuleContext): RuleResult | nu
  *  path, so it runs after both protected-path asks, which withhold theirs. */
 function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (!ctx.userRules.builtinDenyFloor) return null;
-	const code = hitCodeLoadPath(call.toolName, call.input, ctx.cwd);
+	const code = hitCodeLoadPath(call.toolName, call.input, ctx.commandCwd);
 	if (!code) return null;
 	return {
 		verdict: "ask",
@@ -227,7 +233,7 @@ function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 /** Asks on an action longer than the floor reads, before user allow, so no rule allows an unread tail.
  *  The deny-side layers run first; they can only narrow the outcome. */
 function overCapAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
-	if (!actionCallLine(call.toolName, call.input, ctx.runsIn).overCap) return null;
+	if (!actionCallLine(call.toolName, call.input, ctx.displayedCwd).overCap) return null;
 	return { verdict: "ask", reason: `action too long to grade safely (over ${ACTION_LINE_MAX_CHARS} chars)`, askSource: "rule" };
 }
 
@@ -251,7 +257,7 @@ function commandAdmitted(toolName: string, command: string, ctx: RuleContext): b
 	const shell = toolName === "powershell" ? "powershell" : "bash";
 	return (
 		allowAdmits(command) &&
-		allowOperandsAdmit(command, { cwd: ctx.cwd, projectRoot: ctx.projectRoot, homeReassigned: ctx.homeReassigned, shell })
+		allowOperandsAdmit(command, { commandCwd: ctx.commandCwd, sessionCwd: ctx.sessionCwd, homeReassigned: ctx.homeReassigned, shell })
 	);
 }
 

@@ -1,5 +1,4 @@
-import { callCwd, toolAccess } from "./access.ts";
-import type { HostKind } from "./floor.ts";
+import { toolAccess } from "./access.ts";
 import { BASH_MAX_MATCH_LEN } from "./shell.ts";
 
 // ============================================================================
@@ -36,20 +35,13 @@ export function transcriptSafe(text: string): string {
 	return escapeLineBreaks(sanitize(text));
 }
 
-/** The session a call belongs to, which decides where a command with its own `cwd` runs (`callCwd`). */
-export interface SessionPlace {
-	readonly cwd: string;
-	readonly host: HostKind;
-}
-
 /** Returns a tool call as one capped line for a dialog, a notification or the transcript: its command, its
- *  targets, its path, or its JSON. A command that runs outside the session cwd ends with `| cwd: <dir>`,
- *  as on the action line, so neither a human nor a model judges it without the directory. A null `place`
- *  shows no directory. */
-export function toolCallLine(name: string, args: Readonly<Record<string, unknown>>, place: SessionPlace | null): string {
+ *  targets, its path, or its JSON. `displayedCwd` is the call's `CommandCwd.displayedCwd`: a command that
+ *  runs outside the session cwd ends with `| cwd: <dir>`, as on the action line, so neither a human nor a
+ *  model judges it without the directory. */
+export function toolCallLine(name: string, args: Readonly<Record<string, unknown>>, displayedCwd: string | null): string {
 	if (typeof args.command === "string") {
-		const runsIn = place ? callCwd(name, args, place.cwd, place.host).shown : null;
-		return `${name}: ${transcriptSafe(runsIn === null ? args.command : `${args.command} ${CWD_SEPARATOR} ${runsIn}`)}`;
+		return `${name}: ${transcriptSafe(withDisplayedCwd(args.command, displayedCwd))}`;
 	}
 	// A multi-target edit names its full target set, not only `args.path` or the raw patch (ADR-0009).
 	const access = toolAccess(name, args);
@@ -80,19 +72,24 @@ function boundedExcerpt(text: string, maxChars: number): string {
 	return `[excerpt: ${shown.length} of ${safe.length} chars] ${shown}`;
 }
 
+/** Returns a command followed by the directory it runs in, when that is not the session cwd. */
+function withDisplayedCwd(command: string, displayedCwd: string | null): string {
+	return displayedCwd === null ? command : `${command} ${CWD_SEPARATOR} ${displayedCwd}`;
+}
+
 /** Returns the action under review as its transcript line, uncapped by `MAX_ENTRY_CHARS`. `overCap` is true
  *  when the counted part exceeds `ACTION_LINE_MAX_CHARS`; the rule layer then asks before any model runs.
- *  A content excerpt or an unrecognised tool's JSON is appended bounded and never sets `overCap`. `runsIn` is the
- *  directory a command runs in when it is not the session cwd (`callCwd`); it is part of the counted action. */
+ *  A content excerpt or an unrecognised tool's JSON is appended bounded and never sets `overCap`.
+ *  `displayedCwd` is the call's `CommandCwd.displayedCwd`; it is part of the counted action. */
 export function actionCallLine(
 	name: string,
 	args: Readonly<Record<string, unknown>>,
-	runsIn: string | null = null,
+	displayedCwd: string | null,
 ): { line: string; overCap: boolean } {
 	// The cap counts raw lengths, as the floor reads the raw text: zero-width padding cannot shrink an
 	// action below the cap. Only the displayed line is sanitized.
 	if (typeof args.command === "string") {
-		const raw = `${name}: ${args.command}${runsIn === null ? "" : ` ${CWD_SEPARATOR} ${runsIn}`}`;
+		const raw = `${name}: ${withDisplayedCwd(args.command, displayedCwd)}`;
 		return { line: escapeLineBreaks(stripZeroWidth(raw)), overCap: raw.length > ACTION_LINE_MAX_CHARS };
 	}
 	const access = toolAccess(name, args);
