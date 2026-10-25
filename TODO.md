@@ -2,6 +2,15 @@
 
 Open work for pi-verdict, in the priority order the user set on 2026-10-07 and revised on 2026-10-24; reconciled with the code on 2026-10-25 after v0.23.0. Work the list top down; prune an item when it is done. The plan items' own order and detail live in `docs/plans/call-model-and-rule-hardening.md` ("Delivery", decision 11).
 
+## In progress
+
+The live state of open work, updated at every commit, merge, review and pause; the numbered items below say what each piece of work is.
+
+- **Paused by the user on 2026-10-25** after the v0.23.0 release and this ledger reconciliation. Resume only on the user's word.
+- **Released:** v0.23.0 (tag commit `607e7f6`), published; agent-setup pinned and verified it with 63 gate-check cases.
+- **Branch `fix/session-shell-guard`** (worktree `.claude/worktrees/agent-a09589e5f3d4c88e3`, item 3): commit `c42942c` refuses an allowed command with an option that writes a file, and all checks pass on it. The session shell-state guard is not written yet. It needs one decision first: the pinned test "an unreadable session branch refuses home-relative operands (fails closed)" must change, because an unreadable branch might hide `export PATH=…` and so must void every allow, not only home-relative ones. The recommendation is to approve it, since both hosts always supply the branch. The proposed table: `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `BASH_ENV`, `ENV`, a shell function, `alias`, `enable`, `hash -p`, `shopt -s expand_aliases`, and `source`, `.`, `eval` or `trap` in command position void every allow; `HOME` voids home-relative operands, and `HOME` or `XDG_CONFIG_HOME` also void `git`, whose global config can set `core.fsmonitor`; any `GIT_*` variable voids `git`, `RIPGREP_CONFIG_PATH` voids `rg`, `TAR_OPTIONS` voids `tar`, `ZIPOPT`/`ZIP` void `zip`, `RSYNC_RSH` voids `rsync`, `LESSOPEN`/`LESSCLOSE` void `less`, `GREP_OPTIONS` voids `grep`, and `IFS` voids home-relative operands; a voided command is matched by any word's basename, so `env git` counts. Then a correctness review (code-reviewer on Opus) and a security review, a rebase that keeps `main`'s TODO wording, and the merge.
+- **Waiting on the user:** posting the omp comment (item 2).
+
 ## Next, in order
 
 1. [x] **Simplify the gate's decision path** (`docs/plans/simplify-and-comments.md`, complete 2026-10-25): slices 1-5 and the classifier findings `C35` and `C36` landed. The findings it left open now live in items 3 and 5 and under "Later", as the plan's table under "Order" shows. Keep this numbering, since other documents cite items by number.

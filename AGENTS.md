@@ -160,7 +160,9 @@ Spawn a sub-instance that loads only the repo copy, against a throwaway agent di
 
 ## Release
 
+- Before the bump, diff the exported API against the last tag (`git diff vPREV -- extensions/pi-verdict/index.ts` plus the signatures of `SessionState`, `AdjudicateEnv`, `adjudicate` and `RuleContext`, and the output of any exported function whose behavior changed), and list every change in `CHANGELOG.md`: agent-setup's gate check calls these directly.
 - Sequence: `chore(release): bump version` commit (bump `package.json` version; move `## [Unreleased]` to `## [X.Y.Z] - <date>`) + annotated tag `vX.Y.Z` + `bun run release-check` + push + GitHub Release. `gh release` commands are blocked by the built-in deny floor, so the user runs them from their own terminal.
+- After the Publish run passes, send the agent-setup session a pin note: the tag commit and tag object, the security fixes, the behavior changes for the deployed policy (`agents/omp/pi-verdict.json` there), the exported-API changes, and cases worth adding to its `check-omp-gate` suite. The CHANGELOG section is the source; the note adds only the policy-specific reading.
 - This checkout has three remotes (`origin` = `jonatsu/pi-verdict`, `frapetti` = `frapetti-dev/pi-verdict`, `upstream` = the original `jesset/pi-verdict`). `gh` defaults to `jonatsu/pi-verdict` through `gh repo set-default`, which is local git config; in a fresh clone, run `gh repo set-default jonatsu/pi-verdict` first, because otherwise `gh` may query the original repository.
 - Publishing is automated: Release published → `.github/workflows/publish.yml` (tag/version double-check + typecheck + tests + publish to GitHub Package Registry). The workflow runs as it stands at the tagged commit.
 
