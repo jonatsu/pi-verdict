@@ -1,7 +1,7 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
-Status: in progress, through slice 5 and a last classifier step. Slices 1 and 2 landed on 2026-10-24
-(after v0.20.0), and slices 3 and 4 on 2026-10-25 (after v0.21.0). The user narrowed the scope on 2026-10-25
+Status: in progress, through the last classifier step. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and
+slices 3, 4 and 5 on 2026-10-25 (after v0.21.0). The user narrowed the scope on 2026-10-25
 (`AGENTS.md` "Goals": efficient, human-maintainable code; refactoring is not a goal in itself), so the plan ends
 after slice 5 and the classifier findings `C35` and `C36`. The other open findings moved to `TODO.md`, as the
 table under "Order" shows. This plan defines the finding ids `C1`-`C47` that commits and the CHANGELOG may cite;
@@ -29,7 +29,7 @@ flowchart LR
   S1[1 classifier split, done] --> S2[2 rules and self-protection, done]
   S2 --> S3[3 adjudicate and the Verdict union, done]
   S3 --> S4[4 state, done]
-  S4 --> S5[5 index.ts breakup]
+  S4 --> S5[5 index.ts breakup, done]
   S5 --> S6[6 classifier accuracy and cost]
   S5 -.-> T5[TODO item 5: one shared reading of each call]
   S5 -.-> T3[TODO item 3: floor fixes]
@@ -42,7 +42,7 @@ flowchart LR
 | 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
 | 3. `adjudicate.ts` and the `Verdict` union (done) | `C20`, `C25`, `C34`, `C42`, `C28` for `adjudicate.ts`, plus `C26` and `C37` in part |
 | 4. `state.ts` (done) | `C32`, `C28` for `state.ts`, plus the `protectedSet` name left from `C42` |
-| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37`, `C28` for `index.ts` |
+| 5. `index.ts` breakup (done) | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37`, `C28` for `index.ts` |
 | 6. Classifier accuracy and cost, the plan's last step | `C35`, `C36` |
 | `TODO.md` item 5, one shared reading of each call | `C3`, `C4`, `C11`, `C13`, `C14`, `C41`, `C44` |
 | `TODO.md` item 3, small floor fixes | `C5`, `C6`, `C7`, `C47` |
@@ -92,8 +92,33 @@ flowchart LR
 - `C32` `SessionState` takes only its agent directory, which defaults to `agentDirPath()` and anchors both
   self-protection and the audit log; its rules always come from the one config load. Verdicts are counted through
   `countVerdict`, `RulesLoadReport` is `LoadedRules` without its rules, the cascade status line is built in
-  `index.ts` as `cascadeSummary`, and the protected set is named `protectedSet`.
+  the `/automode` command as `cascadeSummary` (since slice 5 in `master-switch.ts`), and the protected set is named `protectedSet`.
 - `C28` for `state.ts`.
+- `C24` the `/verdict` editor lives in `ui/config-editor.ts` as one `ConfigFileEditor`; `gateOmpDir` and `footer`
+  are driven by one scalar-key table whose defaults come from `EMPTY_RULES`, now exported.
+- `C23` `model-roles.ts` resolves the classifier, fallback and EXPLAIN-GATE models through one `resolveModelRole`;
+  `THINKING_LEVELS` is a const tuple with `isThinkingLevel`; the warn-once latches live in `SessionState`, cleared by
+  `reset()`, and the classifier's two warnings have their own latches (a `### Fixed` entry under `## [Unreleased]`).
+- `C18` `index.ts` is flag registration and hook wiring (73 lines). One `GateRuntime` (`runtime.ts`) carries what
+  the hooks share; the jobs live in `present.ts`, `tool-call.ts`, `session-start.ts`, `root-ui.ts`,
+  `master-switch.ts`, `model-roles.ts` and `ui/config-editor.ts`. `GateRuntime` came first rather than last, so
+  every extracted module took it instead of a parameter list, and `root-ui.ts` came before `tool-call.ts`, which
+  reads the root UI through it. `describeAction` is gone, and `presentVerdict` takes one `PresentedCall`.
+- `C19` the handler reads as `buildEnv`, `withStatusWidget`, `handleRootCall`, `handleSubagentAsk`, `askOnRootUi`
+  and `finishWithoutHuman`; `GateBlock` is the one block type; `AskAudit` appends an ask's record once, built as a
+  new record. Outside the subagent ask window, `presentNow` treats "aborted" as a decline.
+- `C33` the handler builds the session redactor once per call and every presentation site reuses it; adjudicate's
+  fallback builds it through the same `sessionRedactor`, and `redactedOr` replaces the redact-or-show ternary.
+  `AdjudicateEnv.redact` stays optional, because the probe and the tests build an env without it.
+- `C37` the degraded-policy texts of the block reason, the deny notice, the `/automode` status and the load warning
+  sit together in `POLICY_DEGRADED` (`present.ts`); the footer badge and `WITHHELD_ALLOW_PREFIX` keep their short
+  forms in their modules.
+- `C17` the prototype header is replaced by the entry's role, and the floor's test hooks are no longer re-exported
+  through `index.ts`; no pure helpers were left to move.
+- `C46`, the module-level state part: `rootUi` and the dialog queue sit together in `root-ui.ts`, because every
+  session in the process shares them. `dialogModules`, `completionCache` and the temperature-rejection set stay
+  module-level as process-wide caches of facts that do not change per session.
+- `C28` for `index.ts` and the modules carved from it.
 
 ### Open
 
@@ -148,42 +173,20 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
   `TrustStore` should be a result union.
 - **C16 `config.ts`:** toggle-shortcut validation is its own concern; the coverage and
   side-effecting tool lists belong with access; the `_hint` is one 3,600-character line.
-- **C17 `index.ts` header:** a stale "PROTOTYPE" header that duplicates `AGENTS.md`, test-only
-  re-exports, and pure helpers that belong in `paths.ts`.
-- **C18 `autoMode` is an 878-line closure holding eight jobs** sharing about ten closure variables.
-  Fix, each step green: move the `/verdict` editor to `ui/config-editor.ts`; extract
-  `model-roles.ts` (`C23`); extract `present.ts`; extract `tool-call.ts` (`C19`); extract
-  `session-start.ts` and `root-ui.ts`; pass one explicit `GateRuntime` object. `index.ts` ends as
-  about 120 lines of wiring.
-- **C19 The `tool_call` handler mixes six jobs** and handles `"aborted"` three ways; the block type
-  is written four times. Fix: `GateBlock`, `buildEnv`, `withStatusWidget`, `handleRootCall`,
-  `handleSubagentCall`, `finishWithoutHuman`; `finalize` returns a new record.
-- **C23 Model-role resolution is copied four times** with five warn-once latches outside
-  `SessionState.reset()`; the classifier shares one latch between two warnings. Fix:
-  `model-roles.ts` with `resolveModelRole`, latches registered in `reset()`, `THINKING_LEVELS` as a
-  const tuple with a type guard.
-- **C24 The `/verdict` editor lives in the extension body** (about 240 lines, six nested functions,
-  nesting 7). Fix: move it to `ui/config-editor.ts`; drive the scalar keys from one table whose
-  defaults come from `EMPTY_RULES`.
 - **C26 `callModelOnce` takes nine positional parameters.** Its other caller is `explainGate` in
   `explain.ts`, so the change lands with that module. Fix: pass the model call and the request as two objects.
-- **C28 Plan ids and history in the remaining modules:** `index.ts`, `deny-paths.ts`
+- **C28 Plan ids and history in the remaining modules:** `deny-paths.ts`
   (the 23-line `bashPathTokens` derivation), `footer.ts`, `audit.ts`, `explain.ts`.
-- **C29 Wrong-home helpers:** `subagent.ts` mixes the subagent bridge with dialog helpers;
+- **C29 Wrong-home helpers:** `subagent.ts` keeps the dialog helper `untilAborted` beside the subagent bridge
+  (the dialog queue moved to `root-ui.ts` in slice 5);
   `resolveAskWithoutHuman` lives in `adjudicate.ts`; `declineDetail` in `explain.ts`.
 - **C31 `ui/dialog.ts` holds five concerns,** including the security-relevant `displaySafe`;
   `fencedBlock` uses bare sizes tied implicitly to the caps; two `as` casts lack a why-safe comment.
-- **C33 The "redact or show" idiom is written seven times,** and the session redactor is rebuilt per
-  call in three places. Fix: `redactedOr(redact, input, text)`, one redactor per call.
 - **C35 The content excerpt follows a newline,** so the transcript's last line is model-written
   content, while both system prompts treat the last line as the action. Fix: keep the excerpt on
   the action line after a separator.
 - **C36 Redaction runs over the whole session branch on every gray call,** before the transcript
   keeps its last tool calls. Fix: slice to the kept tool calls first.
-- **C37 The degraded-policy wording lives in five places:** `WITHHELD_ALLOW_PREFIX` in `adjudicate.ts`,
-  and in `index.ts` the block-reason note in `blockReasonText`, the deny notification, the `/automode`
-  status hint and the session-start warning, plus the footer badge. Fix: gather the texts where the
-  presentation moves (`present.ts`, `session-start.ts`).
 - **C38 `action-line.ts` holds two concerns:** text cleaning beside action-line rendering;
   `toolCallLine` and `actionCallLine` both derive targets and format the multi-target suffix (a
   near copy sits in `access.ts`). Fix: a text-cleaning module, `accessTargets`, `lineSafe`.
@@ -212,9 +215,7 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
   tests by the behavior they pin, and replace probe refs with an ADR or a qualified id.
 - **C46 Smaller structure items.** `deny-paths.ts` mixes the path tokenizer (a `path-tokens.ts` candidate),
   `denyPaths` matching and the `hitOmpDir` gate. `renderFooter` restates the `"full" | "compact"` union instead of
-  deriving it from `UserRules["footer"]`. Module-level mutable state remains outside `floor.ts`: `rootUi`,
-  `dialogTail`, `dialogModules`, `completionCache` and the temperature-rejection set. Shared arrays outside the
-  model-call modules lack `readonly`.
+  deriving it from `UserRules["footer"]`. Shared arrays outside the model-call modules lack `readonly`.
 - **C47 `code-loading.ts` expands `$PI_CODING_AGENT_DIR` through the global agent directory,** the seam slice 2
   closed for self-protection: a session built with an explicit agent directory grades the variable against another
   directory. Pass the session's agent directory in. `loadUserRules` has the same seam: it reads the config under
@@ -230,8 +231,5 @@ These belong to the findings above and must close with them:
 - `C12`: `agentDbS0()` recomputes the agent directory on every call.
 - `C14`: five `fs.existsSync(path.resolve(cwd, …))` copies; a redundant `isWrite &&` in `classifyPath`.
 - `C15`: `trust.ts` recomputes `baseForms` for every entry.
-- `C18`: drop `describeAction`, which only calls `toolCallLine`. `presentAsk` takes six parameters and rebuilds
-  `note` from `titled`; give it one presentation context when `present.ts` is extracted (with `C19`).
 - `C40`: `runConfidenceCascade` runs about 75 lines with three closures (`demotionAsk`, `failed`, the shadow
   spreads) and terse names (`fb`, `getFb`); split it with the `callModelOnce` part of `C26`.
-- `C33`: `AdjudicateEnv.redact` is optional, with a second redactor construction path.
