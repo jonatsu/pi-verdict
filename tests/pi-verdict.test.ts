@@ -6739,6 +6739,23 @@ describe("end-to-end adjudication deadline (item 7, Phase 7)", () => {
 		expect(calls).toBe(1);
 	});
 
+	test("an unparseable answer that arrives as the attempt times out is not retried", async () => {
+		setConfig({});
+		const state = new SessionState();
+		const env = adjudicateEnv();
+		env.adjudicationBudgetMs = 50;
+		let calls = 0;
+		env.complete = (async (_m: any, _req: any, opts: any) => {
+			calls++;
+			await new Promise<void>((resolve) => opts.signal?.addEventListener("abort", () => resolve(), { once: true }));
+			return { content: [{ type: "text", text: "I think this is probably fine" }], stopReason: "stop" };
+		}) as any;
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		expect(v).toMatchObject({ verdict: "deny", source: "classifier" });
+		expect(v.reason).toContain("timed out after");
+		expect(calls).toBe(1);
+	});
+
 	test("a parseable verdict that arrives as the attempt times out is still used", async () => {
 		setConfig({});
 		const state = new SessionState();
