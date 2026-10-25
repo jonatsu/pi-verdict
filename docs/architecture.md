@@ -212,7 +212,8 @@ the flags and wires each host hook to the module that owns it. Leaves at the bot
 ```mermaid
 flowchart BT
   subgraph knowledge [path, command and policy knowledge]
-    shell[shell: bash tokenizer, danger rules]
+    shellwords[shell-words: bash tokenizer, git and sh -c invocations]
+    shell[shell: danger rules, allow shape]
     paths[paths: canonical forms, containment]
     agentdir[agent-dir: install anchor]
     config[config + trust: user policy, project trust]
@@ -261,7 +262,7 @@ flowchart BT
   host --> index
 ```
 
-Inside a group, modules also import each other in order (for example `floor` imports `shell`, and `rules` imports
+Inside a group, modules also import each other in order (for example `shell` imports `shell-words`, `floor` imports `shell`, and `rules` imports
 the other rule steps). In the host group, `runtime` builds the `GateRuntime` that every later module takes: the
 session state, the master switch, the debug flag and the host seams. `present` builds on `runtime`, `model-roles`
 and the dialog, and `tool-call` builds on `present`. `index.ts` imports only the hook entry points.

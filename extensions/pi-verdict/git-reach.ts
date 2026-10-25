@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { baseForms, isWithin } from "./paths.ts";
-import { gitSubcommandIndex } from "./shell.ts";
+import { gitSubcommandIndex } from "./shell-words.ts";
 
 // ============================================================================
 // Git reach: whether a git call a user `allow` rule matched stays inside the project (ADR-0008)

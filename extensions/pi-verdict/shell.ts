@@ -2,6 +2,8 @@
 // Rule layer: bash
 // ============================================================================
 
+import { anyCommandIn, type GitInvocation, gitRunsIn, hasUnsoundWord, isShellOperator, shellWords, wordBasename } from "./shell-words.ts";
+
 /** Dangerous patterns: match the full command string (including pipelines and compound commands); any match denies (from research report §4.3).
  *  `git-push-force` is a `check` instead of a `pattern`: a regex over the raw string cannot tell an
  *  argument from a command (see `gitPushForce` below), so it evaluates a shell-word view instead. */
@@ -59,239 +61,6 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 	{ id: "fork-bomb", pattern: /:\(\)\s*\{/, reason: "fork bomb" },
 ];
 
-// ---- git-push-force: shell-word view (fork; 2026-10-04 path-layer review, items 1–2) ----
-
-/** Basename of a command word under both separator conventions (`/usr/bin/git`, `C:\bin\git`). */
-export function wordBasename(w: string): string {
-	const i = Math.max(w.lastIndexOf("/"), w.lastIndexOf("\\"));
-	return (i === -1 ? w : w.slice(i + 1)).toLowerCase();
-}
-
-const SHELL_NAMES: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true, ash: true };
-
-/**
- * Sentinel word for a construct the scanner cannot resolve faithfully (a command substitution it
- * does not re-parse, a re-parser like `eval`, a here-document, …). It cannot occur in natural
- * output, so `gitPushInWords` treats its presence as a hit: the raw-text tripwire already
- * decided the deny, and an unsound parse may only clear when it is sound (the monotonicity rule).
- */
-const UNSOUND = "\u0000unsound\u0000";
-
-/** Command operators: split words and end a command segment. */
-const SHELL_OPERATORS: Record<string, true> = { ";": true, ";;": true, "&": true, "&&": true, "|": true, "||": true, "(": true, ")": true };
-
-/**
- * Split a shell command into words at unquoted whitespace and operators, quoting removed
- * (`'a&b'` is one word `a&b`; `$(git …)` yields an operator `(` before the inner words).
- * Deliberately not a shell parser: no glob, process-substitution or brace-expansion modelling, and
- * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
- * needed — unlike the danger regexes, it cannot backtrack).
- *
- * A construct the scanner cannot resolve faithfully emits the `UNSOUND` sentinel word instead of a
- * misleading parse. The sound path stays faithful: an unquoted backslash-newline is a line
- * continuation (consumed, appends nothing), a redirection (`>`, `>>`, `<`, `>&`, `<&`, `&>`, `&>>`,
- * `>|`, `<>`, with its fd digits and target word) is dropped without ending a segment, and unquoted
- * `(`/`)` remain plain operators. `gitPushInWords` treats a sentinel as a hit, so the deny only ever
- * stands (the monotonicity rule).
- */
-export function shellWords(command: string): string[] {
-	const words: string[] = [];
-	let cur = "";
-	let inWord = false;
-	// The next word is a redirection target: the shell opens it, it is not an argument.
-	let redirectTarget = false;
-	// The current word holds a quoted or escaped character, so it cannot be a redirection's fd prefix.
-	let curQuoted = false;
-	const flush = () => {
-		if (inWord) {
-			if (redirectTarget) redirectTarget = false;
-			else words.push(cur);
-			cur = "";
-			inWord = false;
-		}
-		curQuoted = false;
-	};
-	const redirection = (length: number, takesFd: boolean) => {
-		if (takesFd && inWord && !curQuoted && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(cur)) {
-			cur = ""; // `2>&1`, `{fd}>x`: an unquoted fd number or bash fd variable, not an argument
-			inWord = false;
-			curQuoted = false;
-		} else {
-			flush();
-		}
-		redirectTarget = true;
-		i += length;
-	};
-	const unsound = () => {
-		flush();
-		words.push(UNSOUND);
-	};
-	let i = 0;
-	const n = command.length;
-	while (i < n) {
-		const ch = command[i];
-		if (ch === "'") {
-			const end = command.indexOf("'", i + 1);
-			if (end === -1) {
-				unsound(); // unterminated single quote: the rest is not a sound parse
-				return words;
-			}
-			cur += command.slice(i + 1, end);
-			inWord = true;
-			curQuoted = true;
-			i = end + 1;
-			continue;
-		}
-		if (ch === "`") {
-			unsound(); // backtick command substitution: not re-parsed
-			const end = command.indexOf("`", i + 1);
-			i = end === -1 ? n : end + 1;
-			continue;
-		}
-		if (ch === '"') {
-			i++;
-			let closed = false;
-			while (i < n) {
-				const c = command[i];
-				if (c === '"') {
-					closed = true;
-					i++;
-					break;
-				}
-				if (c === "\\" && i + 1 < n) {
-					const nx = command[i + 1];
-					if (nx === "\n" || nx === "\r") {
-						// line continuation inside double quotes: append nothing
-						i += nx === "\r" && command[i + 2] === "\n" ? 3 : 2;
-						continue;
-					}
-					if ('\\"$`'.includes(nx)) {
-						cur += nx;
-						i += 2;
-						continue;
-					}
-				}
-				if (c === "$" && command[i + 1] === "(") {
-					unsound(); // command substitution inside double quotes: not re-parsed
-					i += 2;
-					continue;
-				}
-				cur += c;
-				i++;
-			}
-			if (!closed) unsound(); // unterminated double quote
-			inWord = true;
-			curQuoted = true;
-			continue;
-		}
-		if (ch === "\\" && i + 1 < n) {
-			const nx = command[i + 1];
-			if (nx === "\n" || nx === "\r") {
-				// unquoted line continuation: consume, append nothing, do NOT end the word
-				i += nx === "\r" && command[i + 2] === "\n" ? 3 : 2;
-				continue;
-			}
-			cur += nx;
-			inWord = true;
-			curQuoted = true;
-			i += 2;
-			continue;
-		}
-		if (ch === "<" || ch === ">") {
-			const next = command[i + 1];
-			if (ch === "<" && next === "<") {
-				flush();
-				unsound(); // here-document: body not re-parsed
-				i += 2;
-				continue;
-			}
-			// The `&` of `>&`/`<&` and the `|` of `>|` belong to the redirection, not a command operator.
-			const twoChar = ch === ">" ? next === ">" || next === "&" || next === "|" : next === "&" || next === ">";
-			redirection(twoChar ? 2 : 1, true);
-			continue;
-		}
-		if (ch === "&" && command[i + 1] === ">") {
-			redirection(command[i + 2] === ">" ? 3 : 2, false); // `&>`/`&>>`: stdout and stderr, not a background `&`
-			continue;
-		}
-		if (ch === " " || ch === "\t" || ch === "\r") {
-			flush();
-			i++;
-			continue;
-		}
-		if (ch === "\n" || SHELL_OPERATORS[ch] === true) {
-			flush();
-			redirectTarget = false;
-			const two = ch + (command[i + 1] ?? "");
-			if (two === "&&" || two === "||" || two === ";;") {
-				words.push(two);
-				i += 2;
-			} else {
-				words.push(ch);
-				i++;
-			}
-			continue;
-		}
-		cur += ch;
-		inWord = true;
-		i++;
-	}
-	flush();
-	markReparsers(words);
-	return words;
-}
-
-/** `eval` and `env`'s split-string forms re-parse their arguments, which the scanner does not
- *  follow: mark such a segment unsound so the tripwire's deny stands. Post-pass, linear. */
-function markReparsers(words: string[]): void {
-	let segStart = 0;
-	for (let i = 0; i <= words.length; i++) {
-		const atEnd = i === words.length;
-		if (!atEnd && SHELL_OPERATORS[words[i]] !== true) continue;
-		const first = words[segStart];
-		if (first !== undefined) {
-			const base = wordBasename(first);
-			if (base === "eval") {
-				words[segStart] = UNSOUND;
-			} else if (base === "env" && envSplitsString(words.slice(segStart + 1, i))) {
-				words[segStart] = UNSOUND;
-			}
-		}
-		segStart = i + 1;
-	}
-}
-
-/** env options that take the next word as their argument (GNU coreutils and uutils). */
-const ENV_SHORT_WITH_ARG = "uCaf";
-const ENV_LONG_WITH_ARG = ["unset", "chdir", "argv0", "file"];
-
-/** Whether env's options, scanned left to right as env parses them, include a split-string form
- *  (`-S`, a bundle reaching `S`, `-S…`, `--split-string[=…]` or a prefix of it). An option that
- *  takes an argument consumes it, so `env -u HOME -S '…'` is found and `env -u -S cmd` is not.
- *  A lowercase `s` also counts: env rejects it, so reading it as a split string only adds a deny. */
-function envSplitsString(args: readonly string[]): boolean {
-	for (let j = 0; j < args.length; j++) {
-		const word = args[j];
-		if (word === "--" || word === "-" || !word.startsWith("-")) return false;
-		if (word.startsWith("--")) {
-			const eq = word.indexOf("=");
-			const name = (eq === -1 ? word.slice(2) : word.slice(2, eq)).toLowerCase();
-			if ("split-string".startsWith(name)) return true;
-			if (eq === -1 && ENV_LONG_WITH_ARG.some((option) => option.startsWith(name))) j++;
-			continue;
-		}
-		for (let k = 1; k < word.length; k++) {
-			const c = word[k];
-			if (c === "S" || c === "s") return true;
-			if (ENV_SHORT_WITH_ARG.includes(c)) {
-				if (k === word.length - 1) j++; // the argument is the next word, not attached
-				break;
-			}
-		}
-	}
-	return false;
-}
-
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
  *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the
  *  classifier (an audit boundary: the unbounded lookahead `--force(?![-\w])` exempted unknown
@@ -304,54 +73,6 @@ export function isForceFlag(word: string): boolean {
 	if (t === "--force-if-includes") return false; // no-op without a lease (git documents it)
 	if (/^\+./.test(t)) return true; // a `+` refspec forces the update (F24)
 	return /^--force(?![-\w])/.test(t) || t.startsWith("--force-");
-}
-
-/** git's global options that take the next word as their value (or an attached `=value`). */
-const GIT_GLOBAL_WITH_VALUE = new Set(["-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source"]);
-/** git's global options that take no separate value. */
-const GIT_GLOBAL_FLAGS = new Set([
-	"-p",
-	"--paginate",
-	"--no-pager",
-	"--bare",
-	"--no-replace-objects",
-	"--no-lazy-fetch",
-	"--no-optional-locks",
-	"--no-advice",
-	"--literal-pathspecs",
-	"--glob-pathspecs",
-	"--noglob-pathspecs",
-	"--icase-pathspecs",
-	"--exec-path",
-	"--list-cmds",
-	"--html-path",
-	"--man-path",
-	"--info-path",
-	"-v",
-	"--version",
-	"-h",
-	"--help",
-]);
-
-/** Index of the subcommand word for the `git` at `seg[at]`, read past git's global options
- *  (compared case-folded, so `-C` and `-c`, `-P` and `-p` share an entry); -1 when none follows.
- *  Fails closed: an option it does not model returns `undefined`, since it may take a value, and so
- *  does a word holding an expansion or glob, which can expand to no word or to several. */
-export function gitSubcommandIndex(seg: readonly string[], at: number): number | undefined {
-	for (let k = at + 1; k < seg.length; k++) {
-		const word = seg[k].toLowerCase();
-		if (/[$*?[{]/.test(word)) return undefined;
-		if (!word.startsWith("-")) return k;
-		const eq = word.startsWith("--") ? word.indexOf("=") : -1;
-		const name = eq === -1 ? word : word.slice(0, eq);
-		if (GIT_GLOBAL_WITH_VALUE.has(name)) {
-			if (eq === -1) k++;
-			if (k < seg.length && /[$*?[{]/.test(seg[k])) return undefined;
-		} else if (!GIT_GLOBAL_FLAGS.has(name)) {
-			return undefined;
-		}
-	}
-	return -1;
 }
 
 /** `git push` options whose value is the next word, so a `+word` there is not a refspec. */
@@ -369,43 +90,34 @@ function pushArgsForce(args: readonly string[]): boolean {
 	return false;
 }
 
-function commandSegments(words: string[]): string[][] {
-	const segs: string[][] = [];
-	let cur: string[] = [];
-	for (const w of words) {
-		if (SHELL_OPERATORS[w] === true) {
-			if (cur.length) segs.push(cur);
-			cur = [];
-		} else {
-			cur.push(w);
-		}
-	}
-	if (cur.length) segs.push(cur);
-	return segs;
-}
-
-const GIT_PUSH_RECURSION_DEPTH = 3;
-
 /**
- * Raw-text tripwire: a coarse net that over-approximates a force push. Anchored on a `push`
- * word with a fully flexible body (so `git --git-dir=X push …` and `-c/-C` gaps need no special
- * handling), terminated by any of: a bare `--force`; another `--force-*` form (the invented
- * spelling included — only `--force-with-lease` is exempt); a bundled short `f` flag (`-f`, `-fu`,
- * `-uf`, `-4f`, and `-f>/dev/null`); or a `+` refspec word. Quoted content does not break it (the `a&b`
- * refname is a genuine force push). The tokenised word view owns pairing precision — this only
- * has to never MISS; a false trip is cleared by the word view.
- *
- * Continuation tolerance: a backslash-newline may split a flag in the raw text, so the tripwire
- * also tests the spelling with UNESCAPED continuations removed (an escaped `\\` pair is left
- * alone — the shell splits there, and both views still hit that input).
+ * Whether a raw-text tripwire matches the command. A tripwire over-approximates its rule and only
+ * has to never miss; the word view clears a false trip (ADR-0007). A backslash-newline may split a
+ * word in the raw text, so the tripwire also tests the spelling with unescaped continuations removed
+ * (an escaped `\\` pair is left alone: the shell splits there, and both views still hit that input).
  */
-function tripwireHit(command: string): boolean {
+function tripwireHit(command: string, pattern: RegExp): boolean {
 	const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
-	const pattern = /\bpush\b[\s\S]*?(?:--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z0-9]*f[a-zA-Z0-9]*\b|\s\+)/i;
 	if (pattern.test(capped)) return true;
 	const joined = capped.replace(/(?<!\\)\\\r?\n/g, "");
 	return joined !== capped && pattern.test(joined);
 }
+
+/**
+ * Force-push tripwire. Anchored on a `push` word with a fully flexible body (so
+ * `git --git-dir=X push …` and `-c/-C` gaps need no special handling), terminated by any of: a bare
+ * `--force`; another `--force-*` form (only `--force-with-lease` is exempt); a bundled short `f` flag
+ * (`-f`, `-fu`, `-uf`, `-4f`, and `-f>/dev/null`); or a `+` refspec word. Quoted content does not
+ * break it (the `a&b` refname is a genuine force push).
+ */
+const PUSH_FORCE_TRIPWIRE = /\bpush\b[\s\S]*?(?:--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z0-9]*f[a-zA-Z0-9]*\b|\s\+)/i;
+
+/** The `git push` invocation with a force flag; an unreadable global option hides a later `push` word. */
+const GIT_PUSH_FORCE: GitInvocation = {
+	subcommand: "push",
+	argsHit: pushArgsForce,
+	mayBeSubcommand: (word) => word.toLowerCase() === "push",
+};
 
 /**
  * `git push` with a force flag. The raw-text tripwire decides every hit (the monotonicity rule:
@@ -416,61 +128,8 @@ function tripwireHit(command: string): boolean {
  * (`git commit -m '… git push --force …'`) must not be denied.
  */
 export function gitPushForce(command: string): boolean {
-	if (!tripwireHit(command)) return false;
-	return gitPushInWords(shellWords(command), 0);
-}
-
-function gitPushInWords(words: string[], depth: number): boolean {
-	if (words.includes(UNSOUND)) return true; // unsound parse: the tripwire's deny stands
-	for (const seg of commandSegments(words)) {
-		for (let i = 0; i + 1 < seg.length; i++) {
-			if (wordBasename(seg[i]) !== "git") continue;
-			const sub = gitSubcommandIndex(seg, i);
-			if (sub === undefined) {
-				// An unreadable subcommand is unsound only if a later `push` word could be it.
-				if (seg.slice(i + 1).some((word) => word.toLowerCase() === "push")) return true;
-				continue;
-			}
-			if (sub !== -1 && seg[sub].toLowerCase() === "push" && pushArgsForce(seg.slice(sub + 1))) return true;
-		}
-		for (let i = 0; i < seg.length; i++) {
-			if (SHELL_NAMES[wordBasename(seg[i])] !== true) continue;
-			// Scan the shell's options; `-o`/`-O`/`+o`/`--rcfile`/`--init-file` consume the next word.
-			// A dash-word the scan does not model is unsound (deny stands) rather than silently skipped
-			// (covers `bash -o pipefail -c …`, `sh -O extglob -c …`, `bash --rcfile x -c …`).
-			let hasReparseOption = false;
-			let unknownOption = false;
-			for (let j = i + 1; j < seg.length; j++) {
-				const opt = seg[j].toLowerCase();
-				if (!opt.startsWith("-") && !opt.startsWith("+")) break; // options ended
-				if (opt === "-o" || opt === "-O" || opt === "+o" || opt === "--rcfile" || opt === "--init-file") {
-					j++; // consumes its argument
-					continue;
-				}
-				if (/^-[a-z]*c[a-z]*$/.test(opt)) {
-					hasReparseOption = true;
-					break;
-				}
-				unknownOption = true;
-			}
-			if (unknownOption) return true; // unmodelled shell option: unsound
-			if (!hasReparseOption) continue;
-			if (depth >= GIT_PUSH_RECURSION_DEPTH) return true; // recursion cap: unsound
-			for (let j = i + 1; j < seg.length; j++) {
-				const opt = seg[j].toLowerCase();
-				if (!opt.startsWith("-")) break;
-				if (/^-[a-z]*c[a-z]*$/.test(opt) && seg[j + 1] !== undefined) {
-					const template = seg[j + 1];
-					// A `-c` template that references positionals forwards data the scanner cannot see.
-					if (/\$\{[0-9]+\}|\$[0-9]+|\$@|\$\*/.test(template)) return true;
-					if (gitPushInWords(shellWords(template), depth + 1)) return true;
-					break;
-				}
-				if (opt === "-o" || opt === "-O" || opt === "+o" || opt === "--rcfile" || opt === "--init-file") j++;
-			}
-		}
-	}
-	return false;
+	if (!tripwireHit(command, PUSH_FORCE_TRIPWIRE)) return false;
+	return anyCommandIn(shellWords(command), (seg) => gitRunsIn(seg, GIT_PUSH_FORCE));
 }
 
 /** git flags that turn a read-shaped invocation into a write (audit V7): `--output`/`-o` write a
@@ -559,10 +218,10 @@ export function allowAdmits(command: string): boolean {
 	if (command.includes("&>")) return false;
 	const words = shellWords(command);
 	// (b) an unsound parse: the scanner could not resolve a construct faithfully.
-	if (words.includes(UNSOUND)) return false;
+	if (hasUnsoundWord(words)) return false;
 	// (a) any operator or newline: more than one simple command.
 	for (const w of words) {
-		if (SHELL_OPERATORS[w] === true || w === "\n") return false;
+		if (isShellOperator(w) || w === "\n") return false;
 	}
 	// (d) a re-parser in command position, or an option that runs a program: either runs words the
 	// scanner never paired.

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import { escapeRegExp } from "./agent-dir.ts";
 import { classifyPath, s0DirectoryBeneath } from "./floor.ts";
 import { gitStaysInProject } from "./git-reach.ts";
-import { shellWords, wordBasename } from "./shell.ts";
+import { shellWords, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
 // Rule layer: the operands a user `allow` rule may admit (ADR-0008)
