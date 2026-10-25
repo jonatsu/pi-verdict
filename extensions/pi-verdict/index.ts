@@ -86,9 +86,16 @@ import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts"
 import type { AuditRecord } from "./audit.ts";
 import { type CompatLoader, completionForHost } from "./completion.ts";
 import type { UserRules } from "./config.ts";
-import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
+import { declineDetail, type ExplainGateResult, explainGate } from "./explain.ts";
 import { hostKindOf } from "./floor.ts";
-import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
+import {
+	classifierSpec,
+	findAuthedModel,
+	parseModelSpec,
+	resolveClassifier,
+	resolveExplainGate,
+	resolveFallbackClassifier,
+} from "./model-roles.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { type FallbackStats, type RulesLoadReport, SessionState } from "./state.ts";
 import {
@@ -353,11 +360,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	/** Classifier model as the footer shows it: same precedence as resolveClassifier, but side-effect free (no warnings, no calls). */
 	function footerInfo(ctx: ExtensionContext): FooterInfo {
 		const rules = state.userRules;
-		const raw = (pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? rules.classifierModel;
+		const raw = classifierSpec(pi, rules);
 		const session = ctx.model ?? null;
 		let classifier: FooterInfo["classifier"];
 		if (raw) {
-			const { specPart, level } = parseModelSpec(raw, () => {});
+			const { specPart, level } = parseModelSpec(raw);
 			const thinking = level ?? "off";
 			const model = findAuthedModel(ctx, specPart);
 			if (model) classifier = { id: model.id, thinking, state: "configured" };
@@ -368,7 +375,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		}
 		let fallback: FooterInfo["fallback"] = null;
 		if (rules.classifierFallbackModel) {
-			const { specPart } = parseModelSpec(rules.classifierFallbackModel, () => {});
+			const { specPart } = parseModelSpec(rules.classifierFallbackModel);
 			fallback = { id: findAuthedModel(ctx, specPart)?.id ?? null, mode: rules.classifierFallbackMode };
 		}
 		return {
@@ -574,116 +581,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}),
 	});
 
-	let warnedClassifierModel = false;
-	/** Thinking-level set (pi's native EXTENDED_THINKING_LEVELS; suffix syntax aligned with pi --model provider/id:thinking). */
-	const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
-	/** Parse "provider/id:thinking" → { specPart, level }. An invalid suffix is ignored and
-	 *  reported through warnOnce — the one-shot latch is the caller's, so the two layers'
-	 *  warnings never suppress each other (#63 review fix). */
-	function parseModelSpec(raw: string, warnOnce: (msg: string) => void): { specPart: string; level: string | null } {
-		const slash = raw.lastIndexOf("/");
-		const colon = raw.lastIndexOf(":");
-		if (colon > slash + 1 && THINKING_LEVELS.has(raw.slice(colon + 1))) {
-			return { specPart: raw.slice(0, colon), level: raw.slice(colon + 1) };
-		}
-		if (colon > slash + 1)
-			warnOnce(`pi-verdict: invalid thinking-level suffix "${raw.slice(colon + 1)}" (valid: ${[...THINKING_LEVELS].join("/")}), ignored`);
-		return { specPart: raw, level: null };
-	}
-
-	/** Registry lookup of a "provider/id" spec (thinking suffix already stripped): the model only when it has configured auth. Side-effect free (no notifications). */
-	function findAuthedModel(ctx: ExtensionContext, specPart: string): NonNullable<ExtensionContext["model"]> | null {
-		const slash = specPart.indexOf("/");
-		if (slash <= 0) return null;
-		const model = ctx.modelRegistry.find(specPart.slice(0, slash), specPart.slice(slash + 1));
-		return model && ctx.modelRegistry.hasConfiguredAuth(model) ? model : null;
-	}
-
-	/** Resolve the classifier model and thinking level: CLI flag > environment variable > config file (classifierModel) >
-	 *  session-model fallback. If unavailable, fall back to the session model and warn once; null means no session model either →
-	 *  fail-closed. Called lazily through AdjudicateEnv.getModel (only in the gray zone), so fallback warnings do not appear
-	 *  on calls already decided by rules. */
-	function resolveClassifier(ctx: ExtensionContext): ModelChoice {
-		const raw = (pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
-		let thinking: ThinkingLevel = "off";
-		if (raw) {
-			const { specPart, level } = parseModelSpec(raw, (msg) => {
-				if (warnedClassifierModel) return;
-				warnedClassifierModel = true;
-				ctx.ui.notify(msg, "warning");
-			});
-			thinking = (level ?? "off") as ThinkingLevel;
-			const model = findAuthedModel(ctx, specPart);
-			if (model) return { model, thinking };
-			if (!warnedClassifierModel) {
-				warnedClassifierModel = true; // Warn once per session to avoid per-call spam
-				ctx.ui.notify(
-					`pi-verdict: classifier model "${raw}" unavailable (not found or no configured auth), falling back to session model (self-reflection)`,
-					"warning",
-				);
-			}
-		}
-		// Session-model fallback: inherit the current session model; explicitly specified thinking level remains in effect on fallback (original semantics)
-		return ctx.model ? { model: ctx.model, thinking } : null;
-	}
-
-	let warnedFallbackSuffix = false;
-	let warnedFallbackModel = false;
-	/** #63: second-layer resolution — config-only (no flag/env precedence) and NO
-	 *  session-model fallback: silently inheriting the session model would bill the same
-	 *  judgment twice instead of adding a second opinion. Unresolvable → one-time warning
-	 *  + null (shadow: inert; enforce: triggered calls fail-closed, see runFallbackCascade).
-	 *  Resolved lazily via AdjudicateEnv.getFallbackModel, only after the gate fires. */
-	function resolveFallbackClassifier(ctx: ExtensionContext): ModelChoice {
-		const raw = state.userRules.classifierFallbackModel;
-		if (!raw) return null;
-		const { specPart, level } = parseModelSpec(raw, (msg) => {
-			if (warnedFallbackSuffix) return;
-			warnedFallbackSuffix = true;
-			ctx.ui.notify(msg, "warning");
-		});
-		const thinking = (level ?? "off") as ThinkingLevel;
-		const model = findAuthedModel(ctx, specPart);
-		if (model) return { model, thinking };
-		if (!warnedFallbackModel) {
-			warnedFallbackModel = true; // one warning per session
-			ctx.ui.notify(
-				`pi-verdict: fallback model "${raw}" unavailable (not found or no configured auth) — classifierFallbackModel inactive this session`,
-				"warning",
-			);
-		}
-		return null;
-	}
-
-	let warnedExplainSuffix = false;
-	let warnedExplainModel = false;
-	/** EXPLAIN-GATE role model: config `explainGateModel`, else inherit the session model (the call is
-	 *  user-initiated, so unlike the second-layer classifier there is no double-billing concern). An
-	 *  unavailable configured model falls back to the session model with a one-time warning. */
-	function resolveExplainGate(ctx: ExtensionContext): ModelChoice {
-		const raw = state.userRules.explainGateModel;
-		let thinking: ThinkingLevel = "off";
-		if (raw) {
-			const { specPart, level } = parseModelSpec(raw, (msg) => {
-				if (warnedExplainSuffix) return;
-				warnedExplainSuffix = true;
-				ctx.ui.notify(msg, "warning");
-			});
-			thinking = (level ?? "off") as ThinkingLevel;
-			const model = findAuthedModel(ctx, specPart);
-			if (model) return { model, thinking };
-			if (!warnedExplainModel) {
-				warnedExplainModel = true;
-				ctx.ui.notify(
-					`pi-verdict: ${EXPLAIN_GATE_ROLE} model "${raw}" unavailable (not found or no configured auth), falling back to session model`,
-					"warning",
-				);
-			}
-		}
-		return ctx.model ? { model: ctx.model, thinking } : null;
-	}
-
 	/** The dialog's "Explain…" handler: one EXPLAIN-GATE call about the held action. */
 	async function explainAsk(
 		ctx: ExtensionContext,
@@ -693,7 +590,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		reason: string,
 		question: string | null,
 	): Promise<ExplainGateResult> {
-		const role = resolveExplainGate(ctx);
+		const role = resolveExplainGate(ctx, state);
 		if (!role) return { ok: false, error: "no model available" };
 		// The EXPLAIN prompt carries the held action — when it names a protected
 		// path the model gets the fixed marker; the local dialog that already showed this
@@ -770,12 +667,12 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			redact: redactFn,
 			// a subagent's asks are resolved by the bridge (root UI / second model), never degraded in the pipeline
 			hasUI: sub ? true : !!ctx.hasUI,
-			getModel: () => resolveClassifier(ctx),
+			getModel: () => resolveClassifier(ctx, pi, state),
 			complete: completionForHost(ctx.modelRegistry, deps.compatLoader),
 			host: ctx.sessionManager,
 			hostKind,
 			signal: ctx.signal,
-			getFallbackModel: () => resolveFallbackClassifier(ctx),
+			getFallbackModel: () => resolveFallbackClassifier(ctx, state),
 			...(onPhase ? { onPhase } : {}),
 		};
 		let verdict: Verdict;

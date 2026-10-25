@@ -70,6 +70,8 @@ export class SessionState {
 	policyDegraded = false;
 	/** The warning that the host's handler budget is too short for subagent asks was shown this session. */
 	hostBudgetWarned = false;
+	/** Keys of the warnings shown this session, so a warning a call would repeat shows once per session. */
+	private readonly warned = new Set<string>();
 
 	/** Anchors self-protection and the audit log to `agentDir`, and loads the user rules, so a state used before
 	 *  `session_start` already gates. A config that fails to load gives empty rules with the floor on and sets
@@ -105,7 +107,15 @@ export class SessionState {
 		this.fallback.reset();
 		this.counts = { ...NO_VERDICTS };
 		this.hostBudgetWarned = false;
+		this.warned.clear();
 		return report;
+	}
+
+	/** True the first time `key` is passed this session. */
+	firstWarning(key: string): boolean {
+		if (this.warned.has(key)) return false;
+		this.warned.add(key);
+		return true;
 	}
 
 	get verdictCounts(): Readonly<VerdictCounts> {

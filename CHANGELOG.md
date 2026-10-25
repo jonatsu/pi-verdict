@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A `write` or `edit` action's content excerpt now stays on the action line after a `| content:` separator instead of on a line of its own, so the transcript's last line, which both the classifier and EXPLAIN-GATE prompts read as the action under review, is the action and not model-written content (plan finding `C35`)
 - A classifier attempt that times out is no longer retried when the provider returns on the abort instead of throwing: jev resolves with `stopReason: "aborted"`, so `classifyWithModel` read the attempt as an answer and ran the larger-window retry inside the remaining adjudication budget (`ADJUDICATION_BUDGET_MS`); a timed-out attempt now ends the first layer unless a response that follows the verdict prefix contract arrived, so the call goes to `classifierFallbackModel` or fails closed as for a provider that throws (plan finding `C34`)
+- The model-role warnings (an invalid thinking-level suffix, or an unavailable `classifierModel`, `classifierFallbackModel` or `explainGateModel`) show once per session (they reset at `session_start`) instead of once for the extension instance's lifetime, so a new session warns again about a model that is still unavailable; the classifier's suffix warning no longer suppresses its unavailable-model warning, as was already the case for the other two roles (plan finding `C23`)
 
 ## [0.21.0] - 2026-10-25
 
