@@ -52,6 +52,9 @@ flowchart LR
 
 ### Done
 
+- `C47` the code-loading ask expands `$PI_CODING_AGENT_DIR` and matches agent-directory paths through the
+  session's agent directory, as self-protection does (2026-10-25). The `loadUserRules` seam the finding also
+  named is left as it is: a `SessionState` still loads its config through `agentDirPath()`.
 - `C35` a write or edit excerpt stays on the action line after a `| content:` separator, so the
   transcript's last line is the action (2026-10-25).
 - `C36` the transcript redacts and renders only the tool calls it keeps (2026-10-25).
@@ -217,10 +220,6 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
 - **C46 Smaller structure items.** `deny-paths.ts` mixes the path tokenizer (a `path-tokens.ts` candidate),
   `denyPaths` matching and the `hitOmpDir` gate. `renderFooter` restates the `"full" | "compact"` union instead of
   deriving it from `UserRules["footer"]`. Shared arrays outside the model-call modules lack `readonly`.
-- **C47 `code-loading.ts` expands `$PI_CODING_AGENT_DIR` through the global agent directory,** the seam slice 2
-  closed for self-protection: a session built with an explicit agent directory grades the variable against another
-  directory. Pass the session's agent directory in. `loadUserRules` has the same seam: it reads the config under
-  `agentDirPath()`, not under the agent directory a `SessionState` was built with.
 
 ### Details carried from the reviews
 
