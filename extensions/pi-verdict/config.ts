@@ -110,7 +110,7 @@ export interface UserRules {
 	footer: "full" | "compact" | "off";
 }
 
-const EMPTY_RULES: UserRules = {
+export const EMPTY_RULES: Readonly<UserRules> = {
 	allow: [],
 	deny: [],
 	denyPaths: [],
