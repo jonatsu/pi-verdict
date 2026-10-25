@@ -66,7 +66,7 @@ export interface RulesLoadReport {
  */
 export class SessionState {
 	readonly fallback = new FallbackCascade();
-	readonly prot: ProtectedSet;
+	readonly protectedSet: ProtectedSet;
 	userRules: UserRules;
 	audit: AuditLog | null;
 	private denyPathBases: string[] | null = null;
@@ -82,7 +82,7 @@ export class SessionState {
 
 	constructor(userRules?: UserRules, agentDir: string | null = null) {
 		this.agentDir = agentDir;
-		this.prot = buildProtectedSet(agentDir ?? agentDirPath(), OWN_FILE_PATH);
+		this.protectedSet = buildProtectedSet(agentDir ?? agentDirPath(), OWN_FILE_PATH);
 		// item 6c: load once (not once as a default param + once here) so rules and
 		// policyDegraded always come from the same load — a direct construction (tests,
 		// install before session_start) must not depend on reloadRules having run.

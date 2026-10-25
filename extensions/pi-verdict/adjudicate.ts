@@ -499,7 +499,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 	const rule = classifyByRules(call.toolName, call.input, {
 		cwd: env.cwd,
 		userRules: state.userRules,
-		protectedSet: state.prot,
+		protectedSet: state.protectedSet,
 		denyPathBases,
 		policyDegraded: state.policyDegraded,
 		namesProtectedPath: redactorFor(env.cwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
