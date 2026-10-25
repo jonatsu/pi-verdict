@@ -157,7 +157,15 @@ call and fail closed headless with no model. Nothing new is denied, and `cat REA
 Pinned by the `allow operand grading (ADR-0008 amendment)` and `bash cwd argument` tests and the
 probe's `allow operand` cases in the `user-allow` family.
 
-Two residuals remain. A recursive search such as `grep -r x ~` under a `^grep\b` allow is admitted:
-the home directory itself is not S0, so the operand grades `allow` while the search walks into
-`~/.ssh`. A short option with an attached relative value and no `/` (`git config -f.netrc --list`) is
-not graded, because its value cannot be told from its letters.
+**Recursive commands.** A recursive command walks below its directory operands, so an operand that is
+no secret can still reach one: `grep -r x ~` reads `~/.ssh`. When the command word and its options say
+the command recurses (`grep -r`/`-R`/`--recursive` and bundles such as `-rn`, `rg`, `ag`, `ack`, `find`,
+`du`, `tree`, `tar`, `ls -R`, `zip -r`, `cp -r`/`-R`/`-a`, `rsync -r`/`-a`, `scp -r`), an operand that
+contains a credential directory refuses the admission, and so does a cwd that contains one, which a
+command naming no directory searches. This is the test a scope tool's search takes
+(`s0DirectoryBeneath`). The predicate reads no option's argument, so it over-approximates (`grep -e r`
+counts as recursive); a false match only costs a classifier call. `grep x ~/notes.txt` and
+`grep -rn foo src` in a project stay rule allows.
+
+One residual remains. A short option with an attached relative value and no `/`
+(`git config -f.netrc --list`) is not graded, because its value cannot be told from its letters.

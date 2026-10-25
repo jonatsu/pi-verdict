@@ -136,7 +136,9 @@ A user `allow` regex admits a bash or powershell command only after two checks, 
 matches. `allowAdmits` (`shell.ts`) checks the shape: one simple command, no redirection, no re-parser and no
 git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the operands touch: it expands `~` and
 `$HOME`, expands a one-segment glob to the cwd entries it matches, refuses any other expansion, grades every
-resulting path as a read through `classifyPath` with the floor on, refuses home-relative operands once the session
+resulting path as a read through `classifyPath` with the floor on, refuses a recursive command (`grep -r`, `rg`,
+`find`, `cp -a` and similar) whose directory operand, or whose cwd, contains a credential directory
+(`s0DirectoryBeneath`, the test the scope tools take), refuses home-relative operands once the session
 may have reassigned `HOME` (`RuleContext.homeReassigned`, read lazily from the session branch by `home-guard.ts`),
 and, through `git-reach.ts`, refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`),
 that injects configuration, or that runs or reads outside the session cwd. A refusal only sends the call on to

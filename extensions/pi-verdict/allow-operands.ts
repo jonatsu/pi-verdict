@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { escapeRegExp } from "./agent-dir.ts";
-import { classifyPath } from "./floor.ts";
+import { classifyPath, s0DirectoryBeneath } from "./floor.ts";
 import { gitStaysInProject } from "./git-reach.ts";
 import { shellWords, wordBasename } from "./shell.ts";
 
@@ -22,6 +22,25 @@ const BRACE_EXPANSION = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 const GLOB_CHARS = /[*?[]/;
 /** Matches an option word that holds an expansion: a `$`, a `~` or a glob metacharacter. */
 const OPTION_EXPANSION = /[$~*?[]/;
+
+/** Commands that walk every directory operand recursively whatever their options. */
+const ALWAYS_RECURSIVE: ReadonlySet<string> = new Set(["rg", "ag", "ack", "rgrep", "find", "du", "tree", "tar"]);
+
+/** The options that make a command walk its directory operands: short letters (also inside a bundle
+ *  such as `-rn`) and long names (also abbreviated, as getopt accepts a unique prefix). */
+const RECURSIVE_OPTIONS: Readonly<Record<string, { readonly short: RegExp; readonly long: readonly string[] }>> = {
+	grep: { short: /[rR]/, long: ["--recursive", "--dereference-recursive"] },
+	egrep: { short: /[rR]/, long: ["--recursive", "--dereference-recursive"] },
+	fgrep: { short: /[rR]/, long: ["--recursive", "--dereference-recursive"] },
+	ls: { short: /R/, long: ["--recursive"] },
+	zip: { short: /[rR]/, long: ["--recurse-paths", "--recurse-patterns"] },
+	cp: { short: /[rRa]/, long: ["--recursive", "--archive"] },
+	rsync: { short: /[ra]/, long: ["--recursive", "--archive"] },
+	scp: { short: /r/, long: [] },
+};
+
+/** The shortest long-option prefix read as an abbreviation, so `--r` alone does not count. */
+const MIN_LONG_PREFIX = 5;
 
 /** An operand after shell expansion: the paths the shell passes for it. */
 interface Expanded {
@@ -47,7 +66,8 @@ export interface OperandContext {
  * Fails closed toward the classifier, never toward a deny: an operand that is a secret or system path,
  * one holding an expansion the gate cannot resolve, a home-relative operand after `HOME` was reassigned,
  * or more than `MAX_GRADED_OPERANDS` graded paths (a glob's matches each count) each refuse the admission,
- * and so does any backslash in a PowerShell command.
+ * and so do a recursive command over a directory that contains a credential directory and any backslash
+ * in a PowerShell command.
  * The floor grades here even with `builtinDenyFloor` off, because a refused admission only reaches the
  * classifier.
  */
@@ -59,6 +79,9 @@ export function allowOperandsAdmit(command: string, where: OperandContext): bool
 	const at = words.findIndex((word) => !ASSIGNMENT.test(word));
 	const operands = operandWords(words, at);
 	if (operands === null) return false;
+	// A recursive command walks its directory operands, or the directory it runs in when it names none.
+	const recursive = at !== -1 && walksDirectories(words, at);
+	if (recursive && s0DirectoryBeneath(commandCwd, commandCwd)) return false;
 	let graded = 0;
 	for (const word of operands) {
 		const expanded = expandOperand(word, commandCwd);
@@ -67,9 +90,31 @@ export function allowOperandsAdmit(command: string, where: OperandContext): bool
 		graded += expanded.paths.length;
 		if (graded > MAX_GRADED_OPERANDS) return false;
 		if (!expanded.paths.every((p) => readsAsAllowed(p, commandCwd))) return false;
+		if (recursive && expanded.paths.some((p) => s0DirectoryBeneath(p, commandCwd))) return false;
 	}
 	const operandPaths = (word: string) => expandOperand(word, commandCwd)?.paths ?? null;
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, commandCwd, sessionCwd, operandPaths);
+}
+
+/**
+ * True when the command at `at` may walk below a directory operand: a command that always recurses, or
+ * one given a recursive option before `--`. A predicate over the command word and its option words
+ * only, so it over-approximates: an option's attached value (`-e r`) or another command's same letter
+ * also counts, and a false match only costs a classifier call.
+ */
+function walksDirectories(words: readonly string[], at: number): boolean {
+	const name = wordBasename(words[at]);
+	if (ALWAYS_RECURSIVE.has(name)) return true;
+	const options = RECURSIVE_OPTIONS[name];
+	if (options === undefined) return false;
+	for (const word of words.slice(at + 1)) {
+		if (word === "--") return false;
+		if (word.startsWith("--")) {
+			const long = word.split("=")[0];
+			if (long.length >= MIN_LONG_PREFIX && options.long.some((full) => full.startsWith(long))) return true;
+		} else if (word.startsWith("-") && options.short.test(word.slice(1))) return true;
+	}
+	return false;
 }
 
 /** True when the floor lets a file tool read `target` without asking. The floor is always on here, even

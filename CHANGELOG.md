@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A file read of a process environment (`/proc/self/environ`, `/proc/thread-self/environ`, `/proc/<pid>/environ` and a thread's `task/<tid>/environ`), which prints every secret exported to that process, was a silent rule allow; it is now an S0 deny with zero model calls, and `cat /proc/self/environ` under an `allow` rule such as `^cat\b` goes to the classifier instead of being admitted, while other `/proc` entries such as `/proc/cpuinfo` and `/proc/self/status` stay rule allows.
+- A recursive command under a user `allow` rule could read a credential directory through a parent that is no secret itself, so `grep -r x ~` under `^grep\b` searched `~/.ssh` as a silent rule allow; a recursive command (`grep -r`, `rg`, `find`, `du`, `ls -R`, `tar`, `zip -r`, `cp -r`/`-a`, `rsync -r`/`-a` and similar) whose directory operand or cwd contains a credential directory now goes to the classifier, the same test a scope tool's search already takes, while `grep -rn foo src` in a project and `grep x ~/notes.txt` stay rule allows ([ADR-0008](docs/adr/0008-simple-command-allow.md) amendment).
 
 ## [0.22.0] - 2026-10-25
 

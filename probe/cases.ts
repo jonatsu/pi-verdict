@@ -654,6 +654,35 @@ export function buildCases(fx: FixtureTree): Case[] {
 		ref: "ADR-0008",
 		expected: { layer: "classifier" },
 	});
+	// A recursive command walks below its directory operand, so an operand that contains a credential
+	// directory is refused although the operand itself is no secret.
+	const recursiveRows: [string, string, string][] = [
+		["recursive grep of the home directory", "^grep\\b", "grep -rn x ~"],
+		["rg of the home directory", "^rg\\b", "rg x ~"],
+		["find over the home directory", "^find\\b", "find ~ -name x"],
+	];
+	for (const [label, allow, command] of recursiveRows) {
+		cases.push({
+			label: `allow operand: ${label}`,
+			family: "user-allow",
+			tool: "bash",
+			input: { command },
+			config: { allow: [allow] },
+			ref: "ADR-0008",
+			expected: { layer: "classifier" },
+		});
+	}
+	for (const command of ["grep -rn foo src", "grep x ~/notes.txt"]) {
+		cases.push({
+			label: `allow operand control: ${command}`,
+			family: "user-allow",
+			tool: "bash",
+			input: { command },
+			config: { allow: ["^grep\\b"] },
+			ref: "ADR-0008",
+			expected: { layer: "allow", reasonIncludes: "user allow rule" },
+		});
+	}
 	for (const command of ["cat README.md", "git status", "git log --oneline", "ls -la", "ls *.md"]) {
 		cases.push({
 			label: `allow operand control: ${command}`,

@@ -1108,6 +1108,39 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 			os.homedir(),
 		);
 	});
+	const recursiveRows: [string, string][] = [
+		["^grep\\b", "grep -r x ~"],
+		["^grep\\b", "grep -R x ~"],
+		["^grep\\b", "grep -rn x ~"],
+		["^grep\\b", "grep --recursive x ~"],
+		["^grep\\b", "grep --recur x ~"],
+		["^grep\\b", "grep -r x $HOME"],
+		["^grep\\b", "grep -r x ~/.config"],
+		["^rg\\b", "rg x ~"],
+		["^find\\b", "find ~ -name x"],
+		["^du\\b", "du -sh ~"],
+		["^ls\\b", "ls -R ~"],
+		["^tar\\b", "tar czf out.tgz ~"],
+		["^zip\\b", "zip -r out.zip ~"],
+		["^cp\\b", "cp -r ~ backup"],
+		["^cp\\b", "cp -a ~ backup"],
+		["^rsync\\b", "rsync -a ~ backup"],
+	];
+	for (const [allow, command] of recursiveRows) {
+		test(`a recursive command over a directory holding a credential directory reaches the classifier: ${command}`, async () => {
+			await reachesClassifier([allow], command);
+		});
+	}
+	test("a recursive command with no directory operand is graded over the directory it runs in", () => {
+		expect(allowOperandsAdmit("grep -r x", operandContext(os.homedir()))).toBe(false);
+		expect(allowOperandsAdmit("grep -r x", operandContext("/proj"))).toBe(true);
+	});
+	test("a recursive search inside the project and a plain read through the home stay rule-allowed", async () => {
+		await staysAllowed(["^grep\\b"], "grep -rn foo src");
+		await staysAllowed(["^grep\\b"], "grep x ~/notes.txt");
+		await staysAllowed(["^grep\\b"], "grep -r x ~/notes.txt");
+		await staysAllowed(["^ls\\b"], "ls -la ~");
+	});
 	test("a cwd glob whose matches pass the cap is refused", async () => {
 		await withTempDir("pv-glob-", (dir) => {
 			for (let i = 0; i <= MAX_GRADED_OPERANDS; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "");
