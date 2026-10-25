@@ -151,7 +151,7 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 	// Rebuilt after adjudication, so a `denyPaths` entry a `/verdict` edit added while the call was in flight is
 	// redacted too; it keeps the earlier redactor's matches, so it fails toward the marker (ADR-0002).
 	const redact = anyRedactor(adjudicationRedact, rt.state.redactor(ctx.cwd));
-	const action = toolCallLine(event.toolName, input);
+	const action = toolCallLine(event.toolName, input, { cwd: ctx.cwd, host: rt.hostKind });
 	const pc: PresentedCall = {
 		toolName: event.toolName,
 		input,

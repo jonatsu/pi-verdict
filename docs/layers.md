@@ -32,7 +32,8 @@ except for omp's `bash`, which runs in its `cwd` argument; the gate resolves it 
 declared path that contains it asks. A `cwd` the gate cannot resolve (an internal URL, a value that
 is not a string, or any `cwd` on pi or for `powershell`, whose schemas take none) leaves the
 session cwd in place and withholds every user `allow` rule and `tools` exemption. The classifier's
-action line names the directory when it is not the session cwd.
+action line, the ask dialog, notifications and past transcript lines name the directory when it is
+not the session cwd.
 
 A file call that no layer above decides takes the floor's own grade: allow for a read the floor does not
 deny and for a write inside the project, gray otherwise. Four target shapes turn that allow gray, so the

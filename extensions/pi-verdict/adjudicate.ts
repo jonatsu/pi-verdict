@@ -154,6 +154,7 @@ function modelCallFor(state: SessionState, env: AdjudicateEnv, actionLine: strin
 		complete: env.complete,
 		actionLine,
 		denyPathsActive: state.userRules.denyPaths.length > 0,
+		place: { cwd: env.cwd, host: env.hostKind },
 		classifierRules: state.userRules.classifierRules,
 		redact,
 	};

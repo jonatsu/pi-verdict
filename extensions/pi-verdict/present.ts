@@ -210,5 +210,6 @@ async function explainAsk(
 		question,
 		// The EXPLAIN-GATE transcript is a model payload like the classifier's, so it takes the same redactor.
 		redact,
+		place: { cwd: pc.ctx.cwd, host: rt.hostKind },
 	});
 }

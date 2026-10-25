@@ -1,5 +1,5 @@
 import { USER_RULES_HEADER } from "../jev-adapter.ts";
-import { toolCallLine, transcriptSafe } from "./action-line.ts";
+import { type SessionPlace, toolCallLine, transcriptSafe } from "./action-line.ts";
 import type { CompletionFn } from "./completion.ts";
 import { callModelOnce, type ModelChoice, type PipelineHost, type ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn } from "./redaction.ts";
@@ -38,7 +38,11 @@ const MAX_TOOL_CALLS = 10;
 
 /** User-message and tool-call lines from the session branch, the last `MAX_USER_MESSAGES` and `MAX_TOOL_CALLS`
  *  of each. Assistant narration and tool results stay out: they are an injection surface and token bulk. */
-function collectTranscriptParts(host: PipelineHost, redact: RedactorFn): { userLines: string[]; toolLines: string[] } {
+function collectTranscriptParts(
+	host: PipelineHost,
+	redact: RedactorFn,
+	place: SessionPlace | null,
+): { userLines: string[]; toolLines: string[] } {
 	const userLines: string[] = [];
 	const toolCalls: { name: string; args: Record<string, unknown> }[] = [];
 	for (const entry of host.getBranch()) {
@@ -68,14 +72,14 @@ function collectTranscriptParts(host: PipelineHost, redact: RedactorFn): { userL
 	// `redact-then-truncate: a path straddling the 600/400 cut still redacts the whole line`.
 	const toolLines = toolCalls
 		.slice(-MAX_TOOL_CALLS)
-		.map(({ name, args }) => (redact(args) ? PROTECTED_PATH_MARKER : toolCallLine(name, args)));
+		.map(({ name, args }) => (redact(args) ? PROTECTED_PATH_MARKER : toolCallLine(name, args, place)));
 	return { userLines: userLines.slice(-MAX_USER_MESSAGES), toolLines };
 }
 
 /** Returns the recent user messages and tool calls with `actionLine` as the last line, where the prompt says
  *  the action under review sits. A past call the redactor matches appears only as `PROTECTED_PATH_MARKER`. */
-export function buildTranscript(host: PipelineHost, actionLine: string, redact: RedactorFn): string {
-	const { userLines, toolLines } = collectTranscriptParts(host, redact);
+export function buildTranscript(host: PipelineHost, actionLine: string, redact: RedactorFn, place: SessionPlace | null): string {
+	const { userLines, toolLines } = collectTranscriptParts(host, redact, place);
 	return [...userLines, ...toolLines, actionLine].join("\n");
 }
 
@@ -131,6 +135,8 @@ export interface ModelCall {
 	readonly denyPathsActive: boolean;
 	readonly classifierRules: readonly string[];
 	readonly redact: RedactorFn;
+	/** The session, so a past command's own `cwd` shows on its transcript line. */
+	readonly place: SessionPlace;
 }
 
 /** Classifies a gray-zone action in up to two attempts, the second with a larger token window. An error, an
@@ -145,7 +151,7 @@ export async function classifyWithModel(
 ): Promise<ClassifierOutcome> {
 	const { host, signal, complete } = call;
 	const { model, thinking } = choice;
-	const transcript = buildTranscript(host, call.actionLine, call.redact);
+	const transcript = buildTranscript(host, call.actionLine, call.redact, call.place);
 	const userMessage = `<transcript>\n${transcript}\n</transcript>\nJudge the LAST action in the transcript above. Your entire response MUST begin with <verdict>.`;
 	const systemPrompt = CLASSIFIER_SYSTEM + (call.denyPathsActive ? DENY_PATHS_HINT : "") + userRulesHint(call.classifierRules);
 	const attempts: Array<[number, number]> = [

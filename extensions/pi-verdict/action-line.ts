@@ -1,4 +1,5 @@
-import { toolAccess } from "./access.ts";
+import { callCwd, toolAccess } from "./access.ts";
+import type { HostKind } from "./floor.ts";
 import { BASH_MAX_MATCH_LEN } from "./shell.ts";
 
 // ============================================================================
@@ -35,9 +36,21 @@ export function transcriptSafe(text: string): string {
 	return escapeLineBreaks(sanitize(text));
 }
 
-/** Returns a past tool call as one capped transcript line: its command, its targets, its path, or its JSON. */
-export function toolCallLine(name: string, args: Readonly<Record<string, unknown>>): string {
-	if (typeof args.command === "string") return `${name}: ${transcriptSafe(args.command)}`;
+/** The session a call belongs to, which decides where a command with its own `cwd` runs (`callCwd`). */
+export interface SessionPlace {
+	readonly cwd: string;
+	readonly host: HostKind;
+}
+
+/** Returns a tool call as one capped line for a dialog, a notification or the transcript: its command, its
+ *  targets, its path, or its JSON. A command that runs outside the session cwd ends with `| cwd: <dir>`,
+ *  as on the action line, so neither a human nor a model judges it without the directory. A null `place`
+ *  shows no directory. */
+export function toolCallLine(name: string, args: Readonly<Record<string, unknown>>, place: SessionPlace | null): string {
+	if (typeof args.command === "string") {
+		const runsIn = place ? callCwd(name, args, place.cwd, place.host).shown : null;
+		return `${name}: ${transcriptSafe(runsIn === null ? args.command : `${args.command} ${CWD_SEPARATOR} ${runsIn}`)}`;
+	}
 	// A multi-target edit names its full target set, not only `args.path` or the raw patch (ADR-0009).
 	const access = toolAccess(name, args);
 	const targets = access.direction === "mutating" ? access.writes : access.direction === "observing" ? access.reads : [];

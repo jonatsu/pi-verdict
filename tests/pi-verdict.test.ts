@@ -855,6 +855,32 @@ describe("bash cwd argument", () => {
 			expect(h.calls.length).toBe(1);
 		}
 	});
+	test("the ask dialog names the cwd argument when it is not the session cwd", async () => {
+		const h = session({}, OMP);
+		h.responses = [{ text: "<verdict>ask</verdict> needs a human" }];
+		await toolCall(h, "bash", bash("cat config", "/opt/kube"));
+		expect(h.confirmMsgs[0]).toContain("bash: cat config | cwd: /opt/kube");
+	});
+	test("a past command's transcript line names its cwd argument", async () => {
+		const h = session({}, OMP);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: bash("cat config", "/opt/kube") }] },
+		});
+		await toolCall(h, "bash", { command: "make test" });
+		expect(h.calls[0].messages[0].content).toContain("bash: cat config | cwd: /opt/kube\nbash: make test");
+	});
+	test("a past command whose cwd argument is a declared path shows only the marker (ADR-0002)", async () => {
+		const h = session({ denyPaths: ["/opt/vault-dir"] }, OMP);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: bash("cat config", "/opt/vault-dir") }] },
+		});
+		await toolCall(h, "bash", { command: "make test" });
+		expect(h.calls[0].messages[0].content).not.toContain("vault-dir");
+	});
 	test("a git allow does not admit git run from a cwd argument outside the project", async () => {
 		const h = session({ allow: ["^git (status|log|diff)\\b"] }, OMP);
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];

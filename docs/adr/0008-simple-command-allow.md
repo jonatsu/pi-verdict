@@ -93,7 +93,10 @@ over-extracts (`main` grades as `<cwd>/main`), which is the safe direction. More
 **Where relative operands resolve.** omp's `bash` runs in its `cwd` argument when one is given, so
 every relative operand resolves from that directory, not the session cwd: `cat id_ed25519` with
 `cwd: "~/.ssh"` reads the key. The gate resolves the argument as omp does (`callCwd`) and grades
-every layer there, and a `cwd` it cannot resolve withholds the allow. This applies to every layer, not
+every layer there, and a `cwd` it cannot resolve withholds the allow. The classifier's action line,
+the ask dialog, notifications and past transcript lines end with `| cwd: <dir>` when the call runs
+outside the session cwd, so neither a model nor a human judges `cat config` without seeing that it
+runs in `~/.kube`; a `cwd` inside a declared path is redacted like any other target (ADR-0002). This applies to every layer, not
 only this step; `docs/layers.md` records it.
 
 **The expansion rule.** The shell expands an operand before the command sees it, so the gate expands
