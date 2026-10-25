@@ -3,7 +3,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type * as PiTui from "@earendil-works/pi-tui";
 import type { JevReason } from "../../jev-adapter.ts";
 import { EXPLAIN_GATE_ROLE, type ExplainGateResult } from "../explain.ts";
-import { serializeDialog, type UiContext } from "../subagent.ts";
+import { serializeDialog } from "../root-ui.ts";
+import type { UiContext } from "../subagent.ts";
 
 // ============================================================================
 // Approve dialog

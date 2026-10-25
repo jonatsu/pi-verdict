@@ -69,20 +69,19 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } from "./access.ts";
 import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, adjudicate, redactedOr, resolveAskWithoutHuman, sessionRedactor, type Verdict } from "./adjudicate.ts";
-import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
 import { completionForHost } from "./completion.ts";
 import type { UserRules } from "./config.ts";
 import { resolveClassifier, resolveFallbackClassifier } from "./model-roles.ts";
 import { blockReason, POLICY_DEGRADED, type PresentedCall, presentVerdict } from "./present.ts";
+import { currentRootUi } from "./root-ui.ts";
 import { type AutoModeDeps, createRuntime, refreshStatus as refreshRuntimeStatus } from "./runtime.ts";
-import type { FallbackStats, RulesLoadReport } from "./state.ts";
+import { endSession, reloadRules, startSession } from "./session-start.ts";
+import type { FallbackStats } from "./state.ts";
 import {
 	HOST_RETURN_MARGIN_MS,
-	hostBudgetAdvice,
 	hostBudgetExpiry,
 	MIN_SUBAGENT_DIALOG_MS,
 	STATUS_WIDGET_KEY,
@@ -92,16 +91,6 @@ import {
 	type UiContext,
 	untilAborted,
 } from "./subagent.ts";
-import {
-	NEVER_CHOICE,
-	NOT_NOW_CHOICE,
-	projectRootOf,
-	projectTrustState,
-	readTrustStore,
-	recordTrust,
-	TRUST_CHOICE,
-	trustStorePath,
-} from "./trust.ts";
 import { runConfigEditor } from "./ui/config-editor.ts";
 
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
@@ -129,10 +118,6 @@ export { type RulesLoadReport, SessionState } from "./state.ts";
 export { subagentIdentity } from "./subagent.ts";
 export { type AskChoice, type AskDecision, approveCodeMarkdown, buildApproveDialog, displaySafe, renderJevBar } from "./ui/dialog.ts";
 export { type FooterInfo, renderFooter } from "./ui/footer.ts";
-
-/** UI of the top-level interactive session in this process. Module-level: extension factories
- *  are re-bound per subagent session but module variables are shared across sessions. */
-let rootUi: UiContext | null = null;
 
 // ============================================================================
 // Extension body
@@ -167,104 +152,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		refreshStatus(ctx);
 	}
 
-	/** UI this factory instance published as the root's (see the registry at module level);
-	 *  session_shutdown clears the registry only if it still holds this one. */
-	let ownRootUi: UiContext | null = null;
-
-	/** Surface skipped-value and shortcut warnings from a rules (re)load */
-	function reportLoadWarnings(report: RulesLoadReport, ctx: ExtensionContext): void {
-		if (report.skipped.length > 0) {
-			ctx.ui.notify(
-				`pi-verdict: skipped ${report.skipped.length} invalid config value(s) in config (${userConfigPath()}${report.project?.applied ? ` + ${report.project.path}` : ""}): ${report.skipped.join(", ")}`,
-				"warning",
-			);
-		}
-		if (report.shortcutWarning) ctx.ui.notify(`pi-verdict: ${report.shortcutWarning}`, "warning");
-		// item 6c (Phase 6; ADR-0010): the primary signal for the degraded state — fires
-		// whether or not the failure produced a skipped entry (a parse failure would otherwise
-		// rely on the count line above to imply it).
-		if (report.degraded) ctx.ui.notify(POLICY_DEGRADED.sessionWarning, "warning");
-	}
-
-	// session_start reloads rules and resets per-session verdict statistics.
-	pi.on("session_start", async (_event, ctx) => {
-		// Project trust prompt: any await stays inside the prompt branch so the no-project path remains synchronous
-		rt.sessionTrustedRoot = null;
-		const pp = findProjectConfig(ctx.cwd, agentDirPath());
-		if (pp) {
-			const root = projectRootOf(pp);
-			const store = readTrustStore();
-			// ctx.agent is omp-only (pi's ExtensionContext has no `agent`): narrow at runtime
-			const isSub = subagentIdentity(ctx) !== null;
-			// "undecided" also covers a trusted root whose override changed since approval
-			// (hash mismatch) — the user is asked about the new content (ADR-0006).
-			if (projectTrustState(root, pp, store) === "undecided" && ctx.hasUI && !isSub) {
-				const choice = await ctx.ui.select(
-					`🛡️ pi-verdict: this project may add deny rules and protected paths, and remove tool exemptions (allow/tools can only narrow); it cannot widen the gate, disable the built-in floor, or change the classifier/EXPLAIN-GATE models, the free-text rules, the toggle shortcut, autoDeny or audit. Trust this project (${pp})?`,
-					[TRUST_CHOICE, NOT_NOW_CHOICE, NEVER_CHOICE],
-				);
-				if (choice === TRUST_CHOICE) {
-					rt.sessionTrustedRoot = root;
-					const err = recordTrust(root, "trusted", pp);
-					if (err) ctx.ui.notify(`pi-verdict: trust decision not saved (${err}) — applies to this session only`, "warning");
-				} else if (choice === NEVER_CHOICE) {
-					const err = recordTrust(root, "untrusted", pp);
-					if (err) ctx.ui.notify(`pi-verdict: trust decision not saved (${err}) — you will be asked again`, "warning");
-				}
-				// undefined (dialog dismissed) or NOT_NOW_CHOICE: ignore for this session, persist nothing
-			}
-		}
-		// Subagent gate: the top-level interactive session publishes its UI for subagent asks.
-		// A headless root clears the registry; a replaced root (/new, /resume) overwrites it.
-		if (subagentIdentity(ctx) === null) {
-			rootUi = ctx.hasUI ? ctx.ui : null;
-			ownRootUi = rootUi;
-		}
-		const report = state.reset(ctx.cwd, rt.sessionTrustedRoot);
-		state.audit?.prune(); // #54: converge to the AUDIT_KEEP_SESSIONS most recent files at session start
-		reportLoadWarnings(report, ctx);
-		if (report.project?.applied) ctx.ui.notify(`pi-verdict: project overrides applied from ${report.project.path}`, "info");
-		if (report.project && !report.project.trusted)
-			ctx.ui.notify(
-				`pi-verdict: project config ${report.project.path} ignored — project not trusted (decisions: ${trustStorePath()})`,
-				"info",
-			);
-		// Side-effecting tools warning (item 4, Phase 3): one-time, unconditional — the user
-		// chose to list it, the gate just stops being silent about the consequence.
-		const sideEffectWarning = sideEffectingToolsWarning(state.userRules.tools);
-		if (sideEffectWarning) ctx.ui.notify(sideEffectWarning, "warning");
-		// Tool coverage report (item 4, Phase 3): a debug-channel note, not noise — gated
-		// behind --auto-mode-debug/PI_AUTO_MODE_DEBUG like every other per-session diagnostic.
-		// Host capability may be absent (constraint 2): skip silently rather than depend on a
-		// specific host/version.
-		if (rt.debug) {
-			const hostTools = pi as { getActiveTools?: () => string[]; getAllTools?: () => CoverageToolInfo[] };
-			if (typeof hostTools.getActiveTools === "function" && typeof hostTools.getAllTools === "function") {
-				const coverage = toolCoverageReport(hostTools.getAllTools(), new Set(hostTools.getActiveTools()), state.userRules.tools);
-				const parts: string[] = [];
-				if (coverage.noFields.length > 0)
-					parts.push(`no declared path/code/command field, stays classifier-only: ${coverage.noFields.join(", ")}`);
-				if (coverage.untyped.length > 0)
-					parts.push(`unrecognized field type: ${coverage.untyped.map((u) => `${u.tool}.${u.field}`).join(", ")}`);
-				if (parts.length > 0) ctx.ui.notify(`🛡️ pi-verdict: tool coverage — ${parts.join("; ")}`, "info");
-			}
-		}
-		refreshStatus(ctx);
-		// Last, so every step above stays synchronous: only a root session with a UI shows subagent asks.
-		if (subagentIdentity(ctx) === null && ctx.hasUI && state.userRules.subagentGate === "normal" && !state.hostBudgetWarned) {
-			const advice = hostBudgetAdvice(state.userRules.subagentAskTimeoutMs, await rt.hostHandlerBudget(ctx));
-			if (advice) {
-				state.hostBudgetWarned = true;
-				ctx.ui.notify(`🛡️ pi-verdict: subagent asks will expire early: ${advice}`, "warning");
-			}
-		}
-	});
-
-	pi.on("session_shutdown", () => {
-		if (ownRootUi !== null && rootUi === ownRootUi) rootUi = null;
-		ownRootUi = null;
-	});
-
+	pi.on("session_start", (_event, ctx) => startSession(rt, ctx));
+	pi.on("session_shutdown", () => endSession(rt));
 	pi.on("model_select", (_e, ctx) => refreshStatus(ctx));
 
 	// Master toggle shortcut (#15): key comes from the user rules loaded first (fixed for the session—takes effect after config changes on
@@ -327,10 +216,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		handler: (args, ctx) =>
 			runConfigEditor(args, ctx, {
 				sessionTrustedRoot: rt.sessionTrustedRoot,
-				reloadRules: (c) => {
-					reportLoadWarnings(state.reloadRules(c.cwd, rt.sessionTrustedRoot), c);
-					refreshStatus(c);
-				},
+				reloadRules: (c) => reloadRules(rt, c),
 			}),
 	});
 
@@ -343,7 +229,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (sub && mode === "off") return undefined;
 		const label = sub ? subagentLabel(sub) : null;
 		// A subagent with its own UI (not produced by omp today) uses it; otherwise the root UI, else none
-		const ui: UiContext | null = !sub || ctx.hasUI ? ctx.ui : rootUi;
+		const ui: UiContext | null = !sub || ctx.hasUI ? ctx.ui : currentRootUi();
 
 		const input = event.input as Record<string, unknown>;
 		const call = { toolName: event.toolName, input };

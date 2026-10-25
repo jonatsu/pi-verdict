@@ -142,13 +142,3 @@ export function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<
 	});
 	return Promise.race([work, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
-
-let dialogTail: Promise<void> = Promise.resolve();
-export function serializeDialog<T>(fn: () => Promise<T>): Promise<T> {
-	const run = dialogTail.then(fn, fn);
-	dialogTail = run.then(
-		() => undefined,
-		() => undefined,
-	);
-	return run;
-}
