@@ -48,6 +48,8 @@ class FallbackCascade {
 
 type VerdictCounts = { allow: number; ask: number; deny: number };
 
+const NO_VERDICTS: Readonly<VerdictCounts> = { allow: 0, ask: 0, deny: 0 };
+
 /** What a rules load reported besides the rules, for the presentation layer to notify on. */
 export type RulesLoadReport = Omit<LoadedRules, "rules">;
 
@@ -63,7 +65,7 @@ export class SessionState {
 	private denyPathBases: string[] | null = null;
 	private readonly agentDir: string;
 	/** Root-session verdicts only; an ask counts once whatever the user answers. A `/verdict` reload keeps them. */
-	private counts: VerdictCounts = { allow: 0, ask: 0, deny: 0 };
+	private counts: VerdictCounts = { ...NO_VERDICTS };
 	/** The user's own policy did not load in full; while set, every model-originated allow becomes an ask (ADR-0010). */
 	policyDegraded = false;
 	/** The warning that the host's handler budget is too short for subagent asks was shown this session. */
@@ -100,7 +102,7 @@ export class SessionState {
 	reset(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
 		const report = this.reloadRules(cwd, sessionTrustedRoot);
 		this.fallback.reset();
-		this.counts = { allow: 0, ask: 0, deny: 0 };
+		this.counts = { ...NO_VERDICTS };
 		this.hostBudgetWarned = false;
 		return report;
 	}
