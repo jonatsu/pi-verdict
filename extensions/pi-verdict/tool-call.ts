@@ -7,7 +7,7 @@ import { resolveClassifier, resolveFallbackClassifier } from "./model-roles.ts";
 import { type AskWait, blockReason, type GateBlock, type PresentedCall, presentVerdict } from "./present.ts";
 import { anyRedactor, type RedactorFn, redactedOr } from "./redaction.ts";
 import { currentRootUi } from "./root-ui.ts";
-import { completionFor, type GateRuntime, refreshStatus } from "./runtime.ts";
+import { completionFor, type GateRuntime } from "./runtime.ts";
 import type { SessionState } from "./state.ts";
 import {
 	HOST_RETURN_MARGIN_MS,
@@ -21,6 +21,7 @@ import {
 	type UiContext,
 	untilAborted,
 } from "./subagent.ts";
+import { refreshStatus } from "./ui/status.ts";
 
 // ============================================================================
 // The tool_call handler: the gate's security boundary

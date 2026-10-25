@@ -3,7 +3,7 @@ import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } 
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import { POLICY_DEGRADED } from "./present.ts";
 import { publishRootUi, releaseRootUi } from "./root-ui.ts";
-import { type GateRuntime, refreshStatus } from "./runtime.ts";
+import type { GateRuntime } from "./runtime.ts";
 import type { RulesLoadReport } from "./state.ts";
 import { hostBudgetAdvice, subagentIdentity } from "./subagent.ts";
 import {
@@ -16,6 +16,7 @@ import {
 	TRUST_CHOICE,
 	trustStorePath,
 } from "./trust.ts";
+import { refreshStatus } from "./ui/status.ts";
 
 // ============================================================================
 // session_start: project trust, the rules load and the session's warnings

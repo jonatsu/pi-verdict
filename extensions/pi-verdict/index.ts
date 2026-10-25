@@ -7,10 +7,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerMasterSwitch } from "./master-switch.ts";
-import { type AutoModeDeps, createRuntime, refreshStatus } from "./runtime.ts";
+import { type AutoModeDeps, createRuntime } from "./runtime.ts";
 import { endSession, reloadRules, startSession } from "./session-start.ts";
 import { handleToolCall } from "./tool-call.ts";
 import { runConfigEditor } from "./ui/config-editor.ts";
+import { refreshStatus } from "./ui/status.ts";
 
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
