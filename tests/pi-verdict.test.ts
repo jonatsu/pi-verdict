@@ -6871,6 +6871,20 @@ describe("eval semantics (item 4)", () => {
 		expect(r.reason).toContain("rm-recursive");
 	});
 
+	for (const [code, ruleId] of [
+		['import subprocess\nsubprocess.run(["git", "' + 'reset", "--hard"])', "git-reset-hard"],
+		['os.system("git ' + 'stash clear")', "git-stash-clear"],
+		['__omp_shell("echo ok; gh ' + 'repo delete o/r")', "gh-repo"],
+	]) {
+		test(`py shell lines are graded on raw text only (ADR-0007): ${JSON.stringify(code)}`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "eval", { language: "py", code });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain(ruleId);
+			expect(h.calls.length).toBe(0);
+		});
+	}
+
 	test("the py shell floor does not fire for js eval (language-gated)", async () => {
 		const h = session({});
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];

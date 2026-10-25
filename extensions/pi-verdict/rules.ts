@@ -16,7 +16,7 @@ import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
 import type { CallPredicate } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
-import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./shell.ts";
+import { allowAdmits, classifyBash, classifyPyShellLines, pyEvalShellLines, type RuleResult } from "./shell.ts";
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
 export interface RuleContext {
@@ -129,7 +129,7 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.
 		const shellText = pyEvalShellLines(access.command).join("\n");
-		return shellText ? classifyBash(shellText, floorOn) : { verdict: "gray" };
+		return shellText ? classifyPyShellLines(shellText, floorOn) : { verdict: "gray" };
 	}
 	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 }

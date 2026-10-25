@@ -219,17 +219,20 @@ function tripwireHit(command: string, tripwire: Tripwire): boolean {
 	return joined !== capped && tripwireMatches(joined, tripwire);
 }
 
-/** Whether a rule hits the command. A `words` rule hits when its tripwire matches and the word view
- *  finds a command that runs it, a word holding its text outside a known inert position, or a
- *  construct it cannot read soundly. */
-function ruleHits(rule: BashDangerRule, command: string): boolean {
+/** How a `words` rule reads text: through the word view, or on its tripwire alone. */
+type FloorView = "words" | "raw-text";
+
+/** Whether a rule hits the command. A `words` rule needs its tripwire to match; in the `words` view
+ *  the word view must also find a command that runs it, a word holding its text outside a known
+ *  inert position, or a construct it cannot read soundly. */
+function ruleHits(rule: BashDangerRule, command: string, view: FloorView): boolean {
 	switch (rule.kind) {
 		case "raw":
 			return rule.pattern.test(command);
 		case "words":
 			return (
 				tripwireHit(command, rule.tripwire) &&
-				anyCommandIn(command, { runs: rule.runs, mentions: (word) => tripwireHit(word, rule.tripwire) })
+				(view === "raw-text" || anyCommandIn(command, { runs: rule.runs, mentions: (word) => tripwireHit(word, rule.tripwire) }))
 			);
 		default: {
 			const unknown: never = rule;
@@ -242,7 +245,7 @@ function ruleHits(rule: BashDangerRule, command: string): boolean {
  *  contain a shell separator (`git push origin 'a&b' --force`), and text the shell never runs as a
  *  command (`git commit -m '… git push --force …'`) is not a force push. */
 export function gitPushForce(command: string): boolean {
-	return ruleHits(GIT_PUSH_FORCE_RULE, command);
+	return ruleHits(GIT_PUSH_FORCE_RULE, command, "words");
 }
 
 /** git flags that turn a read-shaped invocation into a write: `--output`/`-o` write a
@@ -372,11 +375,22 @@ export interface RuleResult {
  *  falls to the classifier (fail-closed direction). */
 export const BASH_MAX_MATCH_LEN = 8192;
 
+/** Grades a bash command: a floor deny, or gray for the user rules and the classifier. */
 export function classifyBash(command: string, floorOn: boolean): RuleResult {
+	return classifyShellText(command, floorOn, "words");
+}
+
+/** Grades the shell lines of a Python cell on raw text only: Python decides how their strings are
+ *  quoted and joined, so the shell-word view cannot show that a tripwire hit is harmless (ADR-0007). */
+export function classifyPyShellLines(lines: string, floorOn: boolean): RuleResult {
+	return classifyShellText(lines, floorOn, "raw-text");
+}
+
+function classifyShellText(command: string, floorOn: boolean, view: FloorView): RuleResult {
 	if (floorOn) {
 		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			if (ruleHits(rule, capped)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
+			if (ruleHits(rule, capped, view)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command" };
