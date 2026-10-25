@@ -311,30 +311,41 @@ export async function resolveAskWithoutHuman(
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
 	const allowed = outcome.source === "model" && outcome.verdict === "allow";
 	const opinion = outcome.source === "model" ? outcome.verdict : "error";
-	// Shadow mode records the second model's opinion and never lets it change the outcome, so with no human
-	// the ask denies whatever the model said.
-	const { verdict, reason }: { verdict: "allow" | "deny"; reason: string } =
-		rules.classifierFallbackMode === "shadow"
-			? {
-					verdict: "deny",
-					reason: `no human answer; classifierFallbackMode is shadow, so the second model's opinion (${opinion}) is recorded only — ${v.reason}`,
-				}
-			: allowed
-				? // No human can answer, so a withheld allow denies.
-					withholdModelAllow(state.policyDegraded, { verdict: "allow", reason: `second model allows: ${outcome.reason}` }, "deny")
-				: { verdict: "deny", reason: `second model did not approve (${opinion}): ${outcome.reason}` };
+	let ruling: { verdict: "allow" | "deny"; reason: string };
+	if (rules.classifierFallbackMode === "shadow") {
+		// Shadow mode never lets the second model change the outcome, so with no human the ask denies.
+		ruling = {
+			verdict: "deny",
+			reason: `no human answer; classifierFallbackMode is shadow, so the second model's opinion (${opinion}) is recorded only — ${v.reason}`,
+		};
+	} else if (allowed) {
+		// No human can answer, so a withheld allow denies.
+		ruling = withholdModelAllow(state.policyDegraded, { verdict: "allow", reason: `second model allows: ${outcome.reason}` }, "deny");
+	} else {
+		ruling = { verdict: "deny", reason: `second model did not approve (${opinion}): ${outcome.reason}` };
+	}
+	const { verdict, reason } = ruling;
 	return { verdict, reason, fb: { ...fallbackAudit(audited, resolved.model.id, start, outcome), effective: verdict } };
 }
 
 /** [pi-verdict local patch: autoDeny] reason suffix on asks that would have been auto-denies */
 const AUTO_DENY_OFF_SUFFIX = " (autoDeny is off: this would have been denied — your call)";
 
+/** The audit record of a ruling, before `settle` maps a headless ask to its deny. */
+interface RecordDraft {
+	/** The verdict the record shows when a human can answer, or when the ruling is no ask. */
+	readonly verdict: VerdictWord;
+	readonly reason: string;
+	readonly source: AuditRecord["source"];
+	readonly raw: ClassifierOutcome["auditRaw"] | null;
+	readonly extra?: Pick<AuditRecord, "detail" | "demoted" | "fallback">;
+}
+
 /** How a ruling settles into a verdict. */
 interface Settlement {
 	readonly ruling: Ruling;
-	/** Builds the audit record, told whether the ruling is an ask no human can answer; null leaves the call
-	 *  unaudited. */
-	readonly record: ((headlessAsk: boolean) => Readonly<AuditRecord>) | null;
+	/** The ruling's audit record; null leaves the call unaudited. */
+	readonly record: RecordDraft | null;
 	readonly autoResolve: AskVerdict["autoResolve"];
 	readonly detail?: string;
 	/** Whether `autoDeny: false` may turn this deny into an ask; default true. A self-protection deny sets
@@ -349,7 +360,16 @@ function settle(a: Adjudication, s: Settlement): Verdict {
 	const { state, env } = a;
 	const { verdict, reason, source } = s.ruling;
 	const headlessAsk = verdict === "ask" && !env.hasUI;
-	const record = s.record?.(headlessAsk) ?? null;
+	// A headless ask is recorded as the deny it degrades to.
+	const draft = s.record;
+	const record = draft
+		? buildRecord(
+				a,
+				{ verdict: headlessAsk ? "deny" : draft.verdict, reason: draft.reason, source: draft.source, degraded: headlessAsk },
+				draft.raw,
+				draft.extra,
+			)
+		: null;
 	const detail = s.detail === undefined ? {} : { detail: s.detail };
 	const autoDenyOff = verdict === "deny" && s.autoDenyApplies !== false && !state.userRules.autoDeny;
 	if (env.hasUI && (verdict === "ask" || autoDenyOff)) {
@@ -385,8 +405,7 @@ function adjudicateRuleAsk(a: Adjudication, rule: RuleResult): Verdict {
 	const source = rule.askSource ?? "protected-path";
 	return settle(a, {
 		ruling: { verdict: "ask", reason, source },
-		record: (headlessAsk) =>
-			buildRecord(a, { verdict: headlessAsk ? "deny" : "ask", reason, source, degraded: headlessAsk }, null, { detail: rule.detail }),
+		record: { verdict: "ask", reason, source, raw: null, extra: { detail: rule.detail } },
 		autoResolve: "deny",
 		detail: rule.detail,
 	});
@@ -401,14 +420,13 @@ async function adjudicateWithoutModel(a: Adjudication, modelCall: ModelCall, dea
 	const sources = modelPathSources(applied.withheld, cascade.effective?.source ?? "fail-closed", "fail-closed");
 	return settle(a, {
 		ruling: { verdict: applied.verdict, reason: applied.reason, source: sources.verdict },
-		// The record shows the verdict applied: an interactive ask as the ask that ran, a headless one as its deny.
-		record: (headlessAsk) =>
-			buildRecord(
-				a,
-				{ verdict: headlessAsk ? "deny" : applied.verdict, reason: applied.reason, source: sources.record, degraded: headlessAsk },
-				null,
-				cascade.fb ? { fallback: cascade.fb } : {},
-			),
+		record: {
+			verdict: applied.verdict,
+			reason: applied.reason,
+			source: sources.record,
+			raw: null,
+			extra: cascade.fb ? { fallback: cascade.fb } : {},
+		},
 		autoResolve: "deny",
 	});
 }
@@ -453,18 +471,13 @@ async function adjudicateGrayZone(
 	const rescued = cascade.effective !== undefined && outcome.source === "fail-closed";
 	return settle(a, {
 		ruling,
-		record: (headlessAsk) =>
-			buildRecord(
-				a,
-				{
-					verdict: headlessAsk ? "deny" : rescued ? applied.verdict : outcome.verdict,
-					reason: rescued ? applied.reason : outcome.reason,
-					source: sources.record,
-					degraded: headlessAsk,
-				},
-				outcome.auditRaw,
-				{ ...(cascade.demoted ? { demoted: true } : {}), ...(cascade.fb ? { fallback: cascade.fb } : {}) },
-			),
+		record: {
+			verdict: rescued ? applied.verdict : outcome.verdict,
+			reason: rescued ? applied.reason : outcome.reason,
+			source: sources.record,
+			raw: outcome.auditRaw,
+			extra: { ...(cascade.demoted ? { demoted: true } : {}), ...(cascade.fb ? { fallback: cascade.fb } : {}) },
+		},
 		autoResolve: autoResolveFor(ruling, cascade),
 	});
 }
