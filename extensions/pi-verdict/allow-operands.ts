@@ -67,9 +67,15 @@ export function allowOperandsAdmit(command: string, where: OperandContext): bool
 		if (expanded.homeRelative && homeReassigned()) return false;
 		graded += expanded.paths.length;
 		if (graded > MAX_GRADED_OPERANDS) return false;
-		if (expanded.paths.some((p) => classifyPath(p, commandCwd, false, true).verdict !== "allow")) return false;
+		if (!expanded.paths.every((p) => readsAsAllowed(p, commandCwd))) return false;
 	}
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, commandCwd, sessionCwd);
+}
+
+/** True when the floor lets a file tool read `target` without asking. The floor is always on here, even
+ *  with `builtinDenyFloor` off: a refused admission only reaches the classifier. */
+function readsAsAllowed(target: string, commandCwd: string): boolean {
+	return classifyPath(target, commandCwd, /* isWrite */ false, /* floorOn */ true).verdict === "allow";
 }
 
 /**
@@ -86,19 +92,15 @@ function operandWords(words: readonly string[], at: number): string[] | null {
 	const operands = assignments.map(valueAfterEquals);
 	let optionsEnded = false;
 	for (const word of at === -1 ? [] : words.slice(at + 1)) {
-		if (optionsEnded || !word.startsWith("-")) {
-			operands.push(word);
-			if (word.includes("=")) operands.push(valueAfterEquals(word));
-		} else if (word === "--") {
+		const isOption = !optionsEnded && word.startsWith("-");
+		if (isOption && word === "--") {
 			optionsEnded = true;
-		} else if (OPTION_EXPANSION.test(word)) {
-			return null;
-		} else if (word.startsWith("--")) {
-			if (word.includes("=")) operands.push(valueAfterEquals(word));
-		} else {
-			if (word.includes("=")) operands.push(valueAfterEquals(word));
-			if (word.includes("/")) operands.push(word.slice(word.indexOf("/")));
+			continue;
 		}
+		if (isOption && OPTION_EXPANSION.test(word)) return null;
+		if (!isOption) operands.push(word);
+		if (word.includes("=")) operands.push(valueAfterEquals(word));
+		if (isOption && !word.startsWith("--") && word.includes("/")) operands.push(word.slice(word.indexOf("/")));
 	}
 	return operands;
 }

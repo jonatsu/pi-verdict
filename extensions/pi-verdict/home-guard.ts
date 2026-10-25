@@ -33,11 +33,21 @@ export interface BranchSource {
 	getBranch(): readonly unknown[];
 }
 
+/** Returns a predicate for `RuleContext.homeReassigned` that scans the branch on its first call only, so a
+ *  call with no home-relative operand never reads the branch and one with several reads it once. */
+export function lazyHomeReassigned(host: BranchSource, input: Readonly<Record<string, unknown>>): () => boolean {
+	let reassigned: boolean | undefined;
+	return () => {
+		reassigned ??= homeReassignedInSession(host, input);
+		return reassigned;
+	};
+}
+
 /**
  * Returns whether this call's command, or the command of any earlier tool call on the session branch, may
  * assign `HOME`. Fails closed: a branch the host cannot hand over counts as reassigned.
  */
-export function homeReassignedInSession(host: BranchSource, input: Readonly<Record<string, unknown>>): boolean {
+function homeReassignedInSession(host: BranchSource, input: Readonly<Record<string, unknown>>): boolean {
 	if (typeof input.command === "string" && assignsHome(input.command)) return true;
 	let branch: readonly unknown[];
 	try {
@@ -64,13 +74,4 @@ function toolCallCommands(entry: unknown): string[] {
 function field(value: unknown, key: string): unknown {
 	// Safe: any non-null object can be indexed by a string key, and the value stays unknown.
 	return typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
-}
-
-/** Returns `fn`'s value, computed on the first call only, so the branch is scanned at most once per call. */
-export function once<T>(fn: () => T): () => T {
-	let computed: { value: T } | null = null;
-	return () => {
-		computed ??= { value: fn() };
-		return computed.value;
-	};
 }
