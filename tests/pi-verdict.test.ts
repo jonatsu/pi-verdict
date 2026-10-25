@@ -799,6 +799,13 @@ describe("simple-command allow guard (audit F2)", () => {
 		["^tar\\b", "tar -xIzstd -f x.tar"],
 		["^tar\\b", "tar --checkpoint=1 --checkpoint-action=exec=sh -cf x.tar src"],
 		["^gtar\\b", "gtar --to-command=sh -xf x.tar"],
+		["^zip\\b", "zip -T -TT ./x.sh out.zip src"],
+		["^zip\\b", "zip -T --unzip-command=./x.sh out.zip src"],
+		["^zip\\b", "zip -T --unzip-command ./x.sh out.zip src"],
+		["^rsync\\b", "rsync -e ./x.sh src/ host:dst/"],
+		["^rsync\\b", "rsync -ae ./x.sh src/ host:dst/"],
+		["^rsync\\b", "rsync --rsh=./x.sh src/ host:dst/"],
+		["^rsync\\b", "rsync --rsync-path=./x.sh src/ host:dst/"],
 	];
 	for (const [allow, command] of executorRows) {
 		test(`a command option that runs a program is not rule-allowed: ${command}`, async () => {
@@ -810,6 +817,8 @@ describe("simple-command allow guard (audit F2)", () => {
 		await staysAllowed(["^rg\\b"], "rg foo");
 		await staysAllowed(["^tar\\b"], "tar tf x.tar");
 		await staysAllowed(["^find\\b"], "find . -name x");
+		await staysAllowed(["^zip\\b"], "zip -r out.zip src");
+		await staysAllowed(["^rsync\\b"], "rsync -a src/ dst/");
 	});
 	test("a redirection (other than /dev/null) is not rule-allowed", async () => {
 		await reachesClassifier(["^ls\\b"], "ls > /tmp/out");

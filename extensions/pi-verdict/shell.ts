@@ -513,6 +513,9 @@ const PROGRAM_OPTIONS: Readonly<Record<string, ProgramOptions>> = {
 	tar: TAR_PROGRAM,
 	bsdtar: TAR_PROGRAM,
 	gtar: TAR_PROGRAM,
+	// zip's `-TT` is one two-letter option, so it matches only spelled out.
+	zip: { long: ["--unzip-command"], short: /TT/ },
+	rsync: { long: ["--rsh", "--rsync-path"], short: /e/ },
 };
 
 /** The shortest long-option prefix read as an abbreviation. */

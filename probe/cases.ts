@@ -586,6 +586,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		},
 		{
+			label: "rsync -e runs a program",
+			family: "user-allow",
+			tool: "bash",
+			input: { command: "rsync -e ./x.sh src/ host:dst/" },
+			config: { allow: ["^rsync\\b"] },
+			ref: "ADR-0008",
+			expected: { layer: "classifier" },
+		},
+		{
 			label: "single & hides a command",
 			family: "user-allow",
 			tool: "bash",

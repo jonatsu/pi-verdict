@@ -41,9 +41,10 @@ evidence. The guard rejects a command that is not a single simple command:
   process substitution, an unterminated quote, depth exhaustion), the same marker ADR-0007 uses.
 - **A redirection other than to `/dev/null`** — `>`/`>>`/`<` (to `/dev/null` is inert and allowed).
 - **A re-parser in command position, or an option that runs a program** — `xargs`, `find … -exec`/
-  `-execdir`/`-ok`/`-okdir`, `fd`/`fdfind -x`/`-X`/`--exec`/`--exec-batch`, `rg --pre`, and `tar`,
+  `-execdir`/`-ok`/`-okdir`, `fd`/`fdfind -x`/`-X`/`--exec`/`--exec-batch`, `rg --pre`, `tar`,
   `bsdtar` or `gtar` with `--to-command`, `--use-compress-program`/`-I`, `--checkpoint-action`,
-  `--info-script`/`-F`, `--new-volume-script`, `--rsh-command` or `--rmt-command`.
+  `--info-script`/`-F`, `--new-volume-script`, `--rsh-command` or `--rmt-command`, `zip -TT`/
+  `--unzip-command`, and `rsync -e`/`--rsh`/`--rsync-path`.
 - **A `git` invocation carrying a write flag** — `--output`/`-o`, `--exec`, `--ext-diff`,
   `--textconv`, `--git-dir`, `--work-tree`, bare or attached (`--output=…`, `-o<path>`).
 
