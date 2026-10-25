@@ -65,19 +65,31 @@ such as `git commit -m "deny git stash clear"`, and no user `allow` rule can lif
 missed a gap between the program and its subcommand, so `git -C dir reset --hard` and
 `git -c k=v stash clear` reached the classifier.
 
-These rules now take the same two layers as `git-push-force`, built from the shared word view in
-`shell-words.ts`:
+These rules now take the same two layers as `git-push-force`, and all eight share one word view
+(`anyCommandIn` in `shell-words.ts`):
 
-1. A gap-tolerant raw-text tripwire decides every hit, for example `\bgit\b[\s\S]*?\bstash\b[\s\S]*?\bclear\b`.
-   It is also tested on the spelling with unescaped backslash-newlines removed.
-2. The word view clears a hit only when its parse is sound and no command runs the subcommand with the
-   rule's arguments. For git, the subcommand is read past git's global options; an unreadable option keeps
-   the deny when a later word contains the subcommand's name. For gh, the group word (`repo`, `release`)
-   must follow `gh`, and the action word follows it, read past `--repo` and its value; any other option
-   keeps the deny when a later word contains an action name. A shell's `-c` script is read as a command.
+1. A gap-tolerant raw-text tripwire decides every hit: its parts must match in order at any distance, for
+   example `git`, then `stash`, then `clear`. It is searched part by part, which keeps the cost linear,
+   and it is also tested on the spelling with unescaped backslash-newlines removed.
+2. The word view clears a hit only when all three hold. The parse is sound, and no `eval` or split-string
+   `env` sits anywhere in it. No simple command runs the rule's command: for git, the subcommand is read
+   past git's global options, and an unreadable option keeps the deny when a later word contains the
+   subcommand's name; for gh, the group word (`repo`, `release`) follows `gh`, then the action, read past
+   `--repo` and its value. And every word that itself matches the tripwire sits in a known inert
+   position, or is a shell's `-c` script, which is judged by recursion.
+
+The inert positions are an allowlist of places whose text the program prints, searches for or records,
+and never runs: any argument of `echo` or `printf` (not `printf -v`), the message and message-file values
+of `git commit` and `git tag`, the pattern of `grep`, `egrep`, `fgrep`, `rg` and `ag`, and a `gh` title or
+body. Every other position may be run by its program (`ssh h '…'`, `watch '…'`, `git rebase -x '…'`,
+`git -c alias.x='!…'`, `python3 -c '…'`), so a word there keeps the deny. Inert positions are withheld
+where the output can still run: a command piped onward, a redirection other than to `/dev/null` or a
+descriptor, a process or command substitution, and a search program with `--pre`, `--hostname-bin` or
+`--pager`. A simple command ends at an operator or an unquoted newline.
 
 The word view does not join words and re-run the regex, because joining loses the quoting that tells an
-argument from a command.
+argument from a command. The shell lines of a Python `eval` cell skip the word view and are graded on
+the tripwire alone, because Python, not the shell, decides how their strings are quoted and joined.
 
 `raw-device`, `remote-exec`, `env-exfil` and `fork-bomb` stay raw-text only. Their meaning spans a pipe, a
 redirection or a function definition, which the word view splits or drops, so it cannot show that such a
