@@ -71,7 +71,10 @@ flowchart LR
 - `C26`, the `classifyWithModel` and `runConfidenceCascade` part: a `ModelCall` built once per adjudication
   carries the session, the action line and the prompt inputs; each call adds its model, timeout and budget.
 - `C37`, the pipeline part: `withholdModelAllow` applies the degraded-policy rule at all three conversion
-  sites, with `WITHHELD_ALLOW_PREFIX` declared before them.
+  sites, with `WITHHELD_ALLOW_PREFIX` declared before them. The rule-layer half is settled: since slice 2,
+  `classifyByRules` reads the state once, in `readCall`'s `vouchable` (`!ctx.policyDegraded`), which
+  suspends user `allow` rules and the `tools` exemption. That is a separate rule from withholding a model
+  allow, so it stays in the rule layer.
 - `C25` `Verdict` is `AllowVerdict | DenyVerdict | AskVerdict`; `presentVerdict` switches on it with a `never`
   check; block reasons take a closed `BlockTag` union; `modelPathSources` maps a model ruling to the verdict
   and record sources; audit records are built whole.
@@ -213,7 +216,10 @@ These belong to the findings above and must close with them:
 - `C12`: `agentDbS0()` recomputes the agent directory on every call.
 - `C14`: five `fs.existsSync(path.resolve(cwd, …))` copies; a redundant `isWrite &&` in `classifyPath`.
 - `C15`: `trust.ts` recomputes `baseForms` for every entry.
-- `C18`: drop `describeAction`, which only calls `toolCallLine`.
+- `C18`: drop `describeAction`, which only calls `toolCallLine`. `presentAsk` takes six parameters and rebuilds
+  `note` from `titled`; give it one presentation context when `present.ts` is extracted (with `C19`).
+- `C40`: `runConfidenceCascade` runs about 75 lines with three closures (`demotionAsk`, `failed`, the shadow
+  spreads) and terse names (`fb`, `getFb`); split it with the `callModelOnce` part of `C26`.
 - `C32`: `RulesLoadReport` hand-copies four `LoadedRules` fields; `FallbackCascade.summary` builds UI text inside
   state.
 - `C33`: `AdjudicateEnv.redact` is optional, with a second redactor construction path.
