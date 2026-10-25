@@ -1015,7 +1015,31 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 		await staysAllowed(GIT_ALLOW, "git status");
 		await staysAllowed(GIT_ALLOW, "git log --oneline");
 		await staysAllowed(["^ls\\b"], "ls -la");
-		await staysAllowed(["^ls\\b"], "ls *.ts");
+	});
+	test("a cwd glob is graded by the entries it matches", async () => {
+		await withTempDir(
+			"pv-glob-",
+			async (dir) => {
+				for (const name of ["a.ts", "b.ts", "server" + ".pem", "credentials" + ".json"]) fs.writeFileSync(path.join(dir, name), "x\n");
+				fs.symlinkSync(path.join(os.homedir(), "." + "ssh"), path.join(dir, "keys"));
+				const h = session({ allow: CAT_ALLOW }, { cwd: dir });
+				h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+				expect(await toolCall(h, "bash", { command: "cat *.ts" })).toBeUndefined();
+				expect(h.calls.length).toBe(0);
+				for (const command of ["cat *.pem", "cat cred*", "cat k*", "cat [ck]*", "cat *.none", "cat [[:alpha:]]*"]) {
+					expect(await toolCall(h, "bash", { command })).toBeUndefined();
+				}
+				expect(h.calls.length).toBe(6);
+			},
+			os.homedir(),
+		);
+	});
+	test("a cwd glob whose matches pass the cap is refused", async () => {
+		await withTempDir("pv-glob-", (dir) => {
+			for (let i = 0; i <= MAX_GRADED_OPERANDS; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "");
+			expect(allowOperandsAdmit("cat *.txt", dir, () => false)).toBe(false);
+			expect(allowOperandsAdmit("cat f1.txt", dir, () => false)).toBe(true);
+		});
 	});
 });
 

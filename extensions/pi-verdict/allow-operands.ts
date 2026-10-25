@@ -1,5 +1,7 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { escapeRegExp } from "./agent-dir.ts";
 import { classifyPath } from "./floor.ts";
 import { baseForms, isWithin } from "./paths.ts";
 import { gitSubcommandIndex, shellWords, wordBasename } from "./shell.ts";
@@ -20,9 +22,9 @@ const BRACE_EXPANSION = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 /** Matches a glob metacharacter. */
 const GLOB_CHARS = /[*?[]/;
 
-/** An operand after shell expansion. */
+/** An operand after shell expansion: the paths the shell passes for it. */
 interface Expanded {
-	readonly path: string;
+	readonly paths: readonly string[];
 	/** The operand names a path through the home directory, which a reassigned `HOME` moves. */
 	readonly homeRelative: boolean;
 }
@@ -32,19 +34,21 @@ interface Expanded {
  * read without asking (ADR-0008). Call it only after `allowAdmits` has accepted the command's shape.
  * Fails closed toward the classifier, never toward a deny: an operand that is a secret or system path,
  * one holding an expansion the gate cannot resolve, a home-relative operand after `HOME` was reassigned,
- * or more than `MAX_GRADED_OPERANDS` operands each refuse the admission. The floor grades here even with
- * `builtinDenyFloor` off, because a refused admission only reaches the classifier.
+ * or more than `MAX_GRADED_OPERANDS` graded paths (a glob's matches each count) each refuse the admission.
+ * The floor grades here even with `builtinDenyFloor` off, because a refused admission only reaches the
+ * classifier.
  */
 export function allowOperandsAdmit(command: string, cwd: string, homeReassigned: () => boolean): boolean {
 	const words = shellWords(command);
 	const at = words.findIndex((word) => !ASSIGNMENT.test(word));
-	const operands = operandWords(words, at);
-	if (operands.length > MAX_GRADED_OPERANDS) return false;
-	for (const word of operands) {
+	let graded = 0;
+	for (const word of operandWords(words, at)) {
 		const expanded = expandOperand(word, cwd);
 		if (expanded === null) return false;
 		if (expanded.homeRelative && homeReassigned()) return false;
-		if (classifyPath(expanded.path, cwd, false, true).verdict !== "allow") return false;
+		graded += expanded.paths.length;
+		if (graded > MAX_GRADED_OPERANDS) return false;
+		if (expanded.paths.some((p) => classifyPath(p, cwd, false, true).verdict !== "allow")) return false;
 	}
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, cwd);
 }
@@ -75,8 +79,8 @@ function valueAfterEquals(word: string): string {
  * `${HOME}`, quoted or not (the word view has lost the quotes, so a single-quoted `'$HOME'` is expanded
  * too, which only refuses more). Returns null for any other expansion, which the gate cannot resolve: a
  * variable (the agent's shell persists exports between calls and does not share the gate's environment),
- * `~user`, a brace expansion, or a glob. A glob with no `/` that does not start with `.` matches only
- * visible entries of the cwd, so it grades as the cwd itself.
+ * `~user`, a brace expansion, or a glob. A glob with no `/` that does not start with `.` expands to the
+ * visible cwd entries it matches (`cwdGlobMatches`), each of which is graded.
  */
 function expandOperand(word: string, cwd: string): Expanded | null {
 	const home = os.homedir();
@@ -86,11 +90,57 @@ function expandOperand(word: string, cwd: string): Expanded | null {
 	const text = viaTilde ? home + replaced.slice(1) : replaced;
 	const homeRelative = viaTilde || replaced !== word;
 	if (text.includes("$") || BRACE_EXPANSION.test(text)) return null;
-	if (GLOB_CHARS.test(text)) {
-		if (text.includes("/") || text.startsWith(".")) return null;
-		return { path: cwd, homeRelative };
+	if (!GLOB_CHARS.test(text)) return { paths: [text], homeRelative };
+	if (text.includes("/") || text.startsWith(".")) return null;
+	const matches = cwdGlobMatches(text, cwd);
+	return matches === null ? null : { paths: matches, homeRelative };
+}
+
+/**
+ * Returns the names of the visible cwd entries a one-segment glob matches, or null when it matches none
+ * (bash would pass the pattern itself), when the cwd cannot be read, or when the pattern holds a bracket
+ * form the gate does not model. Matched case-insensitively, a superset of bash's default, so a shell set
+ * to `nocaseglob` matches nothing the gate did not grade.
+ */
+function cwdGlobMatches(pattern: string, cwd: string): string[] | null {
+	const re = globRegExp(pattern);
+	if (re === null) return null;
+	let names: string[];
+	try {
+		names = fs.readdirSync(cwd);
+	} catch {
+		return null;
 	}
-	return { path: text, homeRelative };
+	const matches = names.filter((name) => !name.startsWith(".") && re.test(name));
+	return matches.length === 0 ? null : matches;
+}
+
+/** Returns a glob pattern as an anchored regex: `*`, `?` and a bracket expression (`[abc]`, `[a-z]`,
+ *  `[!x]`, `[^x]`). Null for an unterminated bracket or a character class such as `[[:alpha:]]`. */
+function globRegExp(pattern: string): RegExp | null {
+	let source = "";
+	for (let i = 0; i < pattern.length; i++) {
+		const c = pattern[i];
+		if (c === "*") source += ".*";
+		else if (c === "?") source += ".";
+		else if (c !== "[") source += escapeRegExp(c);
+		else {
+			const negated = pattern[i + 1] === "!" || pattern[i + 1] === "^";
+			const start = i + (negated ? 2 : 1);
+			// A `]` right after the opening bracket is a member, not the end.
+			const close = pattern.indexOf("]", start + 1);
+			if (close === -1) return null;
+			const members = pattern.slice(start, close);
+			if (/\[[:=.]/.test(members)) return null;
+			source += `[${negated ? "^" : ""}${members.replace(/[\\\]^[]/g, "\\$&")}]`;
+			i = close;
+		}
+	}
+	try {
+		return new RegExp(`^${source}$`, "is");
+	} catch {
+		return null;
+	}
 }
 
 /** git subcommands that read any file named outside the work tree, with or without `--no-index`. */
@@ -119,8 +169,8 @@ function gitRunsInProject(globals: readonly string[], cwd: string): string | nul
 		if (globals[k] !== "-C") continue;
 		const dir = expandOperand(globals[k + 1] ?? "", cwd);
 		k++;
-		if (dir === null) return null;
-		base = path.resolve(base, dir.path);
+		if (dir === null || dir.paths.length !== 1) return null;
+		base = path.resolve(base, dir.paths[0]);
 		if (!insideProject(base, cwd)) return null;
 	}
 	return base;
@@ -138,7 +188,7 @@ function gitReadsStayInProject(args: readonly string[], base: string, cwd: strin
 			if (isNoIndexFlag(word)) return false;
 		} else {
 			const operand = expandOperand(word, cwd);
-			if (operand === null || !insideProject(path.resolve(base, operand.path), cwd)) return false;
+			if (operand === null || !operand.paths.every((p) => insideProject(path.resolve(base, p), cwd))) return false;
 		}
 	}
 	return true;

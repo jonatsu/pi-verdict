@@ -617,7 +617,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 		ref: "ADR-0008",
 		expected: { layer: "classifier" },
 	});
-	for (const command of ["cat README.md", "git status", "git log --oneline", "ls -la", "ls *.ts"]) {
+	for (const command of ["cat README.md", "git status", "git log --oneline", "ls -la", "ls *.md"]) {
 		cases.push({
 			label: `allow operand control: ${command}`,
 			family: "user-allow",

@@ -114,7 +114,7 @@ Total cases: 253.
 | user-allow | allow operand control: git status | bash | allow |  | user allow rule |  |  | ref=ADR-0008 |
 | user-allow | allow operand control: git log --oneline | bash | allow |  | user allow rule |  |  | ref=ADR-0008 |
 | user-allow | allow operand control: ls -la | bash | allow |  | user allow rule |  |  | ref=ADR-0008 |
-| user-allow | allow operand control: ls *.ts | bash | allow |  | user allow rule |  |  | ref=ADR-0008 |
+| user-allow | allow operand control: ls *.md | bash | allow |  | user allow rule |  |  | ref=ADR-0008 |
 | tool-access | multi-header edit: second header targets an S0 path | edit | rule |  | S0 |  |  |  |
 | tool-access | multi-header edit: both headers in-cwd allows | edit | allow |  |  |  |  |  |
 | tool-access | edit header with a placeholder tag still targets its .git metadata path | edit | rule |  | .git metadata |  |  | ref=ADR-0009 |
