@@ -41,7 +41,8 @@ export interface Case {
 		| "tool-access"
 		| "host-path"
 		| "policy-degraded"
-		| "code-loading";
+		| "code-loading"
+		| "bash-danger";
 	tool: string;
 	input: Record<string, unknown>;
 	/** Additionally asserted under the consumer-policy fixture config (run C). */
@@ -1571,6 +1572,26 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		},
 	);
+
+	// ---- bash-danger ------------------------------------------------------------------
+	// Raw-text floor rules beyond the force-push family. A deny row names its rule id; a control
+	// row (null) must reach the classifier. Dangerous literals are assembled so this file never
+	// trips the floor it tests.
+	const bashDanger: Array<[string, string, string | null]> = [
+		["dd to a macOS disk", "dd if=x " + "of=/dev/disk2", "raw-device"],
+		["dd to a macOS raw disk", "dd if=x " + "of=/dev/rdisk2", "raw-device"],
+		["dd to /dev/null is not a device write", "dd if=x " + "of=/dev/null", null],
+		["reading a diskutil-named file is not a device write", "cat /dev/diskutil-notes", null],
+	];
+	for (const [label, command, ruleId] of bashDanger) {
+		cases.push({
+			label,
+			family: "bash-danger",
+			tool: "bash",
+			input: { command },
+			expected: ruleId === null ? { layer: "classifier" } : { layer: "rule", ruleId },
+		});
+	}
 
 	return cases;
 }

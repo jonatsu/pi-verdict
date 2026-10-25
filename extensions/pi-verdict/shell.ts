@@ -25,7 +25,7 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 	},
 	{
 		id: "raw-device",
-		pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|\bmkfs\.)/i,
+		pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd|r?disk[0-9])|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd|r?disk[0-9])|\bmkfs\.)/i,
 		reason: "raw device write/format",
 	},
 	// Fork fix: `git-push-force` is checked on a shell-word view, not a regex over the raw string.

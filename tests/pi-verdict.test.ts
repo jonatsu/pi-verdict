@@ -795,6 +795,43 @@ describe("simple-command allow guard (audit F2)", () => {
 	});
 });
 
+// ── 1a. Bash floor: raw-device ───────────────────────────────────────────────
+
+describe("raw-device rule (macOS disk names)", () => {
+	// Dangerous literals are assembled so this file never trips the floor it tests.
+	const DENIED = [
+		"dd if=x " + "of=/dev/disk2",
+		"dd if=x " + "of=/dev/rdisk2",
+		"dd if=x " + "of=/dev/disk0s2",
+		"echo x " + ">/dev/disk2",
+		"echo x " + "> /dev/rdisk3",
+	];
+	for (const command of DENIED) {
+		test(`${command}: floor deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "bash", { command });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("raw-device");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	const NOT_DENIED = [
+		"dd if=x " + "of=/dev/null",
+		"cat /dev/diskutil-notes",
+		"echo x " + "> /dev/diskutil-notes",
+		"dd if=x " + "of=/dev/disk",
+	];
+	for (const command of NOT_DENIED) {
+		test(`${command}: not a raw-device deny (gray → classifier)`, async () => {
+			const h = session({});
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			const r = await toolCall(h, "bash", { command });
+			expect(r).toBeUndefined();
+			expect(h.calls.length).toBe(1);
+		});
+	}
+});
+
 // ── 1b. Fork: S0 credential inventory (XDG dotless homes included) ──────────
 
 describe("S0 credential inventory (fork: XDG dotless homes)", () => {
