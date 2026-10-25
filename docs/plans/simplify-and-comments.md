@@ -1,7 +1,7 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
-Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and slice 3 on 2026-10-25
-(after v0.21.0). This plan defines the finding ids
+Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and slices 3 and 4 on
+2026-10-25 (after v0.21.0). This plan defines the finding ids
 `C1`-`C44` that commits and the CHANGELOG may cite; code comments never do (`pv-comments`).
 
 ## Goal
@@ -25,7 +25,7 @@ Each slice runs its comment pass (`C9`, `C28`) on the modules it touched before 
 flowchart LR
   S1[1 classifier split, done] --> S2[2 rules and self-protection, done]
   S2 --> S3[3 adjudicate and the Verdict union, done]
-  S3 --> S4[4 state]
+  S3 --> S4[4 state, done]
   S4 --> S5[5 index.ts breakup]
   S5 --> S6[6 UI modules]
   S6 --> S7[7 config, shell, access, floor and the rest]
@@ -36,7 +36,7 @@ flowchart LR
 | 1. Classifier split (done) | `C21`, `C27`, `C28` for the four model-call modules, plus `C26`'s `ModelChoice` |
 | 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
 | 3. `adjudicate.ts` and the `Verdict` union (done) | `C20`, `C25`, `C34`, `C42`, `C28` for `adjudicate.ts`, plus `C26` and `C37` in part |
-| 4. `state.ts` | `C32` |
+| 4. `state.ts` (done) | `C32`, `C28` for `state.ts`, plus the `protectedSet` name left from `C42` |
 | 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37` |
 | 6. UI modules | `C29`, `C31` |
 | 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C26` (`callModelOnce`), `C35`, `C36`, `C38`-`C41`, `C43`, `C44`, `C45`, `C46`, `C47` |
@@ -82,6 +82,11 @@ flowchart LR
   `adjudicateGrayZone`, `autoResolveFor`, a module-level `buildRecord` and `fallbackAudit`; the cascade
   trigger carries the demoted ruling; `blockReasonText` holds the degraded-policy note.
 - `C28` for `adjudicate.ts`.
+- `C32` `SessionState` takes only its agent directory, which defaults to `agentDirPath()` and anchors both
+  self-protection and the audit log; its rules always come from the one config load. Verdicts are counted through
+  `countVerdict`, `RulesLoadReport` is `LoadedRules` without its rules, the cascade status line is built in
+  `index.ts` as `cascadeSummary`, and the protected set is named `protectedSet`.
+- `C28` for `state.ts`.
 
 ### Open
 
@@ -101,7 +106,7 @@ flowchart LR
   `tool-names.ts` (one traits table), `host-path.ts`, `hashline.ts`, `session-warnings.ts`.
 - **C4 Flat bags where `pv-typescript` asks for discriminated unions:** `RuleResult`, `ToolAccess`,
   `kernelWalk`'s result, `BashDangerRule` (a non-null assertion). Export the types that exported
-  functions return (`ToolAccess`, `TrustStore`, `LoadedRules`, `HostPathFormOptions`).
+  functions return (`ToolAccess`, `TrustStore`, `HostPathFormOptions`).
 - **C5 Credential directories are held twice (`floor.ts`):** the S0 regexes and the plain
   `S0_HOME_DIRECTORIES` list can drift. The three-way S0 test is copied in `classifyPath` and
   `globStaysInProject`. Fix: one table and a `hitsS0(forms)` helper.
@@ -152,14 +157,12 @@ flowchart LR
   defaults come from `EMPTY_RULES`.
 - **C26 `callModelOnce` takes nine positional parameters.** Its other caller is `explainGate` in
   `explain.ts`, so the change lands with that module. Fix: pass the model call and the request as two objects.
-- **C28 Plan ids and history in the remaining modules:** `index.ts`, `state.ts`, `deny-paths.ts`
+- **C28 Plan ids and history in the remaining modules:** `index.ts`, `deny-paths.ts`
   (the 23-line `bashPathTokens` derivation), `footer.ts`, `audit.ts`, `explain.ts`.
 - **C29 Wrong-home helpers:** `subagent.ts` mixes the subagent bridge with dialog helpers;
   `resolveAskWithoutHuman` lives in `adjudicate.ts`; `declineDetail` in `explain.ts`.
 - **C31 `ui/dialog.ts` holds five concerns,** including the security-relevant `displaySafe`;
   `fencedBlock` uses bare sizes tied implicitly to the caps; two `as` casts lack a why-safe comment.
-- **C32 `SessionState`'s constructor** loads the config from disk even when rules are passed;
-  `agentDir: null` has two meanings; `verdictCounts` is mutated from outside.
 - **C33 The "redact or show" idiom is written seven times,** and the session redactor is rebuilt per
   call in three places. Fix: `redactedOr(redact, input, text)`, one redactor per call.
 - **C35 The content excerpt follows a newline,** so the transcript's last line is model-written
@@ -204,7 +207,8 @@ flowchart LR
   model-call modules lack `readonly`.
 - **C47 `code-loading.ts` expands `$PI_CODING_AGENT_DIR` through the global agent directory,** the seam slice 2
   closed for self-protection: a session built with an explicit agent directory grades the variable against another
-  directory. Pass the session's agent directory in.
+  directory. Pass the session's agent directory in. `loadUserRules` has the same seam: it reads the config under
+  `agentDirPath()`, not under the agent directory a `SessionState` was built with.
 
 ### Details carried from the reviews
 
@@ -220,6 +224,4 @@ These belong to the findings above and must close with them:
   `note` from `titled`; give it one presentation context when `present.ts` is extracted (with `C19`).
 - `C40`: `runConfidenceCascade` runs about 75 lines with three closures (`demotionAsk`, `failed`, the shadow
   spreads) and terse names (`fb`, `getFb`); split it with the `callModelOnce` part of `C26`.
-- `C32`: `RulesLoadReport` hand-copies four `LoadedRules` fields; `FallbackCascade.summary` builds UI text inside
-  state.
 - `C33`: `AdjudicateEnv.redact` is optional, with a second redactor construction path.
