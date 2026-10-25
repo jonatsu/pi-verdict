@@ -389,11 +389,12 @@ interface Segment {
 	readonly piped: boolean;
 }
 
+/** Split words into simple commands at every operator and unquoted newline. */
 function commandSegments(words: readonly string[]): Segment[] {
 	const segs: Segment[] = [];
 	let cur: string[] = [];
 	for (const w of words) {
-		if (SHELL_OPERATORS.has(w)) {
+		if (SHELL_OPERATORS.has(w) || w === "\n") {
 			if (cur.length) segs.push({ words: cur, piped: w === "|" });
 			cur = [];
 		} else {
@@ -527,6 +528,17 @@ function outputMayRun(text: string, words: readonly string[]): boolean {
 	return /[<>]/.test(stripped) || words.includes("(") || words.includes(")");
 }
 
+/** Whether an `eval` or a split-string `env` sits anywhere in the command, behind a keyword or a
+ *  wrapper too (`time eval …`, `nice env -S …`): both join their arguments into a new command line,
+ *  which the scanner does not follow. `markReparsers` checks only the first word, which serves the
+ *  allow check; the floor needs every position. */
+function reparsesWords(seg: readonly string[]): boolean {
+	return seg.some((word, k) => {
+		const base = wordBasename(word);
+		return base === "eval" || (base === "env" && envSplitsString(seg.slice(k + 1)));
+	});
+}
+
 /** What a floor rule's word view looks for. */
 export interface CommandMatcher {
 	/** Whether one simple command runs the rule's dangerous command. */
@@ -549,6 +561,7 @@ export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): 
 	if (words.includes(UNSOUND)) return true;
 	const inertAllowed = !outputMayRun(text, words);
 	for (const { words: seg, piped } of commandSegments(words)) {
+		if (reparsesWords(seg)) return true;
 		if (matcher.runs(seg)) return true;
 		const judged = new Set(inertAllowed && !piped ? inertWordIndexes(seg) : []);
 		for (let i = 0; i < seg.length; i++) {

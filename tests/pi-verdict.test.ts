@@ -1383,6 +1383,26 @@ describe("word-view floor rules: quoted text clears, option gaps deny (ADR-0007)
 			test(`${ruleId}: ${JSON.stringify(runner)} is a floor deny`, () => floorDeny(runner, ruleId));
 		}
 	}
+	// eval and env -S join their arguments into a command wherever they sit, and a newline ends a command.
+	for (const [ruleId, split] of [
+		["git-reset-hard", "'git " + "reset' --hard"],
+		["git-push-force", "'git " + "push' --force"],
+		["gh-repo", "'gh " + "repo' delete o/r"],
+	] as const) {
+		for (const reparser of [
+			`cd x\neval ${split}`,
+			`if true; then eval ${split}; fi`,
+			`{ eval ${split}; }`,
+			`time eval ${split}`,
+			`command eval ${split}`,
+			`X=1 eval ${split}`,
+			`nice env -S ${split}`,
+			`env env -S ${split}`,
+		]) {
+			test(`${ruleId}: ${JSON.stringify(reparser)} is a floor deny`, () => floorDeny(reparser, ruleId));
+		}
+	}
+	test("a newline ends the echo whose arguments are inert", () => floorDeny("echo x\nssh h 'git " + "reset --hard'", "git-reset-hard"));
 	for (const [ruleId, command] of RULES) {
 		for (const inert of [
 			`printf '%s\\n' '${command}'`,
