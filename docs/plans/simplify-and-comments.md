@@ -1,6 +1,7 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
-Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0). This plan defines the finding ids
+Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and slice 3 on 2026-10-25
+(after v0.21.0). This plan defines the finding ids
 `C1`-`C44` that commits and the CHANGELOG may cite; code comments never do (`pv-comments`).
 
 ## Goal
@@ -23,7 +24,7 @@ Each slice runs its comment pass (`C9`, `C28`) on the modules it touched before 
 ```mermaid
 flowchart LR
   S1[1 classifier split, done] --> S2[2 rules and self-protection, done]
-  S2 --> S3[3 adjudicate and the Verdict union]
+  S2 --> S3[3 adjudicate and the Verdict union, done]
   S3 --> S4[4 state]
   S4 --> S5[5 index.ts breakup]
   S5 --> S6[6 UI modules]
@@ -34,11 +35,11 @@ flowchart LR
 | --- | --- |
 | 1. Classifier split (done) | `C21`, `C27`, `C28` for the four model-call modules, plus `C26`'s `ModelChoice` |
 | 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
-| 3. `adjudicate.ts` and the `Verdict` union | `C20`, `C25`, `C26`, `C37`, `C34`, `C42` |
+| 3. `adjudicate.ts` and the `Verdict` union (done) | `C20`, `C25`, `C34`, `C42`, `C28` for `adjudicate.ts`, plus `C26` and `C37` in part |
 | 4. `state.ts` | `C32` |
-| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state) |
+| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37` |
 | 6. UI modules | `C29`, `C31` |
-| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C35`, `C36`, `C38`-`C41`, `C43`, `C44`, `C45`, `C46`, `C47` |
+| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C26` (`callModelOnce`), `C35`, `C36`, `C38`-`C41`, `C43`, `C44`, `C45`, `C46`, `C47` |
 
 ## Findings
 
@@ -63,6 +64,21 @@ flowchart LR
   macOS and Windows. The other containment copies (`samePath`, `redaction.ts`, `floor.ts`,
   `code-loading.ts`'s `strictlyUnder`) stay open for their slices.
 - `C28` for `rules.ts` and `self-protection.ts`.
+- `C34` a classifier attempt that times out is no longer retried when the provider returns on the abort
+  (a `### Fixed` entry under `## [Unreleased]`).
+- `C42` `RuleContext` names `userRules` and `protectedSet`, `namesProtectedPath` is a `CallPredicate`, and
+  `adjudicate` reads the anchored `denyPaths` bases once.
+- `C26`, the `classifyWithModel` and `runConfidenceCascade` part: a `ModelCall` built once per adjudication
+  carries the session, the action line and the prompt inputs; each call adds its model, timeout and budget.
+- `C37`, the pipeline part: `withholdModelAllow` applies the degraded-policy rule at all three conversion
+  sites, with `WITHHELD_ALLOW_PREFIX` declared before them.
+- `C25` `Verdict` is `AllowVerdict | DenyVerdict | AskVerdict`; `presentVerdict` switches on it with a `never`
+  check; block reasons take a closed `BlockTag` union; `modelPathSources` maps a model ruling to the verdict
+  and record sources; audit records are built whole.
+- `C20` one `settle` replaces the three settle tails, with `adjudicateRuleAsk`, `adjudicateWithoutModel`,
+  `adjudicateGrayZone`, `autoResolveFor`, a module-level `buildRecord` and `fallbackAudit`; the cascade
+  trigger carries the demoted ruling; `blockReasonText` holds the degraded-policy note.
+- `C28` for `adjudicate.ts`.
 
 ### Open
 
@@ -124,11 +140,6 @@ flowchart LR
 - **C19 The `tool_call` handler mixes six jobs** and handles `"aborted"` three ways; the block type
   is written four times. Fix: `GateBlock`, `buildEnv`, `withStatusWidget`, `handleRootCall`,
   `handleSubagentCall`, `finishWithoutHuman`; `finalize` returns a new record.
-- **C20 `adjudicate` writes its settle tail three times** (headless degradation, `autoDeny:false`,
-  the pending audit record), with opaque `eff*`/`fc*` names, a docblock orphaned above
-  `AUTO_DENY_OFF_SUFFIX`, and `blockedReason` beside a closure `blockReason`. Fix: one `settleAsk`,
-  `adjudicateRuleAsk`, `adjudicateWithoutModel`, `adjudicateGrayZone`, an `autoResolveFor` in place
-  of the four-deep ternary; `buildRecord` as a module function.
 - **C23 Model-role resolution is copied four times** with five warn-once latches outside
   `SessionState.reset()`; the classifier shares one latch between two warnings. Fix:
   `model-roles.ts` with `resolveModelRole`, latches registered in `reset()`, `THINKING_LEVELS` as a
@@ -136,13 +147,9 @@ flowchart LR
 - **C24 The `/verdict` editor lives in the extension body** (about 240 lines, six nested functions,
   nesting 7). Fix: move it to `ui/config-editor.ts`; drive the scalar keys from one table whose
   defaults come from `EMPTY_RULES`.
-- **C25 `Verdict` is a flat bag.** Fix: `Allow | Deny | Ask`, one `switch` in `presentVerdict`
-  ending in `never`, a `BLOCK_TAG` table, one mapping between the four source vocabularies, an
-  immutable audit record.
-- **C26 Positional-parameter lists:** `classifyWithModel` 11, `callModelOnce` 9,
-  `runConfidenceCascade` 8. Fix: an `interface ModelCall` built once per adjudication.
-- **C28 Plan ids and history in the remaining modules:** `adjudicate.ts` (`item 6b`, `item 7`,
-  `#67`/`#71` prose), `index.ts`, `state.ts`, `deny-paths.ts`
+- **C26 `callModelOnce` takes nine positional parameters.** Its other caller is `explainGate` in
+  `explain.ts`, so the change lands with that module. Fix: pass the model call and the request as two objects.
+- **C28 Plan ids and history in the remaining modules:** `index.ts`, `state.ts`, `deny-paths.ts`
   (the 23-line `bashPathTokens` derivation), `footer.ts`, `audit.ts`, `explain.ts`.
 - **C29 Wrong-home helpers:** `subagent.ts` mixes the subagent bridge with dialog helpers;
   `resolveAskWithoutHuman` lives in `adjudicate.ts`; `declineDetail` in `explain.ts`.
@@ -152,17 +159,15 @@ flowchart LR
   `agentDir: null` has two meanings; `verdictCounts` is mutated from outside.
 - **C33 The "redact or show" idiom is written seven times,** and the session redactor is rebuilt per
   call in three places. Fix: `redactedOr(redact, input, text)`, one redactor per call.
-- **C34 A provider that returns on abort is retried after its timeout.** jev returns
-  `stopReason: "aborted"`, so the attempt reads as `ok` and timed out, and the retry check misses
-  it. The deadline still bounds it. Fix: stop on a timed-out attempt unless a parseable verdict
-  arrived.
 - **C35 The content excerpt follows a newline,** so the transcript's last line is model-written
   content, while both system prompts treat the last line as the action. Fix: keep the excerpt on
   the action line after a separator.
 - **C36 Redaction runs over the whole session branch on every gray call,** before the transcript
   keeps its last tool calls. Fix: slice to the kept tool calls first.
-- **C37 The degraded-policy rule is implemented four times** (`resolveAskWithoutHuman`, both
-  `adjudicate` branches, two checks in `classifyByRules`), and its wording lives in five places.
+- **C37 The degraded-policy wording lives in five places:** `WITHHELD_ALLOW_PREFIX` in `adjudicate.ts`,
+  and in `index.ts` the block-reason note in `blockReasonText`, the deny notification, the `/automode`
+  status hint and the session-start warning, plus the footer badge. Fix: gather the texts where the
+  presentation moves (`present.ts`, `session-start.ts`).
 - **C38 `action-line.ts` holds two concerns:** text cleaning beside action-line rendering;
   `toolCallLine` and `actionCallLine` both derive targets and format the multi-target suffix (a
   near copy sits in `access.ts`). Fix: a text-cleaning module, `accessTargets`, `lineSafe`.
@@ -172,12 +177,6 @@ flowchart LR
   (`r`, `fire`), builds `diag` eagerly, and carries story comments.
 - **C41 `redactorFor` (54 lines)** builds the spelling set and the matcher together; its doc lists
   spellings instead of stating a predicate; `toolAccess("", args)` passes a magic empty tool name.
-- **C42 Names around the rule layer read poorly.** `RuleContext` calls the protected set `prot` and
-  the user rules `user`, abbreviations every step repeats; `RedactorFn` is a predicate that redacts
-  nothing, yet `namesProtectedPath` is typed with it; and `adjudicate` computes
-  `state.anchoredDenyPathBases(env.cwd)` twice to build one `RuleContext`, once for the bases and once
-  for the strict redactor. Fix: `protectedSet` and `userRules`, a `CallPredicate` type for the strict
-  redactor, and one local for the anchored bases.
 - **C43 Protected asset paths and reason strings are written more than once.** The trust store path
   `config/pi-verdict-trust.json` is joined twice in `buildProtectedSet` and again in `trust.ts`;
   `plugin-overrides.json` appears in both a write pattern and a bash signature; and
@@ -215,8 +214,6 @@ These belong to the findings above and must close with them:
 - `C14`: five `fs.existsSync(path.resolve(cwd, …))` copies; a redundant `isWrite &&` in `classifyPath`.
 - `C15`: `trust.ts` recomputes `baseForms` for every entry.
 - `C18`: drop `describeAction`, which only calls `toolCallLine`.
-- `C20`: `first!` in `runConfidenceCascade`; the `FallbackAudit` assembly repeated in `resolveAskWithoutHuman`;
-  `WITHHELD_ALLOW_PREFIX` used before its declaration; `degraded` computed in five places.
 - `C32`: `RulesLoadReport` hand-copies four `LoadedRules` fields; `FallbackCascade.summary` builds UI text inside
   state.
 - `C33`: `AdjudicateEnv.redact` is optional, with a second redactor construction path.
