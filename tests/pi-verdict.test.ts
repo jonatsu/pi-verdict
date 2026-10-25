@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
+import { agentDirPath, OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
 import { allowOperandsAdmit, MAX_GRADED_OPERANDS } from "../extensions/pi-verdict/allow-operands.ts";
 import { buildTranscript } from "../extensions/pi-verdict/classifier.ts";
 import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
@@ -1131,6 +1131,45 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 			await reachesClassifier([allow], command);
 		});
 	}
+	describe("credential trees the S0 grading reads", () => {
+		const home = os.homedir();
+		const refused = (dir: string) => expect(allowOperandsAdmit(`grep -r x ${dir}`, operandContext("/proj"))).toBe(false);
+		for (const rel of [".omp", ".omp/agent", ".pi", ".pi/agent", ".docker", ".gem", ".local/share/omp", ".local/share"]) {
+			test(`a recursive grep of ~/${rel} is refused`, () => refused(path.join(home, rel)));
+		}
+		test("a recursive grep of the agent directory is refused", () => refused(agentDirPath()));
+		test("a recursive grep of a relocated XDG config home is refused", () => {
+			const xdg = path.join(os.tmpdir(), "pv-xdg-relocated");
+			setXdgConfigRootsForTests([xdg]);
+			try {
+				refused(xdg);
+				refused(path.join(xdg, "gh"));
+			} finally {
+				setXdgConfigRootsForTests(null);
+			}
+		});
+		test("a recursive grep of the XDG data home's omp directory is refused", () => {
+			const saved = process.env.XDG_DATA_HOME;
+			const data = path.join(os.tmpdir(), "pv-xdg-data");
+			process.env.XDG_DATA_HOME = data;
+			try {
+				refused(path.join(data, "omp"));
+			} finally {
+				if (saved === undefined) delete process.env.XDG_DATA_HOME;
+				else process.env.XDG_DATA_HOME = saved;
+			}
+		});
+		test("a grep tool search of ~/.omp reaches the classifier", async () => {
+			const h = session({});
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(h, "grep", { pattern: "apiKey", path: "~/.omp" })).toBeUndefined();
+			expect(h.calls.length).toBe(1);
+		});
+		test("a recursive grep of a project or of an unrelated home directory stays admitted", () => {
+			expect(allowOperandsAdmit("grep -r x src", operandContext("/proj"))).toBe(true);
+			expect(allowOperandsAdmit(`grep -r x ${path.join(home, "notes")}`, operandContext("/proj"))).toBe(true);
+		});
+	});
 	test("a recursive command with no directory operand is graded over the directory it runs in", () => {
 		expect(allowOperandsAdmit("grep -r x", operandContext(os.homedir()))).toBe(false);
 		expect(allowOperandsAdmit("grep -r x", operandContext("/proj"))).toBe(true);

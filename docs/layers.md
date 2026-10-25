@@ -39,7 +39,8 @@ A file call that no layer above decides takes the floor's own grade: allow for a
 deny and for a write inside the project, gray otherwise. Four target shapes turn that allow gray, so the
 classifier sees the call: a target holding a glob metacharacter (an in-project `glob` listing keeps the
 allow), a target in a registered internal URL scheme, a `read` of a relative path that does not exist (the
-host may open another file), and a scope-tool search whose directory contains a credential directory.
+host may open another file), and a scope-tool search whose directory is or contains a credential directory (one an S0 path holds a
+secret in, such as `~/.ssh`, `~/.docker` or the agent directory).
 
 On omp, an `xd://` device URL is not graded as a file. A `read` of one returns documentation the host
 generates, and a `write xd://<tool>` runs the tool as its own gated `tool_call`, so the floor grades both as

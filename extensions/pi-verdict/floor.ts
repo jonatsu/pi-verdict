@@ -55,31 +55,33 @@ const xdgRootForms = (raw: string): string[] => {
  *  `XDG_CONFIG_HOME` by these tools (gnupg/age/sops/glab/gh) is unverified — anchoring is the
  *  conservative direction. `GNUPGHOME` stays out: an explicit override is the recorded `deliberate`
  *  case. */
-const XDG_CONFIG_ROOTS: string[] = (() => {
+const XDG_CONFIG_ROOTS: readonly string[] = (() => {
 	const raw = process.env.XDG_CONFIG_HOME;
-	if (!raw || !path.isAbsolute(raw)) return [];
-	return xdgRootForms(raw);
+	return raw && path.isAbsolute(raw) ? [raw] : [];
 })();
+let xdgConfigRoots: readonly string[] = XDG_CONFIG_ROOTS;
 
-/** The two home-anchored S0 entries (the fork's dotless credential homes, glab) as unions over the
- *  XDG root. Anchored to the home rather than any `.config` substring: a repository that ships
- *  `.config/age/data` reaches the classifier instead of hard-denying. `gh` appears in the XDG
- *  branch only — the sibling segment-anywhere `.config/gh` entry already covers the non-XDG
- *  spelling. `gcloud` is the OAuth token and service-account key store. The sibling dot entries
- *  (`.ssh`, `.aws`, `.gnupg`) stay segment-anywhere by the established S0 discipline. An empty root list contributes
- *  no alternation branch (conditional concat — an empty `|` arm would let the names match at string
- *  start). Rebuilt by `setXdgConfigRootsForTests`: the module-load evaluation would otherwise pin
- *  `XDG_CONFIG_HOME` and leave item 9 untestable under `bun test`. */
-const buildAnchoredS0 = (xdgRoots: string[]): [RegExp, RegExp] => {
+/** The dotless credential homes directly under `~/.config`. The gcloud entry follows
+ *  eugeniughelbur/jev-engineering@82655a6d policy.json (MIT, Copyright (c) 2026 Eugeniu Ghelbur). */
+const CONFIG_CREDENTIAL_HOMES: readonly string[] = ["gnupg", "age", "sops", "gcloud", "glab-cli"];
+/** The same homes under a relocated XDG config root, plus `gh`, whose `~/.config` spelling the
+ *  segment-anywhere `.config/gh` entry already covers. */
+const XDG_CREDENTIAL_HOMES: readonly string[] = [...CONFIG_CREDENTIAL_HOMES, "gh"];
+
+/** The home-anchored S0 entry over the dotless credential homes, a union over the XDG roots.
+ *  Anchored to the home rather than any `.config` substring: a repository that ships
+ *  `.config/age/data` reaches the classifier instead of hard-denying. The sibling dot entries
+ *  (`.ssh`, `.aws`, `.gnupg`) stay segment-anywhere by the established S0 discipline. An empty root
+ *  list contributes no alternation branch, since an empty `|` arm would let the names match at
+ *  string start. Rebuilt by `setXdgConfigRootsForTests`, so tests need not pin `XDG_CONFIG_HOME`. */
+const buildAnchoredS0 = (roots: readonly string[]): RegExp[] => {
+	const names = (list: readonly string[]) => list.map(escapeRegExp).join("|");
 	const home = HOME_RULE_ROOTS.map((r) => `${r}/\\.config/`).join("|");
-	const xdg = xdgRoots.map((r) => `${r}/`).join("|");
-	// The gcloud entry follows eugeniughelbur/jev-engineering@82655a6d policy.json (MIT, Copyright (c) 2026 Eugeniu Ghelbur).
-	return [
-		new RegExp(`^(?:${home}(?:gnupg|age|sops|gcloud)${xdgRoots.length > 0 ? `|${xdg}(?:gnupg|age|sops|gh|gcloud)` : ""})(/|$)`, "i"),
-		new RegExp(`^(?:${home}glab-cli${xdgRoots.length > 0 ? `|${xdg}glab-cli` : ""})(/|$)`, "i"),
-	];
+	const xdg = roots.flatMap(xdgRootForms).map((r) => `${r}/`);
+	const xdgBranch = xdg.length > 0 ? `|(?:${xdg.join("|")})(?:${names(XDG_CREDENTIAL_HOMES)})` : "";
+	return [new RegExp(`^(?:(?:${home})(?:${names(CONFIG_CREDENTIAL_HOMES)})${xdgBranch})(/|$)`, "i")];
 };
-let anchoredS0 = buildAnchoredS0(XDG_CONFIG_ROOTS);
+let anchoredS0 = buildAnchoredS0(xdgConfigRoots);
 
 /** The settings and auth database inside the agent dir this session is anchored to (and its SQLite
  *  sidecar files), matched where the dir is custom (`PI_CODING_AGENT_DIR`) and the static
@@ -100,9 +102,8 @@ function agentDbS0(): RegExp[] {
  *  dirs and derives their rule forms, so a test needs no regex escaping; empty and relative
  *  values are ignored exactly as the production `XDG_CONFIG_HOME` guard does. */
 export function setXdgConfigRootsForTests(roots: string[] | null): void {
-	anchoredS0 = buildAnchoredS0(
-		roots === null ? XDG_CONFIG_ROOTS : roots.filter((r) => r && path.isAbsolute(r)).flatMap((r) => xdgRootForms(r)),
-	);
+	xdgConfigRoots = roots === null ? XDG_CONFIG_ROOTS : roots.filter((r) => r && path.isAbsolute(r));
+	anchoredS0 = buildAnchoredS0(xdgConfigRoots);
 }
 
 // All S-rules match case-insensitively (#21): on case-insensitive filesystems
@@ -110,37 +111,53 @@ export function setXdgConfigRootsForTests(roots: string[] | null): void {
 // normalization covers existing targets, /i covers the lexical forms of
 // nonexistent ones; on linux the uppercase spelling usually does not exist and
 // the occasional false positive fails toward deny (safe direction).
+/** The S0 entries that name a credential inside a directory, each with the home-relative directories it
+ *  guards there, so a recursive search of a parent (`s0DirectoryBeneath`) reads the same set the path
+ *  grade does. */
+const S0_DIRECTORY_RULES: readonly { readonly rule: RegExp; readonly homeDirs: readonly string[] }[] = [
+	{ rule: /\.ssh(\/|$)/i, homeDirs: [".ssh"] },
+	{ rule: /\.aws(\/|$)/i, homeDirs: [".aws"] },
+	{ rule: /\.gnupg(\/|$)/i, homeDirs: [".gnupg"] },
+	{ rule: /\.kube(\/|$)/i, homeDirs: [".kube"] },
+	{ rule: /\.config\/gh(\/|$)/i, homeDirs: [".config/gh"] },
+	{ rule: /\.docker\/config\.json$/i, homeDirs: [".docker"] },
+	{ rule: /\.gem\/credentials$/i, homeDirs: [".gem"] },
+	{ rule: /\.(?:pi|omp)\/agent\/auth\.json$/i, homeDirs: [".omp/agent", ".pi/agent"] },
+	// omp's settings and auth store; the SQLite sidecar files hold the same pages, and a `:table` or
+	// `?q=` suffix is the host's own read selector on the database. After `omp config init-xdg` the
+	// host keeps it at `$XDG_DATA_HOME/omp/agent.db` (the agent dir is flattened away), so a bare `omp`
+	// segment counts as well as the dotted `.omp/agent` and `.pi/agent` trees.
+	{
+		rule: /(?:\.(?:pi|omp)\/agent|(?:^|\/)omp(?:\/agent)?)\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
+		homeDirs: [".omp/agent", ".pi/agent", ".local/share/omp"],
+	},
+];
+
 const S0_SECRET = [
-	/\.ssh(\/|$)/i,
-	/\.aws(\/|$)/i,
-	/\.gnupg(\/|$)/i,
-	// Fork: the dotless credential homes (`~/.config/(gnupg|age|sops|gcloud|glab-cli)`) and their XDG
-	// alternatives live in `anchoredS0` — see `buildAnchoredS0` below `HOME_RULE_ROOTS`.
+	...S0_DIRECTORY_RULES.map((d) => d.rule),
+	// The dotless credential homes under `~/.config` and their XDG alternatives live in `anchoredS0`.
 	/(^|\/)\.env(\.|$)/i,
 	/credentials?(\.|\/|$)/i,
 	/(^|\/)id_rsa/i,
 	/\.pem$/i,
 	/_history$/i,
-	/\.config\/gh(\/|$)/i,
-	/\.(?:pi|omp)\/agent\/auth\.json$/i,
-	// omp's settings and auth store; the SQLite sidecar files hold the same pages, and a `:table` or
-	// `?q=` suffix is the host's own read selector on the database. After `omp config init-xdg` the
-	// host keeps it at `$XDG_DATA_HOME/omp/agent.db` (the agent dir is flattened away), so a bare `omp`
-	// segment counts as well as the dotted `.omp/agent` and `.pi/agent` trees.
-	/(?:\.(?:pi|omp)\/agent|(?:^|\/)omp(?:\/agent)?)\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
 	// V8 (security audit): add common plaintext credential files
 	/(^|\/)\.netrc$/i,
 	/(^|\/)\.npmrc$/i,
 	/(^|\/)\.pypirc$/i,
 	/(^|\/)\.envrc$/i,
 	/(^|\/)\.vault-token$/i,
-	/\.kube(\/|$)/i,
-	/\.docker\/config\.json$/i,
-	/\.gem\/credentials$/i,
 	// A process environment, which holds the secrets exported to it: `/proc/<pid>/environ`, the
 	// `self` and `thread-self` links, and a thread's `task/<tid>/environ`.
 	/^\/proc\/(?:\d+|self|thread-self)\/(?:task\/\d+\/)?environ$/i,
 ];
+
+/** True when a rule form hits an S0 entry: the static ones, the home and XDG anchored credential
+ *  homes, or the agent directory's database. */
+function hitsS0(ruleForms: readonly string[]): boolean {
+	const rules = [...S0_SECRET, ...anchoredS0, ...agentDbS0()];
+	return ruleForms.some((f) => rules.some((r) => r.test(f)));
+}
 // /private prefixes: macOS firmlinks — /etc, /var are really /private/etc,
 // /private/var, and realpath'd toolchain output uses the real spelling (#21)
 // Split into two families (#83): only directory-prefix rules are lifted by the
@@ -256,9 +273,7 @@ export function classifyPath(rawPath: string, cwd: string, isWrite: boolean, flo
 		? (reason: string): RuleResult => ({ verdict: "deny", reason })
 		: (reason: string): RuleResult => ({ verdict: "gray", reason });
 
-	// S0: the static entries plus the two home/XDG-anchored credential-home entries
-	// (`anchoredS0`, item 9) — the seam rebuilds those at test time.
-	if (hit(S0_SECRET) || hit(anchoredS0) || hit(agentDbS0())) return D(`S0 secrets/credential path: ${rawPath}`);
+	if (hitsS0(ruleForms)) return D(`S0 secrets/credential path: ${rawPath}`);
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
@@ -306,7 +321,7 @@ export function globStaysInProject(targets: string[], cwd: string): boolean {
 		if (/^[a-z][a-z0-9+.-]+:/i.test(t)) return false;
 		const { forms, ruleForms, walk } = canonicalPathForms(t, cwd);
 		const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
-		return !walk.unresolved && !hit(S0_SECRET) && !hit(anchoredS0) && !hit(agentDbS0()) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
+		return !walk.unresolved && !hitsS0(ruleForms) && !hit(S3_GIT_META) && formsInCwd(forms, cwd);
 	});
 }
 
@@ -326,34 +341,37 @@ export function classifyWrites(targets: string[], cwd: string, floorOn: boolean,
 	return gray ?? { verdict: "gray", reason: `write outside project directory (CWD): ${targets.join(", ")}` };
 }
 
-/** Read-side analog of classifyWrites: the worst outcome wins (deny beats gray
- *  beats allow) so a list-split part cannot silently evade the floor either
- *  (Claude-review F6 — over-extraction is the safe direction on both sides). */
-/** Credential directories under the home directory that the S0 floor denies by path. */
-const S0_HOME_DIRECTORIES = [
-	".ssh",
-	".aws",
-	".gnupg",
-	".kube",
-	".config/gnupg",
-	".config/age",
-	".config/sops",
-	".config/glab-cli",
-	".config/gh",
-	".config/gcloud",
-];
+/** The directories that hold what the S0 entries guard, as absolute paths: the home-relative ones of
+ *  `S0_DIRECTORY_RULES` and of the dotless credential homes, the same homes under each XDG config
+ *  root, the agent directory, and omp's data directory under `$XDG_DATA_HOME`. */
+function credentialDirectories(): string[] {
+	const home = os.homedir();
+	const homeRelative = [...S0_DIRECTORY_RULES.flatMap((d) => d.homeDirs), ...CONFIG_CREDENTIAL_HOMES.map((name) => `.config/${name}`)];
+	const xdgData = process.env.XDG_DATA_HOME;
+	return [
+		...homeRelative.map((rel) => path.join(home, ...rel.split("/"))),
+		...xdgConfigRoots.flatMap((root) => XDG_CREDENTIAL_HOMES.map((name) => path.join(root, name))),
+		path.resolve(agentDirPath()),
+		...(xdgData && path.isAbsolute(xdgData) ? [path.join(xdgData, "omp")] : []),
+	];
+}
 
-/** Does the target strictly contain one of S0_HOME_DIRECTORIES? A target that is or sits inside
- *  one is already an S0 deny, so only the ancestors (`~/.config`, `~`) matter here. */
+/** Is the target one of `credentialDirectories()` or an ancestor of one, so a recursive search of it
+ *  reads a credential? A directory such as `~/.ssh` is already an S0 deny; the agent directory and
+ *  `~/.docker` are not, because only some files inside them are secret. */
 export function s0DirectoryBeneath(target: string, cwd: string): boolean {
 	const abs = path.resolve(cwd, expandHome(target));
-	const homes = baseForms(os.homedir());
+	const dirs = credentialDirectories().flatMap((d) => baseForms(d).map(fold));
 	return baseForms(abs).some((t) => {
-		const prefix = t.endsWith(path.sep) ? t : t + path.sep;
-		return homes.some((h) => S0_HOME_DIRECTORIES.some((rel) => fold(path.join(h, ...rel.split("/"))).startsWith(fold(prefix))));
+		const folded = fold(t);
+		const prefix = folded.endsWith(path.sep) ? folded : folded + path.sep;
+		return dirs.some((d) => d === folded || d.startsWith(prefix));
 	});
 }
 
+/** Read-side analog of classifyWrites: the worst outcome wins (deny beats gray
+ *  beats allow) so a list-split part cannot silently evade the floor either
+ *  (Claude-review F6 — over-extraction is the safe direction on both sides). */
 export function classifyReads(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
 	if (targets.length === 0) return { verdict: "allow" };
 	const results = targets.map((t) => gradeTarget(t, cwd, false, floorOn, host));

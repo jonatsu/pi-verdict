@@ -52,6 +52,9 @@ flowchart LR
 
 ### Done
 
+- `C5` the S0 directory entries and the credential directories a recursive search checks come from one
+  table (`S0_DIRECTORY_RULES`), and `hitsS0` holds the S0 test `classifyPath` and `globStaysInProject`
+  share (2026-10-25).
 - `C47` the code-loading ask expands `$PI_CODING_AGENT_DIR` and matches agent-directory paths through the
   session's agent directory, as self-protection does (2026-10-25). The `loadUserRules` seam the finding also
   named is left as it is: a `SessionState` still loads its config through `agentDirPath()`.
@@ -151,9 +154,6 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
 - **C4 Flat bags where `pv-typescript` asks for discriminated unions:** `RuleResult`, `ToolAccess`,
   `kernelWalk`'s result, `BashDangerRule` (a non-null assertion). Export the types that exported
   functions return (`ToolAccess`, `TrustStore`, `HostPathFormOptions`).
-- **C5 Credential directories are held twice (`floor.ts`):** the S0 regexes and the plain
-  `S0_HOME_DIRECTORIES` list can drift. The three-way S0 test is copied in `classifyPath` and
-  `globStaysInProject`. Fix: one table and a `hitsS0(forms)` helper.
 - **C6 `shellWords` (about 120 lines) and `gitPushInWords`:** a duplicated line-continuation block,
   the shell option list written twice. Fix: per-construct scanners, `continuationLength`,
   `scanShellOptions`.
