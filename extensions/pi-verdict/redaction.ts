@@ -8,9 +8,12 @@ import { baseForms, CASE_INSENSITIVE_FS } from "./paths.ts";
 // Protected-path redaction of model payloads (ADR-0002)
 // ============================================================================
 
+/** A test over a tool call's arguments. */
+export type CallPredicate = (args: Readonly<Record<string, unknown>>) => boolean;
+
 /** True when a tool call's arguments name a protected path; the caller then replaces the whole payload line
  *  with `PROTECTED_PATH_MARKER`. */
-export type RedactorFn = (args: Readonly<Record<string, unknown>>) => boolean;
+export type RedactorFn = CallPredicate;
 
 /** The fixed text a redacted payload line becomes: a neutral privacy marker, not an instruction to the model. */
 export const PROTECTED_PATH_MARKER = "<protected-path>";

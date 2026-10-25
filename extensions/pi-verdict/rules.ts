@@ -13,11 +13,9 @@ import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
+import type { CallPredicate } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./shell.ts";
-
-/** A test over a tool call's input. */
-export type CallPredicate = (input: Readonly<Record<string, unknown>>) => boolean;
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
 export interface RuleContext {
