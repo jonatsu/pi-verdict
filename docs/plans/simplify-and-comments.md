@@ -1,7 +1,7 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
-Status: in progress, through the last classifier step. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and
-slices 3, 4 and 5 on 2026-10-25 (after v0.21.0). The user narrowed the scope on 2026-10-25
+Status: complete. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and slices 3, 4, 5 and the classifier
+step on 2026-10-25 (after v0.21.0). The user narrowed the scope on 2026-10-25
 (`AGENTS.md` "Goals": efficient, human-maintainable code; refactoring is not a goal in itself), so the plan ends
 after slice 5 and the classifier findings `C35` and `C36`. The other open findings moved to `TODO.md`, as the
 table under "Order" shows. This plan defines the finding ids `C1`-`C47` that commits and the CHANGELOG may cite;
@@ -43,7 +43,7 @@ flowchart LR
 | 3. `adjudicate.ts` and the `Verdict` union (done) | `C20`, `C25`, `C34`, `C42`, `C28` for `adjudicate.ts`, plus `C26` and `C37` in part |
 | 4. `state.ts` (done) | `C32`, `C28` for `state.ts`, plus the `protectedSet` name left from `C42` |
 | 5. `index.ts` breakup (done) | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37`, `C28` for `index.ts` |
-| 6. Classifier accuracy and cost, the plan's last step | `C35`, `C36` |
+| 6. Classifier accuracy and cost (done) | `C35`, `C36` |
 | `TODO.md` item 5, one shared reading of each call | `C3`, `C4`, `C11`, `C13`, `C14`, `C41`, `C44` |
 | `TODO.md` item 3, small floor fixes | `C5`, `C6`, `C7`, `C47` |
 | `TODO.md` "Later", taken only when work on its module needs it | `C1`, `C2`, `C8`, `C9`, `C12`, `C15`, `C16`, `C26` (`callModelOnce`) with `C40` (`runConfidenceCascade`), `C28` for `deny-paths.ts`, `footer.ts`, `audit.ts` and `explain.ts`, `C29`, `C31`, `C38`, `C39`, `C43`, `C45`, the rest of `C46` |
@@ -52,6 +52,9 @@ flowchart LR
 
 ### Done
 
+- `C35` a write or edit excerpt stays on the action line after a `| content:` separator, so the
+  transcript's last line is the action (2026-10-25).
+- `C36` the transcript redacts and renders only the tool calls it keeps (2026-10-25).
 - `C10` `OWN_FILE_PATH` placement is pinned by a test (v0.19.0).
 - `C21` `classifier.ts` split into `action-line`, `redaction`, `completion`, `model-call` and
   `classifier`; the deterministic rule layer no longer imports the model-call code; `collectStrings`
@@ -185,11 +188,6 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
   `resolveAskWithoutHuman` lives in `adjudicate.ts`; `declineDetail` in `explain.ts`.
 - **C31 `ui/dialog.ts` holds five concerns,** including the security-relevant `displaySafe`;
   `fencedBlock` uses bare sizes tied implicitly to the caps; two `as` casts lack a why-safe comment.
-- **C35 The content excerpt follows a newline,** so the transcript's last line is model-written
-  content, while both system prompts treat the last line as the action. Fix: keep the excerpt on
-  the action line after a separator.
-- **C36 Redaction runs over the whole session branch on every gray call,** before the transcript
-  keeps its last tool calls. Fix: slice to the kept tool calls first.
 - **C38 `action-line.ts` holds two concerns:** text cleaning beside action-line rendering;
   `toolCallLine` and `actionCallLine` both derive targets and format the multi-target suffix (a
   near copy sits in `access.ts`). Fix: a text-cleaning module, `accessTargets`, `lineSafe`.
