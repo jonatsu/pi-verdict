@@ -84,27 +84,18 @@ import {
 } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
-import { type CompatLoader, completionForHost } from "./completion.ts";
+import { completionForHost } from "./completion.ts";
 import type { UserRules } from "./config.ts";
 import { declineDetail, type ExplainGateResult, explainGate } from "./explain.ts";
-import { hostKindOf } from "./floor.ts";
-import {
-	classifierSpec,
-	findAuthedModel,
-	parseModelSpec,
-	resolveClassifier,
-	resolveExplainGate,
-	resolveFallbackClassifier,
-} from "./model-roles.ts";
+import { resolveClassifier, resolveExplainGate, resolveFallbackClassifier } from "./model-roles.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
-import { type FallbackStats, type RulesLoadReport, SessionState } from "./state.ts";
+import { type AutoModeDeps, createRuntime, refreshStatus as refreshRuntimeStatus } from "./runtime.ts";
+import type { FallbackStats, RulesLoadReport } from "./state.ts";
 import {
 	HOST_RETURN_MARGIN_MS,
-	type HostBudget,
 	hostBudgetAdvice,
 	hostBudgetExpiry,
 	MIN_SUBAGENT_DIALOG_MS,
-	readHostHandlerBudget,
 	STATUS_WIDGET_KEY,
 	subagentAskWindow,
 	subagentIdentity,
@@ -124,7 +115,6 @@ import {
 } from "./trust.ts";
 import { runConfigEditor } from "./ui/config-editor.ts";
 import { approveCodeMarkdown, confirmAsk, displaySafe } from "./ui/dialog.ts";
-import { type FooterInfo, renderFooter } from "./ui/footer.ts";
 
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
@@ -144,6 +134,7 @@ export {
 export { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "./floor.ts";
 export type { PipelineHost } from "./model-call.ts";
 export { mentionsSpelling, type RedactionPlatform, type RedactorFn, redactorFor } from "./redaction.ts";
+export type { AutoModeDeps } from "./runtime.ts";
 export { buildProtectedSet, isProtectedReadPath, isProtectedWritePath } from "./self-protection.ts";
 export { allowAdmits, BASH_MAX_MATCH_LEN, gitPushForce, isForceFlag, shellWords } from "./shell.ts";
 export { type RulesLoadReport, SessionState } from "./state.ts";
@@ -193,13 +184,6 @@ function cascadeSummary(s: Readonly<FallbackStats>, mode: UserRules["classifierF
 	return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${enforced ? "overruled" : "would-overrule"} ${s.overruled} · ${enforced ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
 }
 
-/** Optional dependency injection for tests (#35): fake the compat fallback loader and the host's
- *  per-handler budget (null = a host without one). */
-export interface AutoModeDeps {
-	compatLoader?: CompatLoader;
-	hostHandlerBudget?: (ctx: ExtensionContext) => Promise<HostBudget | null>;
-}
-
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	pi.registerFlag("auto-mode", {
 		description: "Enable Auto Mode (rules + model classifier gating for tool calls)",
@@ -212,12 +196,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	});
 	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows", type: "boolean", default: false });
 
-	let enabled = pi.getFlag("auto-mode") !== false;
-	const debug = pi.getFlag("auto-mode-debug") === true || process.env.PI_AUTO_MODE_DEBUG === "1";
-	// Session state: reset list belongs to SessionState.reset
-	const state = new SessionState();
-	const hostHandlerBudget = deps.hostHandlerBudget ?? ((ctx: ExtensionContext) => readHostHandlerBudget(pi, ctx.cwd));
-	const hostKind = hostKindOf(pi);
+	const rt = createRuntime(pi, deps);
+	const { state } = rt;
+	const refreshStatus = (ctx: ExtensionContext): void => refreshRuntimeStatus(rt, ctx);
 
 	/** One construction point for this session's redactor: the presentation and
 	 *  handler sites build their per-call predicate through this helper instead of repeating
@@ -262,7 +243,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 	/** Notifies an allow: a classifier allow with `notifyAllows` or debug, a mechanical one only with debug (#60). */
 	function presentAllow(v: AllowVerdict, displayAction: string, note: Notify): void {
-		if (debug) {
+		if (rt.debug) {
 			if (v.source === "rule") note(`🛡️ allow (rule): ${displayAction}`, "info");
 			else note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
 		} else if (state.userRules.notifyAllows && v.source === "classifier") {
@@ -327,7 +308,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			if (d === "aborted") return "aborted";
 			if (d.allow) {
 				// Debug notification omits the action line: as above, notifications must not carry protected-path plaintext
-				if (debug) note("🛡️ allow (protected-path confirm)", "info");
+				if (rt.debug) note("🛡️ allow (protected-path confirm)", "info");
 				return undefined;
 			}
 			return { block: true, reason: blockReason("user-declined", declineDetail("user declined protected-path access", d.reason)) };
@@ -357,58 +338,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return d.allow ? undefined : { block: true, reason: blockReason("user-declined", declineDetail("user declined", d.reason)) };
 	}
 
-	/** Classifier model as the footer shows it: same precedence as resolveClassifier, but side-effect free (no warnings, no calls). */
-	function footerInfo(ctx: ExtensionContext): FooterInfo {
-		const rules = state.userRules;
-		const raw = classifierSpec(pi, rules);
-		const session = ctx.model ?? null;
-		let classifier: FooterInfo["classifier"];
-		if (raw) {
-			const { specPart, level } = parseModelSpec(raw);
-			const thinking = level ?? "off";
-			const model = findAuthedModel(ctx, specPart);
-			if (model) classifier = { id: model.id, thinking, state: "configured" };
-			else if (session) classifier = { id: session.id, thinking, state: "unavailable" };
-			else classifier = { id: null, thinking: "off", state: "none" };
-		} else {
-			classifier = session ? { id: session.id, thinking: "off", state: "inherited" } : { id: null, thinking: "off", state: "none" };
-		}
-		let fallback: FooterInfo["fallback"] = null;
-		if (rules.classifierFallbackModel) {
-			const { specPart } = parseModelSpec(rules.classifierFallbackModel);
-			fallback = { id: findAuthedModel(ctx, specPart)?.id ?? null, mode: rules.classifierFallbackMode };
-		}
-		return {
-			enabled,
-			classifier,
-			fallback,
-			counts: state.verdictCounts,
-			floorOff: !rules.builtinDenyFloor,
-			minConfidence: rules.classifierMinConfidence,
-			autoDenyOff: !rules.autoDeny,
-			subagentGate: rules.subagentGate,
-			policyDegraded: state.policyDegraded, // item 6c (Phase 6)
-		};
-	}
-
-	// Footer status: full = powerline blocks, compact = plain line, off = cleared; see renderFooter
-	function refreshStatus(ctx: ExtensionContext): void {
-		const style = state.userRules.footer;
-		if (style === "off") {
-			ctx.ui.setStatus("auto-mode", undefined);
-			return;
-		}
-		ctx.ui.setStatus("auto-mode", renderFooter(footerInfo(ctx), ctx.ui.theme, style));
-	}
-
 	/** Set the master toggle (shared, #15): /automode command and toggle shortcut use the same entry point, with no extra rules from the interaction surface. */
 	function setMasterSwitch(next: boolean, ctx: ExtensionContext) {
-		enabled = next;
+		rt.enabled = next;
 		refreshStatus(ctx);
 	}
-
-	/** Session-scoped trust grant (set by the session_start prompt; /verdict reloads must honor it) */
-	let sessionTrustedRoot: string | null = null;
 
 	/** UI this factory instance published as the root's (see the registry at module level);
 	 *  session_shutdown clears the registry only if it still holds this one. */
@@ -436,7 +370,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	// session_start reloads rules and resets per-session verdict statistics.
 	pi.on("session_start", async (_event, ctx) => {
 		// Project trust prompt: any await stays inside the prompt branch so the no-project path remains synchronous
-		sessionTrustedRoot = null;
+		rt.sessionTrustedRoot = null;
 		const pp = findProjectConfig(ctx.cwd, agentDirPath());
 		if (pp) {
 			const root = projectRootOf(pp);
@@ -451,7 +385,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 					[TRUST_CHOICE, NOT_NOW_CHOICE, NEVER_CHOICE],
 				);
 				if (choice === TRUST_CHOICE) {
-					sessionTrustedRoot = root;
+					rt.sessionTrustedRoot = root;
 					const err = recordTrust(root, "trusted", pp);
 					if (err) ctx.ui.notify(`pi-verdict: trust decision not saved (${err}) — applies to this session only`, "warning");
 				} else if (choice === NEVER_CHOICE) {
@@ -467,7 +401,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			rootUi = ctx.hasUI ? ctx.ui : null;
 			ownRootUi = rootUi;
 		}
-		const report = state.reset(ctx.cwd, sessionTrustedRoot);
+		const report = state.reset(ctx.cwd, rt.sessionTrustedRoot);
 		state.audit?.prune(); // #54: converge to the AUDIT_KEEP_SESSIONS most recent files at session start
 		reportLoadWarnings(report, ctx);
 		if (report.project?.applied) ctx.ui.notify(`pi-verdict: project overrides applied from ${report.project.path}`, "info");
@@ -484,7 +418,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// behind --auto-mode-debug/PI_AUTO_MODE_DEBUG like every other per-session diagnostic.
 		// Host capability may be absent (constraint 2): skip silently rather than depend on a
 		// specific host/version.
-		if (debug) {
+		if (rt.debug) {
 			const hostTools = pi as { getActiveTools?: () => string[]; getAllTools?: () => CoverageToolInfo[] };
 			if (typeof hostTools.getActiveTools === "function" && typeof hostTools.getAllTools === "function") {
 				const coverage = toolCoverageReport(hostTools.getAllTools(), new Set(hostTools.getActiveTools()), state.userRules.tools);
@@ -499,7 +433,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		refreshStatus(ctx);
 		// Last, so every step above stays synchronous: only a root session with a UI shows subagent asks.
 		if (subagentIdentity(ctx) === null && ctx.hasUI && state.userRules.subagentGate === "normal" && !state.hostBudgetWarned) {
-			const advice = hostBudgetAdvice(state.userRules.subagentAskTimeoutMs, await hostHandlerBudget(ctx));
+			const advice = hostBudgetAdvice(state.userRules.subagentAskTimeoutMs, await rt.hostHandlerBudget(ctx));
 			if (advice) {
 				state.hostBudgetWarned = true;
 				ctx.ui.notify(`🛡️ pi-verdict: subagent asks will expire early: ${advice}`, "warning");
@@ -524,7 +458,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		type PiShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
 		pi.registerShortcut(registeredToggleKey as PiShortcutKey, {
 			description: "Toggle Auto Mode (pi-verdict)",
-			handler: (ctx) => setMasterSwitch(!enabled, ctx),
+			handler: (ctx) => setMasterSwitch(!rt.enabled, ctx),
 		});
 	}
 	/** Toggle hint on the Usage line (#15): hidden when no key is registered; otherwise shows the registered key. */
@@ -548,7 +482,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			// Bare call: read-only status.
 			if (arg === "") {
 				ctx.ui.notify(
-					`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${policyHint()}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`,
+					`${rt.enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${policyHint()}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`,
 					"info",
 				);
 				return;
@@ -556,7 +490,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			// Idempotent set: if the value matches the current state, do not toggle; only confirm
 			if (arg === "on" || arg === "off") {
 				const next = arg === "on";
-				const changed = next !== enabled;
+				const changed = next !== rt.enabled;
 				setMasterSwitch(next, ctx);
 				const head = next
 					? `🛡️ Auto Mode enabled${changed ? "" : " (unchanged)"}: tool calls adjudicated by rules + classifier`
@@ -573,9 +507,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		description: "Edit pi-verdict rules (allow/deny/denyPaths/tools/rules lists, gateOmpDir switch, footer style): /verdict [user|local]",
 		handler: (args, ctx) =>
 			runConfigEditor(args, ctx, {
-				sessionTrustedRoot,
+				sessionTrustedRoot: rt.sessionTrustedRoot,
 				reloadRules: (c) => {
-					reportLoadWarnings(state.reloadRules(c.cwd, sessionTrustedRoot), c);
+					reportLoadWarnings(state.reloadRules(c.cwd, rt.sessionTrustedRoot), c);
 					refreshStatus(c);
 				},
 			}),
@@ -600,7 +534,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return explainGate({
 			host: ctx.sessionManager,
 			signal: ctx.signal,
-			complete: completionForHost(ctx.modelRegistry, deps.compatLoader),
+			complete: completionForHost(ctx.modelRegistry, rt.compatLoader),
 			model: role.model,
 			thinking: role.thinking,
 			actionLine: redacted ? PROTECTED_PATH_MARKER : action,
@@ -622,7 +556,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	}
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!enabled) return undefined;
+		if (!rt.enabled) return undefined;
 		const handlerStart = Date.now();
 
 		const sub = subagentIdentity(ctx);
@@ -668,9 +602,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			// a subagent's asks are resolved by the bridge (root UI / second model), never degraded in the pipeline
 			hasUI: sub ? true : !!ctx.hasUI,
 			getModel: () => resolveClassifier(ctx, pi, state),
-			complete: completionForHost(ctx.modelRegistry, deps.compatLoader),
+			complete: completionForHost(ctx.modelRegistry, rt.compatLoader),
 			host: ctx.sessionManager,
-			hostKind,
+			hostKind: rt.hostKind,
 			signal: ctx.signal,
 			getFallbackModel: () => resolveFallbackClassifier(ctx, state),
 			...(onPhase ? { onPhase } : {}),
@@ -726,7 +660,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		}
 
 		// omp ends this handler after its budget and does not pause it for a dialog on the root UI.
-		const budget = await hostHandlerBudget(ctx);
+		const budget = await rt.hostHandlerBudget(ctx);
 		const hostDeadlineAt = budget === null ? undefined : handlerStart + budget.ms - HOST_RETURN_MARGIN_MS;
 
 		// Subagent ask resolved with no human answer: second model (only an explicit allow permits)
@@ -738,7 +672,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			finalize({ subagent: { ...sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 			const out = (ui ?? ctx.ui).notify.bind(ui ?? ctx.ui);
 			if (res.verdict === "allow") {
-				if (debug || state.userRules.notifyAllows)
+				if (rt.debug || state.userRules.notifyAllows)
 					out(`🛡️ [${label}] allow (second model, no human): ${res.reason}\n  ${displayAction}`, "info");
 				return undefined;
 			}
