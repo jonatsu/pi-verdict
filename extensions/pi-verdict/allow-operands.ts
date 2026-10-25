@@ -21,6 +21,8 @@ const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
 const BRACE_EXPANSION = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 /** Matches a glob metacharacter. */
 const GLOB_CHARS = /[*?[]/;
+/** Matches an option word that holds an expansion: a `$`, a `~` or a glob metacharacter. */
+const OPTION_EXPANSION = /[$~*?[]/;
 
 /** An operand after shell expansion: the paths the shell passes for it. */
 interface Expanded {
@@ -41,8 +43,10 @@ interface Expanded {
 export function allowOperandsAdmit(command: string, cwd: string, homeReassigned: () => boolean): boolean {
 	const words = shellWords(command);
 	const at = words.findIndex((word) => !ASSIGNMENT.test(word));
+	const operands = operandWords(words, at);
+	if (operands === null) return false;
 	let graded = 0;
-	for (const word of operandWords(words, at)) {
+	for (const word of operands) {
 		const expanded = expandOperand(word, cwd);
 		if (expanded === null) return false;
 		if (expanded.homeRelative && homeReassigned()) return false;
@@ -53,18 +57,33 @@ export function allowOperandsAdmit(command: string, cwd: string, homeReassigned:
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, cwd);
 }
 
-/** Returns every word a command may read as a path, given the index of its command word (-1 for none):
- *  the value of each leading assignment, each later word that is not an option, the `=`-attached value of
- *  an option, and every word after `--`. Over-extraction is the safe direction: a word that is no path
- *  grades as an in-project file. */
-function operandWords(words: readonly string[], at: number): string[] {
+/**
+ * Returns every text a command may read as a path, given the index of its command word (-1 for none), or
+ * null when an option word holds an expansion. Collected: the value of each leading assignment; each later
+ * word that is not an option, and also its value after an `=` (`if=~/x`: bash expands a tilde there); the
+ * value of a `--name=value` option; the text from the first `/` of a short option with an attached value
+ * (`-f/path`); and every word after `--`. An option word holding `$`, `~` or a glob character is refused,
+ * since its attached value cannot be told from its letters. Over-extraction is the safe direction: a text
+ * that is no path grades as an in-project file.
+ */
+function operandWords(words: readonly string[], at: number): string[] | null {
 	const assignments = at === -1 ? words : words.slice(0, at);
 	const operands = assignments.map(valueAfterEquals);
 	let optionsEnded = false;
 	for (const word of at === -1 ? [] : words.slice(at + 1)) {
-		if (optionsEnded || !word.startsWith("-")) operands.push(word);
-		else if (word === "--") optionsEnded = true;
-		else if (word.includes("=")) operands.push(valueAfterEquals(word));
+		if (optionsEnded || !word.startsWith("-")) {
+			operands.push(word);
+			if (word.includes("=")) operands.push(valueAfterEquals(word));
+		} else if (word === "--") {
+			optionsEnded = true;
+		} else if (OPTION_EXPANSION.test(word)) {
+			return null;
+		} else if (word.startsWith("--")) {
+			if (word.includes("=")) operands.push(valueAfterEquals(word));
+		} else {
+			if (word.includes("=")) operands.push(valueAfterEquals(word));
+			if (word.includes("/")) operands.push(word.slice(word.indexOf("/")));
+		}
 	}
 	return operands;
 }

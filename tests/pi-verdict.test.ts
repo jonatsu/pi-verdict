@@ -1034,6 +1034,18 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 			os.homedir(),
 		);
 	});
+	test("a short option's attached path and an expansion inside any option word are not admitted", async () => {
+		const PYPIRC = "/." + "pypirc";
+		await reachesClassifier(["^git\\b"], `git config -f${os.homedir()}${PYPIRC} --list`);
+		await reachesClassifier(["^git\\b"], `git config -f$HOME${PYPIRC} --list`);
+		await reachesClassifier(["^git\\b"], `git config -f~${PYPIRC} --list`);
+		await reachesClassifier(CAT_ALLOW, "cat --from=*.md");
+	});
+	test("the value after = in a non-option word is graded, tilde expanded", async () => {
+		await reachesClassifier(["^dd\\b"], "dd if=~/.config/age/" + "keys.txt");
+		await staysAllowed(["^dd\\b"], "dd if=README.md");
+		await staysAllowed(CAT_ALLOW, "cat -n README.md");
+	});
 	test("a cwd glob whose matches pass the cap is refused", async () => {
 		await withTempDir("pv-glob-", (dir) => {
 			for (let i = 0; i <= MAX_GRADED_OPERANDS; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "");
