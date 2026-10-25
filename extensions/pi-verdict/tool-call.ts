@@ -171,7 +171,7 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 	if (!sub) return handleRootCall(rt, verdict, pc, audit);
 	if (verdict.verdict !== "ask") return presentNow(rt, verdict, pc, audit);
 	// The second model's payload takes the presentation redactor too, the wider of the two.
-	return handleSubagentAsk(rt, verdict, pc, audit, { sub, mode, rootUi: ui, ctx, env: { ...env, redact }, handlerStart });
+	return handleSubagentAsk(rt, verdict, pc, audit, { sub, mode, ui, ctx, env: { ...env, redact }, handlerStart });
 }
 
 /** A root session's call: the user answers on the session's own UI, with no deadline. */
@@ -181,14 +181,19 @@ async function handleRootCall(rt: GateRuntime, verdict: Verdict, pc: PresentedCa
 	return presented;
 }
 
+/** A subagent's ask and the host limits it runs under. */
 interface SubagentAsk {
 	readonly sub: Subagent;
 	readonly mode: UserRules["subagentGate"];
-	/** The UI the ask may use; null when no root session has one. */
-	readonly rootUi: UiContext | null;
+	/** The UI a dialog may use: the subagent's own when it has one, else the root session's; null when neither exists. */
+	readonly ui: UiContext | null;
 	readonly ctx: ExtensionContext;
 	readonly env: AdjudicateEnv;
 	readonly handlerStart: number;
+	/** omp's per-handler budget; null on a host without one. */
+	readonly budget: HostBudget | null;
+	/** When the second model must have answered for the handler to return inside the budget. */
+	readonly hostDeadlineAt: number | undefined;
 }
 
 /** A subagent's ask, with omp's handler budget in view: omp ends this handler after its budget and does not pause it
@@ -198,12 +203,13 @@ async function handleSubagentAsk(
 	verdict: AskVerdict,
 	pc: PresentedCall,
 	audit: AskAudit,
-	s: SubagentAsk,
+	call: Omit<SubagentAsk, "budget" | "hostDeadlineAt">,
 ): Promise<GateBlock | undefined> {
-	const budget = await rt.hostHandlerBudget(s.ctx);
-	const hostDeadlineAt = budget === null ? undefined : s.handlerStart + budget.ms - HOST_RETURN_MARGIN_MS;
-	if (s.mode === "normal" && s.rootUi !== null) return askOnRootUi(rt, verdict, pc, audit, s, budget, hostDeadlineAt);
-	return finishWithoutHuman(rt, verdict, pc, audit, s, hostDeadlineAt, "auto");
+	const budget = await rt.hostHandlerBudget(call.ctx);
+	const hostDeadlineAt = budget === null ? undefined : call.handlerStart + budget.ms - HOST_RETURN_MARGIN_MS;
+	const ask: SubagentAsk = { ...call, budget, hostDeadlineAt };
+	if (ask.mode === "normal" && ask.ui !== null) return askOnRootUi(rt, verdict, pc, audit, ask);
+	return finishWithoutHuman(rt, verdict, pc, audit, ask, "auto");
 }
 
 /** Shows a subagent's ask on the root UI within its ask window, then resolves an unanswered ask without a human. */
@@ -212,16 +218,14 @@ async function askOnRootUi(
 	verdict: AskVerdict,
 	pc: PresentedCall,
 	audit: AskAudit,
-	s: SubagentAsk,
-	budget: HostBudget | null,
-	hostDeadlineAt: number | undefined,
+	ask: SubagentAsk,
 ): Promise<GateBlock | undefined> {
 	const askTimeoutMs = rt.state.userRules.subagentAskTimeoutMs;
-	const window = subagentAskWindow(askTimeoutMs, budget, Date.now() - s.handlerStart);
+	const window = subagentAskWindow(askTimeoutMs, ask.budget, Date.now() - ask.handlerStart);
 	// Fails closed with no second model: what remains of the host budget is too short for a model call.
 	const expireOnHostBudget = (): GateBlock => {
-		audit.finalize({ subagent: { ...s.sub, resolution: "timeout" } });
-		const why = hostBudgetExpiry(askTimeoutMs, budget);
+		audit.finalize({ subagent: { ...ask.sub, resolution: "timeout" } });
+		const why = hostBudgetExpiry(askTimeoutMs, ask.budget);
 		pc.ui.notify(`🛡️ [${pc.label}] subagent ask expired before omp's handler timeout: ${why}`, "warning");
 		return {
 			block: true,
@@ -230,19 +234,19 @@ async function askOnRootUi(
 	};
 	if (window.hostLimited && window.ms < MIN_SUBAGENT_DIALOG_MS) return expireOnHostBudget();
 	const deadline = AbortSignal.timeout(window.ms);
-	const signal = s.ctx.signal ? AbortSignal.any([deadline, s.ctx.signal]) : deadline;
+	const signal = ask.ctx.signal ? AbortSignal.any([deadline, ask.ctx.signal]) : deadline;
 	// The race closes the wait even while the ask is still queued behind another dialog.
 	const r = await untilAborted(presentAudited(rt, verdict, pc, audit, { signal, deadlineAt: Date.now() + window.ms }), signal);
 	if (r !== "aborted") {
-		audit.finalize({ ...answered(r), subagent: { ...s.sub, resolution: "human" } });
+		audit.finalize({ ...answered(r), subagent: { ...ask.sub, resolution: "human" } });
 		return r;
 	}
-	if (s.ctx.signal?.aborted) {
-		audit.finalize({ subagent: { ...s.sub, resolution: "timeout" } });
+	if (ask.ctx.signal?.aborted) {
+		audit.finalize({ subagent: { ...ask.sub, resolution: "timeout" } });
 		return { block: true, reason: blockReason(rt.state, "subagent-cancelled", "subagent run was cancelled while awaiting approval") };
 	}
 	if (window.hostLimited) return expireOnHostBudget();
-	return finishWithoutHuman(rt, verdict, pc, audit, s, hostDeadlineAt, "timeout");
+	return finishWithoutHuman(rt, verdict, pc, audit, ask, "timeout");
 }
 
 /** Resolves a subagent's ask with no human answer: only the second model's explicit allow runs the call. */
@@ -251,15 +255,14 @@ async function finishWithoutHuman(
 	verdict: AskVerdict,
 	pc: PresentedCall,
 	audit: AskAudit,
-	s: SubagentAsk,
-	hostDeadlineAt: number | undefined,
+	ask: SubagentAsk,
 	resolution: "timeout" | "auto",
 ): Promise<GateBlock | undefined> {
 	// The second model judges the same uncapped action line the first classifier saw; `displayAction` is capped for
 	// notifications and could hide a payload in the middle.
 	const modelAction = redactedOr(pc.redact, pc.input, actionCallLine(pc.toolName, pc.input).line);
-	const res = await resolveAskWithoutHuman(rt.state, s.env, verdict, modelAction, hostDeadlineAt);
-	audit.finalize({ subagent: { ...s.sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
+	const res = await resolveAskWithoutHuman(rt.state, ask.env, verdict, modelAction, ask.hostDeadlineAt);
+	audit.finalize({ subagent: { ...ask.sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 	if (res.verdict === "allow") {
 		if (rt.debug || rt.state.userRules.notifyAllows)
 			pc.ui.notify(`🛡️ [${pc.label}] allow (second model, no human): ${res.reason}\n  ${pc.displayAction}`, "info");
