@@ -49,6 +49,8 @@ class FallbackCascade {
 // Session state: session-scoped state of the adjudication pipeline (reset list centralized in one place)
 // ============================================================================
 
+type VerdictCounts = { allow: number; ask: number; deny: number };
+
 /** Outcome of a rules (re)load, for the presentation layer to notify on */
 export interface RulesLoadReport {
 	skipped: string[];
@@ -72,7 +74,7 @@ export class SessionState {
 	private denyPathBases: string[] | null = null;
 	private readonly agentDir: string;
 	/** Final pipeline verdicts this session (root calls only; an ask counts once whatever the user answers). Reset on session start, kept across /verdict reloads. */
-	verdictCounts = { allow: 0, ask: 0, deny: 0 };
+	private counts: VerdictCounts = { allow: 0, ask: 0, deny: 0 };
 	/** item 6c (Phase 6): the user's own policy failed to load (parse/load/trusted-project
 	 *  failure, or a skipped deny/denyPaths entry) — while true, every model-originated allow
 	 *  becomes an ask (ADR-0010). Part of the reset list via reloadRules. */
@@ -112,9 +114,17 @@ export class SessionState {
 	reset(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
 		const report = this.reloadRules(cwd, sessionTrustedRoot);
 		this.fallback.reset();
-		this.verdictCounts = { allow: 0, ask: 0, deny: 0 };
+		this.counts = { allow: 0, ask: 0, deny: 0 };
 		this.hostBudgetWarned = false;
 		return report;
+	}
+
+	get verdictCounts(): Readonly<VerdictCounts> {
+		return this.counts;
+	}
+
+	countVerdict(verdict: keyof VerdictCounts): void {
+		this.counts[verdict]++;
 	}
 
 	/** denyPaths bases: anchored at session_start; this lazy fallback only guards an out-of-order first tool_call

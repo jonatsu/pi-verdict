@@ -1023,7 +1023,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			if (statusShown) statusUi?.setWidget(STATUS_WIDGET_KEY, undefined);
 		}
 		if (!sub) {
-			state.verdictCounts[verdict.verdict]++;
+			state.countVerdict(verdict.verdict);
 			refreshStatus(ctx);
 		}
 		const warn = (msg: string): void => (ui ?? ctx.ui).notify(label && !msg.startsWith("🛡️") ? `[${label}] ${msg}` : msg, "warning");
