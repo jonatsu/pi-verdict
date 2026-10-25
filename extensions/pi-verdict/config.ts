@@ -210,7 +210,7 @@ export const USER_CONFIG_TEMPLATE = `${JSON.stringify(
 	2,
 )}\n`;
 
-interface LoadedRules {
+export interface LoadedRules {
 	rules: UserRules;
 	skipped: string[];
 	shortcutWarning: string | null;

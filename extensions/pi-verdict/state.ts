@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { agentDirPath, OWN_FILE_PATH } from "./agent-dir.ts";
 import { AuditLog } from "./audit.ts";
-import { loadUserRules, type UserRules } from "./config.ts";
+import { type LoadedRules, loadUserRules, type UserRules } from "./config.ts";
 import { anchorDenyPaths } from "./deny-paths.ts";
 import { buildProtectedSet, type ProtectedSet } from "./self-protection.ts";
 
@@ -52,14 +52,7 @@ class FallbackCascade {
 type VerdictCounts = { allow: number; ask: number; deny: number };
 
 /** Outcome of a rules (re)load, for the presentation layer to notify on */
-export interface RulesLoadReport {
-	skipped: string[];
-	shortcutWarning: string | null;
-	project: { path: string; trusted: boolean; applied: boolean } | null;
-	/** item 6c (Phase 6): copied from LoadedRules — the presentation layer shows it as a
-	 *  footer badge, an `/automode` status line and every block reason while set. */
-	degraded: boolean;
-}
+export type RulesLoadReport = Omit<LoadedRules, "rules">;
 
 /**
  * Session-scoped state of the adjudication pipeline. reset() owns the session_start reset list—add new session state
@@ -102,12 +95,12 @@ export class SessionState {
 	/** Reload user (+ trusted project) rules and re-anchor denyPaths to `cwd` (ADR-0002: once per session
 	 *  start; /verdict re-anchors after a config edit). Leaves fallback stats untouched. */
 	reloadRules(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
-		const loaded = loadUserRules(cwd, sessionTrustedRoot);
-		this.userRules = loaded.rules;
-		this.policyDegraded = loaded.degraded; // item 6c (Phase 6): /verdict reloads must carry it too (F11)
-		this.denyPathBases = anchorDenyPaths(loaded.rules.denyPaths, cwd); // anchored to the session cwd, once (ADR-0002)
-		this.audit = this.makeAudit(loaded.rules);
-		return { skipped: loaded.skipped, shortcutWarning: loaded.shortcutWarning, project: loaded.project, degraded: loaded.degraded };
+		const { rules, ...report } = loadUserRules(cwd, sessionTrustedRoot);
+		this.userRules = rules;
+		this.policyDegraded = report.degraded; // item 6c (Phase 6): /verdict reloads must carry it too (F11)
+		this.denyPathBases = anchorDenyPaths(rules.denyPaths, cwd); // anchored to the session cwd, once (ADR-0002)
+		this.audit = this.makeAudit(rules);
+		return report;
 	}
 
 	/** Session reset: reload rules, re-anchor denyPaths to the session cwd, and reset verdict statistics. */
