@@ -1,8 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { UserRules } from "./config.ts";
-import { POLICY_DEGRADED } from "./present.ts";
 import type { GateRuntime } from "./runtime.ts";
-import type { FallbackStats } from "./state.ts";
+import { type FallbackStats, POLICY_DEGRADED } from "./state.ts";
 import { refreshStatus } from "./ui/status.ts";
 
 // ============================================================================

@@ -5,7 +5,7 @@ import { declineDetail, type ExplainGateResult, explainGate } from "./explain.ts
 import { resolveExplainGate } from "./model-roles.ts";
 import { anyRedactor, PROTECTED_PATH_MARKER, type RedactorFn } from "./redaction.ts";
 import { completionFor, type GateRuntime } from "./runtime.ts";
-import type { SessionState } from "./state.ts";
+import { POLICY_DEGRADED, type SessionState } from "./state.ts";
 import type { UiContext } from "./subagent.ts";
 import { approveCodeMarkdown, confirmAsk, displaySafe } from "./ui/dialog.ts";
 
@@ -18,16 +18,6 @@ export type GateBlock = { readonly block: true; readonly reason: string };
 
 /** The tag of every block reason: a deny's verdict source, or the step that blocked an ask. */
 export type BlockTag = VerdictSource | "user-declined" | "subagent-auto" | "subagent-expired" | "subagent-cancelled";
-
-/** The degraded-policy wording of each surface that names the state (ADR-0010). The footer badge and the withheld
- *  allow's reason prefix keep their short forms in `ui/footer.ts` and `adjudicate.ts`. */
-export const POLICY_DEGRADED = {
-	blockNote: "[policy degraded: the user's own rules failed to load, so model-originated allows are withheld — ADR-0010]",
-	denyNotice: "Auto Mode blocked (policy degraded, allow withheld)",
-	status: "policy degraded: model-originated allows withheld (ADR-0010)",
-	sessionWarning:
-		"pi-verdict: policy degraded — your own rules could not be fully loaded, so model-originated allows are withheld (each becomes a confirm) until the config is fixed (ADR-0010)",
-} as const;
 
 /** The ask dialog's reason-line label by verdict source; the protected-path dialog has its own wording. */
 const ASK_SOURCE_LABEL: Record<VerdictSource, string> = {

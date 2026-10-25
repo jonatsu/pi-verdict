@@ -1,10 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } from "./access.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
-import { POLICY_DEGRADED } from "./present.ts";
 import { publishRootUi, releaseRootUi } from "./root-ui.ts";
 import type { GateRuntime } from "./runtime.ts";
-import type { RulesLoadReport } from "./state.ts";
+import { POLICY_DEGRADED, type RulesLoadReport } from "./state.ts";
 import { hostBudgetAdvice, subagentIdentity } from "./subagent.ts";
 import {
 	NEVER_CHOICE,

@@ -51,6 +51,16 @@ type VerdictCounts = { allow: number; ask: number; deny: number };
 
 const NO_VERDICTS: Readonly<VerdictCounts> = { allow: 0, ask: 0, deny: 0 };
 
+/** The degraded-policy wording of each surface that names the state (ADR-0010). The footer badge and the withheld
+ *  allow's reason prefix keep their short forms in `ui/footer.ts` and `adjudicate.ts`. */
+export const POLICY_DEGRADED = {
+	blockNote: "[policy degraded: the user's own rules failed to load, so model-originated allows are withheld — ADR-0010]",
+	denyNotice: "Auto Mode blocked (policy degraded, allow withheld)",
+	status: "policy degraded: model-originated allows withheld (ADR-0010)",
+	sessionWarning:
+		"pi-verdict: policy degraded — your own rules could not be fully loaded, so model-originated allows are withheld (each becomes a confirm) until the config is fixed (ADR-0010)",
+} as const;
+
 /** What a rules load reported besides the rules, for the presentation layer to notify on. */
 export type RulesLoadReport = Omit<LoadedRules, "rules">;
 
