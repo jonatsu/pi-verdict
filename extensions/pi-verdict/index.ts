@@ -72,7 +72,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { parseJevReason } from "../jev-adapter.ts";
 import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } from "./access.ts";
 import { actionCallLine, toolCallLine } from "./action-line.ts";
-import { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
+import {
+	type AdjudicateEnv,
+	type AllowVerdict,
+	type AskVerdict,
+	adjudicate,
+	type DenyVerdict,
+	resolveAskWithoutHuman,
+	type Verdict,
+	type VerdictSource,
+} from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
 import { type CompatLoader, completionForHost } from "./completion.ts";
@@ -165,10 +174,15 @@ const ASK_SOURCE_LABEL: Record<VerdictSource, string> = {
 	"degraded-policy": "Policy degraded", // item 6c (Phase 6): names the state in the dialog's reason line
 };
 
+/** The tag of every block reason: a deny's verdict source, or the step that blocked an ask. */
+type BlockTag = VerdictSource | "user-declined" | "subagent-auto" | "subagent-expired" | "subagent-cancelled";
+
+type Notify = (msg: string, level: "info" | "warning" | "error") => void;
+
 /** Agent-facing block reason (#53): the text must be self-sufficient — structural
  * error signaling does not reach several provider lanes, and verbatim rule/classifier
  * reasons can be empty or too terse for the acting model to recognize as a block. */
-function blockedReason(tag: string, detail: string): string {
+function blockedReason(tag: BlockTag, detail: string): string {
 	const clean = detail.trim().replace(/\.+$/, "");
 	return `[auto-mode ${tag} block] BLOCKED — this action did NOT run. Reason: ${clean || "(no further reason given)"}. Report the block to the user; never claim it succeeded or completed.`;
 }
@@ -210,7 +224,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  it holds — a silent degradation would contradict the session-start warning's role as
 	 *  the primary signal. Wraps the module-level blockedReason so its message contract
 	 *  (the BLOCKED … never claim it succeeded wording) stays in one place. */
-	const blockReason = (tag: string, detail: string): string =>
+	const blockReason = (tag: BlockTag, detail: string): string =>
 		state.policyDegraded
 			? blockedReason(
 					tag,
@@ -235,47 +249,68 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// becomes the fixed marker; block REASONS and the local dialog surfaces are unchanged
 		// (the EXPLAIN payload is gated separately, in explainAsk).
 		const displayAction = sessionRedactor(opts.ctx.cwd)(call.input) ? PROTECTED_PATH_MARKER : action;
-		if (v.verdict === "allow") {
-			// #60: classifier allows surface via notifyAllows OR debug, with one
-			// notification either way; mechanical passes stay debug-only, while the audit
-			// log carries completeness.
-			if (debug) {
-				if (v.source === "rule") note(`🛡️ allow (rule): ${displayAction}`, "info");
-				else if (v.source === "protected-path") note("🛡️ allow (protected-path confirm)", "info");
-				else note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
-			} else if (state.userRules.notifyAllows && v.source === "classifier") {
-				note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
+		switch (v.verdict) {
+			case "allow":
+				presentAllow(v, displayAction, note);
+				return undefined;
+			case "deny":
+				return presentDeny(v, displayAction, note);
+			case "ask":
+				return presentAsk(v, call, action, ui, opts, titled);
+			default: {
+				const unhandled: never = v;
+				throw new Error(`unhandled verdict: ${JSON.stringify(unhandled)}`);
 			}
-			return undefined;
 		}
+	}
+
+	/** Notifies an allow: a classifier allow with `notifyAllows` or debug, a mechanical one only with debug (#60). */
+	function presentAllow(v: AllowVerdict, displayAction: string, note: Notify): void {
+		if (debug) {
+			if (v.source === "rule") note(`🛡️ allow (rule): ${displayAction}`, "info");
+			else if (v.source === "protected-path") note("🛡️ allow (protected-path confirm)", "info");
+			else note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
+		} else if (state.userRules.notifyAllows && v.source === "classifier") {
+			note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
+		}
+	}
+
+	/** Notifies a deny and returns its block, tagged by the verdict's source. */
+	function presentDeny(v: DenyVerdict, displayAction: string, note: Notify): { block: true; reason: string } {
 		/** A headless ask reaches the agent as a block; saying so tells it a human could have allowed the call. */
-		const headlessAsk = (v: Verdict): string => (v.degraded ? `ask degraded to block in non-interactive mode: ${v.reason}` : v.reason);
-		if (v.verdict === "deny") {
-			if (v.source === "degraded-policy") {
-				// item 6c (Phase 6): the ask this denial came from exists because the user's own
-				// policy failed to load — name it; the action line rides displayAction (the
-				// marker when it names a base — the same notification invariant as every
-				// branch here).
+		const headlessAsk = (): string => (v.degraded ? `ask degraded to block in non-interactive mode: ${v.reason}` : v.reason);
+		switch (v.source) {
+			case "degraded-policy":
 				note(`🛡️ Auto Mode blocked (policy degraded, allow withheld): ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason("degraded-policy", v.reason) };
-			}
-			if (v.source === "protected-path") {
-				// No action line: the action string may include the touched path; notifications must not carry protected-path plaintext
+				return { block: true, reason: blockReason(v.source, v.reason) };
+			case "protected-path":
+				// No action line: notifications carry no protected-path plaintext (ADR-0002).
 				note(`🛡️ Auto Mode blocked (non-interactive, protected-path ask→deny): ${v.reason}`, "warning");
-				return { block: true, reason: blockReason("protected-path", `ask degraded to block in non-interactive mode: ${v.reason}`) };
-			}
-			if (v.source === "fail-closed") {
+				return { block: true, reason: blockReason(v.source, `ask degraded to block in non-interactive mode: ${v.reason}`) };
+			case "fail-closed":
 				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason("fail-closed", v.reason) };
-			}
-			if (v.source === "rule") {
+				return { block: true, reason: blockReason(v.source, v.reason) };
+			case "rule":
+			case "classifier":
 				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason("rule", headlessAsk(v)) };
+				return { block: true, reason: blockReason(v.source, headlessAsk()) };
+			default: {
+				const unhandled: never = v.source;
+				throw new Error(`unhandled verdict source: ${unhandled}`);
 			}
-			note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-			return { block: true, reason: blockReason("classifier", headlessAsk(v)) };
 		}
-		// ask → human confirmation; non-interactive calls were degraded inside the pipeline, so reaching here means UI is available
+	}
+
+	/** Puts an ask to the human; interactive only, since the pipeline turns a headless ask into a deny. */
+	async function presentAsk(
+		v: AskVerdict,
+		call: { toolName: string; input: Record<string, unknown> },
+		action: string,
+		ui: UiContext,
+		opts: { signal?: AbortSignal; ctx: ExtensionContext; deadlineAt?: number },
+		titled: (title: string) => string,
+	): Promise<{ block: true; reason: string } | undefined | "aborted"> {
+		const note = (msg: string, level: "info" | "warning" | "error"): void => ui.notify(titled(msg), level);
 		if (v.source === "protected-path") {
 			// no EXPLAIN-GATE here: the protected path plaintext must not reach a model provider (ADR-0002)
 			const d = await confirmAsk(
@@ -1004,10 +1039,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// #62: an interactive ask's record is finalized here — exactly one append after the
 		// confirm, carrying the user's answer; a presentVerdict throw still lands the record
 		// (without the answer) and the error propagates unchanged. `undefined` = allowed.
+		let pendingAudit = verdict.verdict === "ask" ? verdict.pendingAudit : undefined;
 		const finalize = (extra: Partial<AuditRecord>): void => {
-			if (!verdict.pendingAudit) return;
-			state.audit?.append({ ...verdict.pendingAudit, ...extra });
-			verdict.pendingAudit = undefined;
+			if (!pendingAudit) return;
+			state.audit?.append({ ...pendingAudit, ...extra });
+			pendingAudit = undefined;
 			const lateWarning = state.audit?.drainWarning();
 			if (lateWarning) warn(`pi-verdict: ${lateWarning}`);
 		};
@@ -1015,7 +1051,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			try {
 				return await presentVerdict(verdict, call, action, ui ?? ctx.ui, { label, signal, ctx, deadlineAt });
 			} catch (err) {
-				if (verdict.pendingAudit) state.audit?.append(verdict.pendingAudit);
+				if (pendingAudit) state.audit?.append(pendingAudit);
 				throw err;
 			}
 		};

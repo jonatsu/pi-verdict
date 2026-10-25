@@ -29,22 +29,38 @@ import type { SessionState } from "./state.ts";
  *  failed to load (item 6c, Phase 6; ADR-0010). */
 export type VerdictSource = "rule" | "protected-path" | "classifier" | "fail-closed" | "degraded-policy";
 
-/** Pipeline output for one tool call. Protected-path detail is UI-only; `degraded`
- *  marks asks converted to denies when no interactive UI is available. */
-export interface Verdict {
-	verdict: "allow" | "ask" | "deny";
-	reason: string;
-	detail?: string;
-	source: VerdictSource;
-	degraded: boolean;
-	/** #62: pending audit record for an interactive ask — adjudicate defers the append so
-	 *  the handler can attach the user's answer after the confirm resolves. The handler
-	 *  owns the single finalize: append with userAnswer/answeredAt, or without them when
-	 *  presentation throws. Unset for every non-interactive verdict. */
-	pendingAudit?: AuditRecord;
-	/** Set on every ask: how the ask resolves without a human (subagent auto/timeout). "consult" = put it to the second model; "deny" = already ruled on by the cascade or not model-resolvable. */
-	autoResolve?: "consult" | "deny";
+interface VerdictBase {
+	readonly reason: string;
+	readonly source: VerdictSource;
 }
+
+export interface AllowVerdict extends VerdictBase {
+	readonly verdict: "allow";
+	readonly degraded: false;
+}
+
+export interface DenyVerdict extends VerdictBase {
+	readonly verdict: "deny";
+	/** True when the deny is an ask that no human could answer. */
+	readonly degraded: boolean;
+	/** The matched protected path: UI-only, never sent to the agent or a model (ADR-0002). */
+	readonly detail?: string;
+}
+
+export interface AskVerdict extends VerdictBase {
+	readonly verdict: "ask";
+	readonly degraded: false;
+	/** The matched protected path: UI-only, never sent to the agent or a model (ADR-0002). */
+	readonly detail?: string;
+	/** How the ask resolves without a human: "consult" puts it to the second model; "deny" denies it,
+	 *  because the cascade already ruled or no model may resolve it. */
+	readonly autoResolve: "consult" | "deny";
+	/** The ask's audit record, appended by the handler once the human answers (#62); unset with audit off. */
+	readonly pendingAudit?: Readonly<AuditRecord>;
+}
+
+/** Pipeline output for one tool call. */
+export type Verdict = AllowVerdict | DenyVerdict | AskVerdict;
 
 /** Per-call environment: host capabilities unrelated to presentation. model is lazily evaluated through getModel—preserving the original “resolve only for gray zone”
  *  behavior (fallback warnings do not appear on calls already decided by rules); null → fail-closed.
@@ -214,7 +230,7 @@ export async function resolveAskWithoutHuman(
 	actionLine: string,
 	deadlineAt?: number,
 ): Promise<{ verdict: "allow" | "deny"; reason: string; fb?: FallbackAudit }> {
-	if (v.autoResolve !== "consult") return { verdict: "deny", reason: `no human answer — ${v.reason}` };
+	if (v.verdict !== "ask" || v.autoResolve !== "consult") return { verdict: "deny", reason: `no human answer — ${v.reason}` };
 	const rules = state.userRules;
 	if (!rules.classifierFallbackModel || !env.getFallbackModel) {
 		return { verdict: "deny", reason: `no human answer and no second model configured (classifierFallbackModel) — ${v.reason}` };
@@ -322,7 +338,8 @@ export async function adjudicate(
 	const buildRecord = (
 		v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">,
 		raw: ClassifierOutcome["auditRaw"] | null,
-	): AuditRecord => ({
+		extra: Pick<AuditRecord, "detail" | "demoted" | "fallback"> = {},
+	): Readonly<AuditRecord> => ({
 		ts: new Date().toISOString(),
 		sessionId: env.host.getSessionId(),
 		cwd: env.cwd,
@@ -334,16 +351,16 @@ export async function adjudicate(
 		transcript: raw?.transcript ?? null,
 		rawResponse: raw?.rawResponse ?? null,
 		...v,
+		...extra,
 	});
 
 	if (rule.verdict === "ask") {
 		const askSource = rule.askSource ?? "protected-path";
 		// denyPaths match → terminal ask (ADR-0002): exception for the declaring user to decide; no UI degrades to deny
 		if (env.hasUI) {
-			const ppRecord: AuditRecord = {
-				...buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: askSource, degraded: false }, null),
+			const ppRecord = buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: askSource, degraded: false }, null, {
 				detail: rule.detail,
-			};
+			});
 			return {
 				verdict: "ask",
 				reason: rule.reason ?? "",
@@ -355,10 +372,9 @@ export async function adjudicate(
 			};
 		}
 		// headless: the ask degrades to deny — recorded like the gray-zone rule (the effective post-degradation verdict is what lands in the record)
-		state.audit?.append({
-			...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: askSource, degraded: true }, null),
-			detail: rule.detail,
-		});
+		state.audit?.append(
+			buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: askSource, degraded: true }, null, { detail: rule.detail }),
+		);
 		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: askSource, degraded: true };
 	}
 
@@ -406,8 +422,8 @@ export async function adjudicate(
 				degraded: effAskHeadless,
 			},
 			null,
+			cascade.fb ? { fallback: cascade.fb } : {},
 		);
-		if (cascade.fb) fcRecord.fallback = cascade.fb;
 		if (effVerdict === "ask" && env.hasUI) {
 			return {
 				verdict: "ask",
@@ -476,9 +492,8 @@ export async function adjudicate(
 			degraded: appliedAskHeadless,
 		},
 		outcome.auditRaw ?? null,
+		{ ...(cascade.demoted ? { demoted: true } : {}), ...(cascade.fb ? { fallback: cascade.fb } : {}) },
 	);
-	if (cascade.demoted) grayRecord.demoted = true;
-	if (cascade.fb) grayRecord.fallback = cascade.fb;
 	// #62: an interactive ask defers the append to the handler finalize (ground truth);
 	// every other outcome appends immediately as before
 	if (env.hasUI && (effVerdict === "ask" || (effVerdict === "deny" && !state.userRules.autoDeny))) {
@@ -486,8 +501,7 @@ export async function adjudicate(
 		// ruled) is never auto-allowed: its only route to an allow is the ADR-0004 carve-out, which turns a
 		// demoted ask or deny plus a second-model allow into an ask so that a human decides. Only an ask the
 		// cascade never reached may still be put to the second model.
-		const autoResolve: NonNullable<Verdict["autoResolve"]> =
-			effVerdict === "deny" || effSource !== "classifier" || cascade.fb ? "deny" : "consult";
+		const autoResolve: AskVerdict["autoResolve"] = effVerdict === "deny" || effSource !== "classifier" || cascade.fb ? "deny" : "consult";
 		return {
 			verdict: "ask",
 			reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason,
