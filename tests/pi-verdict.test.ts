@@ -2648,7 +2648,7 @@ describe("audit user answers (#62)", () => {
 	test("adjudicate returns pendingAudit for interactive asks instead of appending (both flavors)", async () => {
 		clearAudit();
 		setConfig({ audit: true, denyPaths: ["/proj/secret-project"] });
-		const state = new SessionState(undefined, TMP_AGENT);
+		const state = new SessionState(TMP_AGENT);
 		const v1 = await adjudicate(state, { toolName: "write", input: { path: "/proj/secret-project/n.md", content: "x" } }, adjudicateEnv());
 		expect(v1.verdict).toBe("ask");
 		expect(v1.source).toBe("protected-path");
@@ -2902,14 +2902,14 @@ describe("confidence floor + cascade (#67)", () => {
 		clearAudit();
 		setConfig({ audit: true, classifierFallbackModel: "mock/fb", classifierFallbackMode: "enforce" });
 		const fallback = { model: { id: "fb-model" }, thinking: "off" };
-		const askState = new SessionState(undefined, TMP_AGENT);
+		const askState = new SessionState(TMP_AGENT);
 		const ask = await adjudicate(
 			askState,
 			{ toolName: "bash", input: { command: "cargo build" } },
 			adjudicateEnv({ hasUI: false, failModel: true, fallback, text: "<verdict>ask</verdict> fallback needs a human" }),
 		);
 		expect(ask).toMatchObject({ verdict: "deny", source: "classifier", degraded: true });
-		const denyState = new SessionState(undefined, TMP_AGENT);
+		const denyState = new SessionState(TMP_AGENT);
 		const deny = await adjudicate(
 			denyState,
 			{ toolName: "bash", input: { command: "cargo build" } },
@@ -3977,7 +3977,7 @@ describe("self-protection layer (ADR-0005)", () => {
 				host: { getBranch: () => [], getSessionId: () => "s1" },
 			};
 			const command = "cd $PI_CODING_AGENT_DIR && cat verdicts/" + "s.jsonl";
-			const verdict = await adjudicate(new SessionState(undefined, agentDir), { toolName: "bash", input: { command } }, env);
+			const verdict = await adjudicate(new SessionState(agentDir), { toolName: "bash", input: { command } }, env);
 			expect(verdict).toMatchObject({ verdict: "deny", source: "rule" });
 			expect(verdict.reason).toContain("self-protection layer");
 		});
@@ -6465,7 +6465,7 @@ describe("transcript redaction of protected paths (item 6b, Phase 5)", () => {
 
 	test("the subagent second-model prompt is redacted like every other model payload", async () => {
 		setConfig({ denyPaths: ["/tmp/pv-second-model"], classifierFallbackModel: "mock/fb" });
-		const state = new SessionState(undefined, TMP_AGENT);
+		const state = new SessionState(TMP_AGENT);
 		const env = adjudicateEnv({ fallback: { model: { id: "fb-model" }, thinking: "off" } });
 		env.host = {
 			getBranch: () => [
@@ -6889,7 +6889,7 @@ describe("type-invalid deny and denyPaths values degrade the policy", () => {
 	const reload = (cfg: object): { skipped: string[]; degraded: boolean } => {
 		fs.mkdirSync(path.join(TMP_AGENT, "config"), { recursive: true });
 		fs.writeFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), JSON.stringify(cfg));
-		const state = new SessionState(undefined, TMP_AGENT);
+		const state = new SessionState(TMP_AGENT);
 		const report = state.reloadRules(os.tmpdir());
 		return { skipped: report.skipped, degraded: state.policyDegraded };
 	};

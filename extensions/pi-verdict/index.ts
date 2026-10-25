@@ -213,7 +213,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	let enabled = pi.getFlag("auto-mode") !== false;
 	const debug = pi.getFlag("auto-mode-debug") === true || process.env.PI_AUTO_MODE_DEBUG === "1";
 	// Session state: reset list belongs to SessionState.reset
-	const state = new SessionState(undefined, agentDirPath());
+	const state = new SessionState(agentDirPath());
 	const hostHandlerBudget = deps.hostHandlerBudget ?? ((ctx: ExtensionContext) => readHostHandlerBudget(pi, ctx.cwd));
 	const hostKind = hostKindOf(pi);
 

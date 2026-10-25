@@ -80,14 +80,14 @@ export class SessionState {
 	/** The warning that the host's handler budget is too short for subagent asks was shown this session. */
 	hostBudgetWarned = false;
 
-	constructor(userRules?: UserRules, agentDir: string | null = null) {
+	constructor(agentDir: string | null = null) {
 		this.agentDir = agentDir;
 		this.protectedSet = buildProtectedSet(agentDir ?? agentDirPath(), OWN_FILE_PATH);
 		// item 6c: load once (not once as a default param + once here) so rules and
 		// policyDegraded always come from the same load — a direct construction (tests,
 		// install before session_start) must not depend on reloadRules having run.
 		const loaded = loadUserRules();
-		this.userRules = userRules ?? loaded.rules;
+		this.userRules = loaded.rules;
 		this.policyDegraded = loaded.degraded;
 		this.audit = this.makeAudit(this.userRules);
 	}
