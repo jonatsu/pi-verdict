@@ -14,7 +14,7 @@ import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
 import type { HostKind } from "./floor.ts";
 import type { ModelChoice, PipelineHost } from "./model-call.ts";
-import { HOST_REDACTION_PLATFORM, PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
+import { HOST_REDACTION_PLATFORM, type RedactorFn, redactedOr, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
 import type { RuleResult } from "./shell.ts";
 import type { SessionState } from "./state.ts";
@@ -78,20 +78,10 @@ export interface AdjudicateEnv {
 	getFallbackModel?: () => ModelChoice;
 	/** Live-status hook: called right before each gray-zone model call; UI-free (the handler renders it). */
 	onPhase?: (phase: "classifier" | "fallback", modelId: string) => void;
-	/** The redactor the handler built for this call; when unset, adjudicate builds the same one with `sessionRedactor`. */
+	/** The redactor the handler built for this call; when unset, adjudicate builds the same one with `state.redactor`. */
 	redact?: RedactorFn;
 	/** Test seam for the end-to-end budget: production always uses `ADJUDICATION_BUDGET_MS`. */
 	adjudicationBudgetMs?: number;
-}
-
-/** The session's wide redactor for model payloads and notifications, anchored like the `denyPaths` layer (ADR-0002). */
-export function sessionRedactor(state: SessionState, cwd: string): RedactorFn {
-	return redactorFor(cwd, state.anchoredDenyPathBases(cwd));
-}
-
-/** Returns `text`, or `PROTECTED_PATH_MARKER` when the redactor matches the call's input (ADR-0002). */
-export function redactedOr(redact: RedactorFn, input: Record<string, unknown>, text: string): string {
-	return redact(input) ? PROTECTED_PATH_MARKER : text;
 }
 
 /** A tool call as the pipeline receives it. */
@@ -318,7 +308,7 @@ export async function resolveAskWithoutHuman(
 		};
 	}
 	// The second-model prompt is a model payload like any other, so it is redacted too (ADR-0002).
-	const call = modelCallFor(state, env, actionLine, env.redact ?? sessionRedactor(state, env.cwd));
+	const call = modelCallFor(state, env, actionLine, env.redact ?? state.redactor(env.cwd));
 	const outcome = await classifyWithModel(
 		call,
 		resolved,
@@ -541,7 +531,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 	const deadlineAt = Date.now() + (env.adjudicationBudgetMs ?? ADJUDICATION_BUDGET_MS);
 	const resolved = env.getModel();
 	// One redactor for every model payload this adjudication sends (ADR-0002).
-	const redact = env.redact ?? sessionRedactor(state, env.cwd);
+	const redact = env.redact ?? state.redactor(env.cwd);
 	// The strict check above decides the deterministic ask; the wide one still keeps a protected
 	// path out of every model payload, so a call it matches reaches a model only as the marker.
 	// The audit record keeps the raw action line (ADR-0002: audit never leaves the machine).

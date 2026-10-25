@@ -18,6 +18,11 @@ export type RedactorFn = CallPredicate;
 /** The fixed text a redacted payload line becomes: a neutral privacy marker, not an instruction to the model. */
 export const PROTECTED_PATH_MARKER = "<protected-path>";
 
+/** Returns `text`, or `PROTECTED_PATH_MARKER` when the redactor matches the call's input (ADR-0002). */
+export function redactedOr(redact: RedactorFn, input: Record<string, unknown>, text: string): string {
+	return redact(input) ? PROTECTED_PATH_MARKER : text;
+}
+
 /** Returns a predicate that is true when a tool call names one of the `denyPaths` bases, anchored at `cwd`.
  *  It matches a call's extracted targets the way a `denyPaths` hit does, and any spelling of a base in its
  *  string values: absolute, cwd-relative, `~/`, `$HOME`, `${HOME}`, and the bare home-relative tail.

@@ -1,19 +1,11 @@
 import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { actionCallLine, toolCallLine } from "./action-line.ts";
-import {
-	type AdjudicateEnv,
-	type AskVerdict,
-	adjudicate,
-	redactedOr,
-	resolveAskWithoutHuman,
-	sessionRedactor,
-	type Verdict,
-} from "./adjudicate.ts";
+import { type AdjudicateEnv, type AskVerdict, adjudicate, resolveAskWithoutHuman, type Verdict } from "./adjudicate.ts";
 import type { AuditRecord } from "./audit.ts";
 import type { UserRules } from "./config.ts";
 import { resolveClassifier, resolveFallbackClassifier } from "./model-roles.ts";
 import { type AskWait, blockReason, type GateBlock, type PresentedCall, presentVerdict } from "./present.ts";
-import type { RedactorFn } from "./redaction.ts";
+import { type RedactorFn, redactedOr } from "./redaction.ts";
 import { currentRootUi } from "./root-ui.ts";
 import { completionFor, type GateRuntime, refreshStatus } from "./runtime.ts";
 import type { SessionState } from "./state.ts";
@@ -150,7 +142,7 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 	// Safe: the host passes a tool's arguments as a plain object, and every layer narrows each field it reads.
 	const input = event.input as Record<string, unknown>;
 	const action = toolCallLine(event.toolName, input);
-	const redact = sessionRedactor(rt.state, ctx.cwd);
+	const redact = rt.state.redactor(ctx.cwd);
 	const pc: PresentedCall = {
 		toolName: event.toolName,
 		input,

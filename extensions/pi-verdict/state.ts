@@ -3,6 +3,7 @@ import { agentDirPath, OWN_FILE_PATH } from "./agent-dir.ts";
 import { AuditLog } from "./audit.ts";
 import { type LoadedRules, loadUserRules, type UserRules } from "./config.ts";
 import { anchorDenyPaths } from "./deny-paths.ts";
+import { type RedactorFn, redactorFor } from "./redaction.ts";
 import { buildProtectedSet, type ProtectedSet } from "./self-protection.ts";
 
 // ============================================================================
@@ -131,5 +132,11 @@ export class SessionState {
 	anchoredDenyPathBases(cwd: string): string[] {
 		if (this.denyPathBases === null) this.denyPathBases = anchorDenyPaths(this.userRules.denyPaths, cwd);
 		return this.denyPathBases;
+	}
+
+	/** Returns the session's wide redactor for model payloads and notifications over the `denyPaths` bases as they
+	 *  stand now, so a redactor built after a `/verdict` edit covers the new entries (ADR-0002). */
+	redactor(cwd: string): RedactorFn {
+		return redactorFor(cwd, this.anchoredDenyPathBases(cwd));
 	}
 }
