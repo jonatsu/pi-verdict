@@ -8,9 +8,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerMasterSwitch } from "./master-switch.ts";
 import { type AutoModeDeps, createRuntime } from "./runtime.ts";
-import { endSession, reloadRules, startSession } from "./session-start.ts";
+import { endSession, startSession } from "./session-start.ts";
 import { handleToolCall } from "./tool-call.ts";
-import { runConfigEditor } from "./ui/config-editor.ts";
+import { registerConfigEditor } from "./ui/config-editor.ts";
 import { refreshStatus } from "./ui/status.ts";
 
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
@@ -60,15 +60,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}): voi
 	pi.on("session_shutdown", () => endSession(rt));
 	pi.on("model_select", (_e, ctx) => refreshStatus(rt, ctx));
 	registerMasterSwitch(rt);
-
-	pi.registerCommand("verdict", {
-		description: "Edit pi-verdict rules (allow/deny/denyPaths/tools/rules lists, gateOmpDir switch, footer style): /verdict [user|local]",
-		handler: (args, ctx) =>
-			runConfigEditor(args, ctx, {
-				sessionTrustedRoot: rt.sessionTrustedRoot,
-				reloadRules: (c) => reloadRules(rt, c),
-			}),
-	});
+	registerConfigEditor(rt);
 
 	pi.on("tool_call", (event, ctx) => handleToolCall(rt, event, ctx));
 }

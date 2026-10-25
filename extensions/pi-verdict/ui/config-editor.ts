@@ -4,6 +4,8 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { agentDirPath, findProjectConfig, projectDotDir, samePath, userConfigPath } from "../agent-dir.ts";
 import { EMPTY_RULES, USER_CONFIG_TEMPLATE } from "../config.ts";
+import type { GateRuntime } from "../runtime.ts";
+import { reloadRules } from "../session-start.ts";
 import { projectRootOf, projectTrustState, readTrustStore, rootIn } from "../trust.ts";
 
 // ============================================================================
@@ -93,7 +95,7 @@ function entryLabel(x: unknown): string {
 type ConfigKind = "user" | "local";
 
 /** What the editor needs from the running gate. */
-export interface ConfigEditorHost {
+interface ConfigEditorHost {
 	/** The project root the user trusted for this session only; a reload must honor it. */
 	readonly sessionTrustedRoot: string | null;
 	/** Reloads the rules after a saved edit and reports the load. */
@@ -170,8 +172,17 @@ async function pickTarget(args: string, ctx: ExtensionContext): Promise<{ kind: 
 	return picked ? { kind: picked.kind, file: picked.file } : null;
 }
 
-/** The `/verdict` command: edits the user or project config through menus and reloads the rules after each save. */
-export async function runConfigEditor(args: string, ctx: ExtensionContext, host: ConfigEditorHost): Promise<void> {
+/** Registers the `/verdict` command, which edits the user or project config through menus and reloads the rules
+ *  after each save. */
+export function registerConfigEditor(rt: GateRuntime): void {
+	rt.pi.registerCommand("verdict", {
+		description: "Edit pi-verdict rules (allow/deny/denyPaths/tools/rules lists, gateOmpDir switch, footer style): /verdict [user|local]",
+		handler: (args, ctx) =>
+			runConfigEditor(args, ctx, { sessionTrustedRoot: rt.sessionTrustedRoot, reloadRules: (c) => reloadRules(rt, c) }),
+	});
+}
+
+async function runConfigEditor(args: string, ctx: ExtensionContext, host: ConfigEditorHost): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("pi-verdict: /verdict needs an interactive UI", "warning");
 		return;

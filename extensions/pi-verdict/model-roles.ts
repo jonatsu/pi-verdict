@@ -55,7 +55,7 @@ interface ModelRole {
  *  unavailable model. Null means no model, which the caller fails closed on. */
 function resolveModelRole(ctx: ExtensionContext, state: SessionState, role: ModelRole): ModelChoice {
 	const warn = (kind: string, msg: string): void => {
-		if (state.firstWarning(`${role.key}:${kind}`)) ctx.ui.notify(msg, "warning");
+		if (state.recordWarning(`${role.key}:${kind}`)) ctx.ui.notify(msg, "warning");
 	};
 	let thinking: ThinkingLevel = "off";
 	if (role.spec) {

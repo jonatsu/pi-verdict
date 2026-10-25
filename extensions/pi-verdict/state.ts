@@ -122,8 +122,8 @@ export class SessionState {
 		return report;
 	}
 
-	/** True the first time `key` is passed this session. */
-	firstWarning(key: string): boolean {
+	/** Records the warning `key` as shown; true when it had not been shown yet this session, so the caller shows it. */
+	recordWarning(key: string): boolean {
 		if (this.warned.has(key)) return false;
 		this.warned.add(key);
 		return true;
