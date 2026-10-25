@@ -1058,6 +1058,20 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 		expect(await toolCall(h, "powershell", { command: "Get-Content README.md" })).toBeUndefined();
 		expect(h.calls.length).toBe(1);
 	});
+	test("a cwd glob also grades hidden entries, which dotglob would match", async () => {
+		await withTempDir(
+			"pv-glob-",
+			async (dir) => {
+				fs.writeFileSync(path.join(dir, "README.md"), "x\n");
+				fs.writeFileSync(path.join(dir, "." + "env"), "K=v\n");
+				const h = session({ allow: CAT_ALLOW }, { cwd: dir });
+				h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+				expect(await toolCall(h, "bash", { command: "cat *" })).toBeUndefined();
+				expect(h.calls.length).toBe(1);
+			},
+			os.homedir(),
+		);
+	});
 	test("a cwd glob whose matches pass the cap is refused", async () => {
 		await withTempDir("pv-glob-", (dir) => {
 			for (let i = 0; i <= MAX_GRADED_OPERANDS; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "");

@@ -105,10 +105,11 @@ refuses the admission: any other `$`, `~user`, a brace expansion (a `{` with a `
 runs an agent's bash calls in one persistent shell, started from the user's shell snapshot and the
 project's direnv `.envrc`, which the agent can write. Expanding from the gate's own environment would
 turn an unknown value into a wrong one. One glob is exact enough to keep: a glob with no `/` that does
-not start with `.` (`cat *.md`) matches only visible entries of the cwd, so the gate reads the cwd,
-matches the pattern case-insensitively (a superset of bash's default and of `nocaseglob`) and grades
-every match, so `cat *.pem` over a project key or `cat k*` over a project symlink to `~/.ssh` is
-refused. A glob that matches nothing (bash would pass the pattern itself), a cwd that cannot be read
+not start with `.` (`cat *.md`) matches only entries of the cwd, so the gate reads the cwd, matches
+the pattern against every entry, hidden ones included and ignoring case, and grades every match. omp
+replays the user's `shopt` settings into the agent's shell, so `dotglob`, `GLOBIGNORE` or `nocaseglob`
+may be on, and the gate grades a superset of what any of them matches. So `cat *.pem` over a project
+key, `cat k*` over a project symlink to `~/.ssh` and `cat *` beside a `.env` are refused. A glob that matches nothing (bash would pass the pattern itself), a cwd that cannot be read
 and a bracket form the gate does not model (`[[:alpha:]]`) refuse the admission. In a `powershell`
 command a backslash refuses the admission: the word view reads it as bash's escape, while PowerShell
 keeps it as a path separator.

@@ -107,7 +107,7 @@ function valueAfterEquals(word: string): string {
  * too, which only refuses more). Returns null for any other expansion, which the gate cannot resolve: a
  * variable (the agent's shell persists exports between calls and does not share the gate's environment),
  * `~user`, a brace expansion, or a glob. A glob with no `/` that does not start with `.` expands to the
- * visible cwd entries it matches (`cwdGlobMatches`), each of which is graded.
+ * cwd entries it matches (`cwdGlobMatches`), each of which is graded.
  */
 function expandOperand(word: string, cwd: string): Expanded | null {
 	const home = os.homedir();
@@ -124,10 +124,11 @@ function expandOperand(word: string, cwd: string): Expanded | null {
 }
 
 /**
- * Returns the names of the visible cwd entries a one-segment glob matches, or null when it matches none
- * (bash would pass the pattern itself), when the cwd cannot be read, or when the pattern holds a bracket
- * form the gate does not model. Matched case-insensitively, a superset of bash's default, so a shell set
- * to `nocaseglob` matches nothing the gate did not grade.
+ * Returns the names of the cwd entries a one-segment glob matches, or null when it matches none (bash would
+ * pass the pattern itself), when the cwd cannot be read, or when the pattern holds a bracket form the gate
+ * does not model. Hidden entries count and the match ignores case: the agent's shell replays the user's
+ * `shopt` settings, so `dotglob`, `GLOBIGNORE` or `nocaseglob` may be on, and the gate grades a superset of
+ * what any of them can match.
  */
 function cwdGlobMatches(pattern: string, cwd: string): string[] | null {
 	const re = globRegExp(pattern);
@@ -138,7 +139,7 @@ function cwdGlobMatches(pattern: string, cwd: string): string[] | null {
 	} catch {
 		return null;
 	}
-	const matches = names.filter((name) => !name.startsWith(".") && re.test(name));
+	const matches = names.filter((name) => re.test(name));
 	return matches.length === 0 ? null : matches;
 }
 
