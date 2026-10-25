@@ -20,14 +20,12 @@ import type { RuleResult } from "./shell.ts";
 import type { SessionState } from "./state.ts";
 
 // ============================================================================
-// Adjudication pipeline (adjudicate): the sole verdict entry point for tool_call → Verdict, with no UI dependency
+// Adjudication pipeline: the UI-free path from a tool call to its verdict
 // ============================================================================
 
-/** Verdict source: a key in the presentation template (orthogonal to degraded). rule = rule layer;
- *  protected-path = denyPaths match; classifier = gray-zone classifier
- *  result (including its fail-closed result, which uses the same presentation template); fail-closed = no classifier model available;
- *  degraded-policy = a model-originated allow converted to an ask while the user's own policy
- *  failed to load (item 6c, Phase 6; ADR-0010). */
+/** Which presentation a verdict gets. `classifier` covers the first layer's own fail-closed deny;
+ *  `fail-closed` means no classifier model was available or the fallback failed; `degraded-policy` is a
+ *  model allow withheld while the user's own policy failed to load (ADR-0010). */
 export type VerdictSource = "rule" | "protected-path" | "classifier" | "fail-closed" | "degraded-policy";
 
 interface VerdictBase {
@@ -63,9 +61,9 @@ export interface AskVerdict extends VerdictBase {
 /** Pipeline output for one tool call. */
 export type Verdict = AllowVerdict | DenyVerdict | AskVerdict;
 
-/** Per-call environment: host capabilities unrelated to presentation. model is lazily evaluated through getModel—preserving the original “resolve only for gray zone”
- *  behavior (fallback warnings do not appear on calls already decided by rules); null → fail-closed.
- *  getFallbackModel(#63) is even lazier: resolve only after the gate is triggered. */
+/** The host capabilities one adjudication uses, injected so tests can fake them. The models resolve
+ *  lazily, so a call the rule layer decides raises no model warning: `getModel` only for the gray zone,
+ *  where null fails closed, and `getFallbackModel` only once the cascade fires (#63). */
 export interface AdjudicateEnv {
 	cwd: string;
 	hasUI: boolean;
@@ -78,12 +76,9 @@ export interface AdjudicateEnv {
 	getFallbackModel?: () => ModelChoice;
 	/** Live-status hook: called right before each gray-zone model call; UI-free (the handler renders it). */
 	onPhase?: (phase: "classifier" | "fallback", modelId: string) => void;
-	/** Transcript redaction predicate (item 6b, Phase 5) — built once per call by adjudicate
-	 *  from cwd + the anchored denyPaths bases; omitted in tests that don't exercise it. */
+	/** The session's transcript redactor; when unset, adjudicate builds it from the anchored denyPaths bases. */
 	redact?: RedactorFn;
-	/** item 7: end-to-end adjudication budget override — a TEST SEAM. Production always uses
-	 *  ADJUDICATION_BUDGET_MS (the extension never reads the host's configured bound), while the
-	 *  budget tests need a sub-second deadline to observe the behavior without waiting 27 s. */
+	/** Test seam for the end-to-end budget: production always uses `ADJUDICATION_BUDGET_MS`. */
 	adjudicationBudgetMs?: number;
 }
 
@@ -109,9 +104,8 @@ interface Ruling {
 	readonly source: VerdictSource;
 }
 
-/** #67: the confidence floor. Below it the first layer abstains and the call cascades —
- *  to the fallback if configured, else to the human (headless degrades to deny). Numeric
- *  confidence exists only on jev-formatted reasons; LLM first layers never demote. */
+/** Returns the confidence when the first layer's ruling falls below `classifierMinConfidence`, so the call
+ *  cascades (#67), else null. Only a jev reason carries a confidence, so other first layers never demote. */
 function confidenceDemotion(outcome: ClassifierOutcome, rules: UserRules): { confidence: number } | null {
 	if (rules.classifierMinConfidence === null || outcome.source === "fail-closed") return null;
 	const conf = parseJevConfidence(outcome.reason);
@@ -198,27 +192,21 @@ function fallbackAudit(trigger: FallbackTrigger, model: string, startedAt: numbe
 const FALLBACK_UNRESOLVABLE = "fallback model unresolvable (not found or no configured auth)";
 
 interface CascadeResult {
-	/** set whenever the confidence floor fired (with or without a fallback) */
+	/** Set whenever the confidence floor fired, with or without a fallback. */
 	demoted?: true;
-	/** audit material; present when the fallback was consulted */
+	/** The fallback's audit entry; present when the fallback was consulted. */
 	fb?: FallbackAudit;
-	/** the applied outcome when the cascade changes it (pre-degradation — the caller's
-	 *  tail applies the usual headless ask → deny rule) */
+	/** The ruling the cascade applies, when it changes the outcome; `settle` still degrades a headless ask. */
 	effective?: { verdict: VerdictWord; reason: string; source: "classifier" | "fail-closed" };
 }
 
 /** What sent a call to the cascade: a demoted first-layer ruling, or a first layer that gave none. */
 type CascadeTrigger = { kind: "demotion"; confidence: number; first: { verdict: VerdictWord; reason: string } } | { kind: "fail-closed" };
 
-/** #67: run the cascade for one triggered call. Semantics:
- *  - demotion with no fallback → ask the human
- *  - shadow → the fallback records its opinion; a demotion still asks the human, a
- *    fail-closed deny stands
- *  - enforce → the fallback adjudicates de novo, with one carve-out family (#71): a demoted
- *    first-layer deny or ask may not be auto-relaxed to an allow — the human decides; a
- *    fail-closed origin has no first-layer verdict, so any fallback ruling applies
- *  - fallback failure/unresolvable on a cascaded call → ask the human (the tier that was
- *    to adjudicate is down); headless degrades downstream */
+/** Runs the confidence cascade for one triggered call (#67, ADR-0004). Without a fallback, a demotion asks
+ *  the human and a fail-closed deny stands. In shadow mode the fallback's opinion is only recorded. In
+ *  enforce mode it rules anew, except that it may not relax a demoted deny or ask to an allow, which then
+ *  asks the human (#71); a fallback that fails or cannot be resolved also asks the human. */
 async function runConfidenceCascade(
 	state: SessionState,
 	env: AdjudicateEnv,
@@ -286,12 +274,10 @@ async function runConfidenceCascade(
 	};
 }
 
-/** Subagent gate: resolve an ask with no human answer. The UI-free counterpart of the
- *  cascade. Only an explicit second-model allow in enforce mode permits the call; every other outcome
- *  denies, and a shadow-mode opinion is recorded but never applied.
- *  Asks that did not come from the classifier (protected path, rule/fail-closed asks that
- *  exist only under autoDeny:false) never reach the model: `autoResolve` is "deny" there.
- *  `deadlineAt` (epoch ms) bounds the second model by the host's handler budget; past it the model fails closed. */
+/** Resolves a subagent's ask that no human answered. Fails closed: only an explicit second-model allow in
+ *  enforce mode permits the call, and only for an ask whose `autoResolve` is "consult"; every other outcome
+ *  denies, including a shadow-mode opinion. `deadlineAt` (epoch ms) bounds the second model by the host's
+ *  handler budget. */
 export async function resolveAskWithoutHuman(
 	state: SessionState,
 	env: AdjudicateEnv,
@@ -392,7 +378,7 @@ function settle(a: Adjudication, s: Settlement): Verdict {
 }
 
 /** Settles a rule-layer ask: a protected-path or rule ask that only the user who declared it may answer
- *  (ADR-0002), so it never reaches a model. Its record is the first audited rule-layer outcome (#62). */
+ *  (ADR-0002), so it never reaches a model. Unlike rule allows and denies, it is audited (#62). */
 function adjudicateRuleAsk(a: Adjudication, rule: RuleResult): Verdict {
 	const reason = rule.reason ?? "";
 	const source = rule.askSource ?? "protected-path";
@@ -443,12 +429,10 @@ async function adjudicateGrayZone(
 ): Promise<Verdict> {
 	const { state, env } = a;
 	env.onPhase?.("classifier", choice.model.id);
-	// item 7: hold time back for the fallback only when one is configured.
+	// Time is held back for the fallback only when one is configured.
 	const reserveMs = state.userRules.classifierFallbackModel && env.getFallbackModel ? FALLBACK_TIMEOUT_MS : 0;
 	const outcome = await classifyWithModel(modelCall, choice, CLASSIFIER_TIMEOUT_MS, { deadlineAt, reserveMs });
 
-	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
-	// (the first layer produced no verdict)
 	const demotion = confidenceDemotion(outcome, state.userRules);
 	const cascade: CascadeResult =
 		demotion || outcome.source === "fail-closed"
@@ -465,8 +449,8 @@ async function adjudicateGrayZone(
 	const applied = withholdModelAllow(state.policyDegraded, cascade.effective ?? outcome, "ask");
 	const sources = modelPathSources(applied.withheld, cascade.effective?.source ?? "classifier", outcome.source);
 	const ruling: Ruling = { verdict: applied.verdict, reason: applied.reason, source: sources.verdict };
-	// #62/#67: the record keeps the first layer's ruling, except that a fail-closed origin
-	// rescued by the fallback records the verdict applied, not the default deny.
+	// The record keeps the first layer's ruling, except that a first layer that gave none records the
+	// fallback's applied verdict instead of its default deny.
 	const rescued = cascade.effective !== undefined && outcome.source === "fail-closed";
 	return settle(a, {
 		ruling,
@@ -487,11 +471,8 @@ async function adjudicateGrayZone(
 	});
 }
 
-/**
- * Pipeline implementation: the rule layer, then the gray-zone classifier. Ask degradation
- * and fail-closed handling live here; the handler presents verdicts using source alone.
- * Exported for tests (#35).
- */
+/** Returns the verdict for one tool call: the rule layer's, else the gray-zone classifier's. Fails closed:
+ *  a missing or failing model denies, and an ask with no UI becomes a deny marked `degraded`. */
 export async function adjudicate(state: SessionState, call: ToolCall, env: AdjudicateEnv): Promise<Verdict> {
 	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
 	// the wide transcript redactor below, where over-redaction is harmless.
@@ -506,10 +487,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		host: env.hostKind,
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
-	// item 6a (Phase 4): the action under review is never elided — actionCallLine is exempt
-	// from toolCallLine's MAX_ENTRY_CHARS cap (an over-cap action already returned its own ask
-	// above, inside classifyByRules, so overCap is always false by the time control reaches
-	// here; discarded rather than re-asserted to avoid a redundant, easy-to-drift invariant).
+	// The action under review is never elided: the rule layer already asked about an over-cap action.
 	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input).line };
 	switch (rule.verdict) {
 		case "deny":
@@ -530,15 +508,10 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		}
 	}
 
-	// item 7: one end-to-end deadline for the whole gray-zone decision, below omp's default
-	// toolCallTimeoutMs (30 000 ms) — without it the documented worst case (25 + 25 + 15 + 15 s)
-	// outlives the host bound and the handler is killed mid-cascade. Computed here so the no-model
-	// fail-closed path shares the same deadline with the normal path.
+	// One deadline covers the whole gray-zone decision, the no-model path included.
 	const deadlineAt = Date.now() + (env.adjudicationBudgetMs ?? ADJUDICATION_BUDGET_MS);
 	const resolved = env.getModel();
-	// One redactor per adjudication, built from cwd + the anchored denyPaths bases, passed to every
-	// model call that renders a transcript from this session's branch (first layer, cascade
-	// fallback, and the EXPLAIN-GATE path, which builds its own from state).
+	// One redactor for every model payload this adjudication sends (ADR-0002).
 	const redact = env.redact ?? redactorFor(env.cwd, denyPathBases);
 	// The strict check above decides the deterministic ask; the wide one still keeps a protected
 	// path out of every model payload, so a call it matches reaches a model only as the marker.
