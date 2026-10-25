@@ -16,6 +16,7 @@ import type { HostKind } from "./floor.ts";
 import type { ModelChoice, PipelineHost } from "./model-call.ts";
 import { HOST_REDACTION_PLATFORM, PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
+import type { RuleResult } from "./shell.ts";
 import type { SessionState } from "./state.ts";
 
 // ============================================================================
@@ -86,6 +87,28 @@ export interface AdjudicateEnv {
 	adjudicationBudgetMs?: number;
 }
 
+/** A tool call as the pipeline receives it. */
+interface ToolCall {
+	readonly toolName: string;
+	readonly input: Record<string, unknown>;
+}
+
+/** One adjudication's inputs, shared by every step that builds its verdict or its audit record. */
+interface Adjudication {
+	readonly state: SessionState;
+	readonly env: AdjudicateEnv;
+	readonly call: ToolCall;
+	/** The uncapped action line the audit record keeps; models see `ModelCall.actionLine` instead. */
+	readonly actionLine: string;
+}
+
+/** A decision before presentation: what to do, why, and the source the presentation keys on. */
+interface Ruling {
+	readonly verdict: VerdictWord;
+	readonly reason: string;
+	readonly source: VerdictSource;
+}
+
 /** #67: the confidence floor. Below it the first layer abstains and the call cascades —
  *  to the fallback if configured, else to the human (headless degrades to deny). Numeric
  *  confidence exists only on jev-formatted reasons; LLM first layers never demote. */
@@ -110,6 +133,16 @@ function withholdModelAllow<V extends VerdictWord, W extends "ask" | "deny">(
 	return { verdict: withheldAs, reason: `${WITHHELD_ALLOW_PREFIX}${ruling.reason}`, withheld: true };
 }
 
+/** Names a model-path ruling in both vocabularies. The verdict's source drives presentation; the audit
+ *  record's source keeps the first layer's own origin (#54). A withheld allow is degraded-policy in both. */
+function modelPathSources(
+	withheld: boolean,
+	presented: "classifier" | "fail-closed",
+	origin: ClassifierOutcome["source"],
+): { verdict: VerdictSource; record: AuditRecord["source"] } {
+	return withheld ? { verdict: "degraded-policy", record: "degraded-policy" } : { verdict: presented, record: origin };
+}
+
 /** The model call every classifier consulted for this action shares. */
 function modelCallFor(state: SessionState, env: AdjudicateEnv, actionLine: string, redact: RedactorFn): ModelCall {
 	return {
@@ -123,6 +156,47 @@ function modelCallFor(state: SessionState, env: AdjudicateEnv, actionLine: strin
 	};
 }
 
+/** Returns the audit record for this adjudication's call with the given outcome. */
+function buildRecord(
+	a: Adjudication,
+	v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">,
+	raw: ClassifierOutcome["auditRaw"] | null,
+	extra: Pick<AuditRecord, "detail" | "demoted" | "fallback"> = {},
+): Readonly<AuditRecord> {
+	return {
+		ts: new Date().toISOString(),
+		sessionId: a.env.host.getSessionId(),
+		cwd: a.env.cwd,
+		model: raw?.modelId ?? null,
+		tool: a.call.toolName,
+		input: a.call.input,
+		actionLine: a.actionLine,
+		thinking: raw?.thinking ?? null,
+		transcript: raw?.transcript ?? null,
+		rawResponse: raw?.rawResponse ?? null,
+		...v,
+		...extra,
+	};
+}
+
+/** Who triggered a fallback consult, as its audit entry records it. */
+type FallbackTrigger = Pick<FallbackAudit, "mode" | "triggeredBy" | "confidence">;
+
+/** Returns the audit entry of one fallback consult: the model's ruling, or the error when it gave none. */
+function fallbackAudit(trigger: FallbackTrigger, model: string, startedAt: number, ruling: ClassifierOutcome | string): FallbackAudit {
+	const answered = typeof ruling !== "string" && ruling.source === "model" ? ruling : null;
+	return {
+		...trigger,
+		model,
+		verdict: answered?.verdict ?? null,
+		reason: answered?.reason ?? null,
+		durationMs: Date.now() - startedAt,
+		error: answered ? null : typeof ruling === "string" ? ruling : ruling.reason,
+	};
+}
+
+const FALLBACK_UNRESOLVABLE = "fallback model unresolvable (not found or no configured auth)";
+
 interface CascadeResult {
 	/** set whenever the confidence floor fired (with or without a fallback) */
 	demoted?: true;
@@ -130,11 +204,13 @@ interface CascadeResult {
 	fb?: FallbackAudit;
 	/** the applied outcome when the cascade changes it (pre-degradation — the caller's
 	 *  tail applies the usual headless ask → deny rule) */
-	effective?: { verdict: "allow" | "ask" | "deny"; reason: string; source: "classifier" | "fail-closed" };
+	effective?: { verdict: VerdictWord; reason: string; source: "classifier" | "fail-closed" };
 }
 
-/** #67: run the cascade for one triggered call. `first` is the first-layer verdict, or
- *  null when the first layer never produced one (fail-closed origin). Semantics:
+/** What sent a call to the cascade: a demoted first-layer ruling, or a first layer that gave none. */
+type CascadeTrigger = { kind: "demotion"; confidence: number; first: { verdict: VerdictWord; reason: string } } | { kind: "fail-closed" };
+
+/** #67: run the cascade for one triggered call. Semantics:
  *  - demotion with no fallback → ask the human
  *  - shadow → the fallback records its opinion; a demotion still asks the human, a
  *    fail-closed deny stands
@@ -147,33 +223,33 @@ async function runConfidenceCascade(
 	state: SessionState,
 	env: AdjudicateEnv,
 	call: ModelCall,
-	first: { verdict: "allow" | "ask" | "deny"; reason: string } | null,
-	trigger: { kind: "demotion"; confidence: number } | { kind: "fail-closed" },
+	trigger: CascadeTrigger,
 	deadlineAt: number,
 ): Promise<CascadeResult> {
 	const rules = state.userRules;
-	const demotionAsk = (): CascadeResult["effective"] => ({
+	const first = trigger.kind === "demotion" ? trigger.first : null;
+	const demotionAsk = (t: Extract<CascadeTrigger, { kind: "demotion" }>): CascadeResult["effective"] => ({
 		verdict: "ask",
-		reason: `${first!.reason} (confidence ${trigger.kind === "demotion" ? trigger.confidence : "?"}% is below your classifierMinConfidence of ${rules.classifierMinConfidence}%)`,
+		reason: `${t.first.reason} (confidence ${t.confidence}% is below your classifierMinConfidence of ${rules.classifierMinConfidence}%)`,
 		source: "classifier",
 	});
 	const getFb = env.getFallbackModel;
 	if (!rules.classifierFallbackModel || !getFb) {
 		// A fail-closed without a fallback keeps its deny; a demotion asks the human
-		return trigger.kind === "demotion" ? { demoted: true, effective: demotionAsk() } : {};
+		return trigger.kind === "demotion" ? { demoted: true, effective: demotionAsk(trigger) } : {};
 	}
 	const mode = rules.classifierFallbackMode;
 	const start = Date.now();
-	const base = {
+	const audited: FallbackTrigger = {
 		mode,
-		triggeredBy: trigger.kind === "demotion" ? ("confidence" as const) : ("fail-closed" as const),
+		triggeredBy: trigger.kind === "demotion" ? "confidence" : "fail-closed",
 		confidence: trigger.kind === "demotion" ? trigger.confidence : null,
 	};
 	const demotedMark = trigger.kind === "demotion" ? ({ demoted: true } as const) : {};
-	const shadowApplied = trigger.kind === "demotion" ? { effective: demotionAsk() } : {};
+	const shadowApplied = trigger.kind === "demotion" ? { effective: demotionAsk(trigger) } : {};
 	const failed = (model: string, error: string): CascadeResult => {
 		state.fallback.note(first?.verdict ?? null, null);
-		const fb: FallbackAudit = { ...base, model, verdict: null, reason: null, durationMs: Date.now() - start, error };
+		const fb = fallbackAudit(audited, model, start, error);
 		if (mode === "shadow") return { ...demotedMark, fb, ...shadowApplied };
 		return {
 			...demotedMark,
@@ -182,30 +258,23 @@ async function runConfidenceCascade(
 		};
 	};
 	const resolved = getFb();
-	if (!resolved) return failed(rules.classifierFallbackModel, "fallback model unresolvable (not found or no configured auth)");
+	if (!resolved) return failed(rules.classifierFallbackModel, FALLBACK_UNRESOLVABLE);
 	env.onPhase?.("fallback", resolved.model.id);
 	// The fallback is the last step, so it may use whatever the shared deadline has left.
 	const outcome = await classifyWithModel(call, resolved, FALLBACK_TIMEOUT_MS, { deadlineAt, reserveMs: 0 });
 	if (outcome.source !== "model") return failed(resolved.model.id, outcome.reason);
 	state.fallback.note(first?.verdict ?? null, outcome.verdict);
-	const fb: FallbackAudit = {
-		...base,
-		model: resolved.model.id,
-		verdict: outcome.verdict,
-		reason: outcome.reason,
-		durationMs: Date.now() - start,
-		error: null,
-	};
+	const fb = fallbackAudit(audited, resolved.model.id, start, outcome);
 	if (mode === "shadow") return { ...demotedMark, fb, ...shadowApplied };
 	// #71: a fallback may not auto-relax a demoted deny or ask; fail-closed has no
 	// first-layer verdict, so an allow from the fallback is a de novo ruling.
-	if (trigger.kind === "demotion" && (first?.verdict === "deny" || first?.verdict === "ask") && outcome.verdict === "allow") {
+	if (trigger.kind === "demotion" && trigger.first.verdict !== "allow" && outcome.verdict === "allow") {
 		return {
 			demoted: true,
 			fb: { ...fb, effective: "ask" },
 			effective: {
 				verdict: "ask",
-				reason: `${outcome.reason} (first layer said ${first!.verdict} at confidence ${trigger.confidence}%; second opinion allows — your call)`,
+				reason: `${outcome.reason} (first layer said ${trigger.first.verdict} at confidence ${trigger.confidence}%; second opinion allows — your call)`,
 				source: "classifier",
 			},
 		};
@@ -236,22 +305,13 @@ export async function resolveAskWithoutHuman(
 		return { verdict: "deny", reason: `no human answer and no second model configured (classifierFallbackModel) — ${v.reason}` };
 	}
 	const start = Date.now();
-	const base = { mode: rules.classifierFallbackMode, triggeredBy: "subagent-ask" as const, confidence: null };
+	const audited: FallbackTrigger = { mode: rules.classifierFallbackMode, triggeredBy: "subagent-ask", confidence: null };
 	const resolved = env.getFallbackModel();
 	if (!resolved) {
-		const error = "fallback model unresolvable (not found or no configured auth)";
 		return {
 			verdict: "deny",
 			reason: `no human answer; second model unavailable (not found or no configured auth) — ${v.reason}`,
-			fb: {
-				...base,
-				model: rules.classifierFallbackModel,
-				verdict: null,
-				reason: null,
-				durationMs: Date.now() - start,
-				error,
-				effective: "deny",
-			},
+			fb: { ...fallbackAudit(audited, rules.classifierFallbackModel, start, FALLBACK_UNRESOLVABLE), effective: "deny" },
 		};
 	}
 	// The second-model prompt is a model payload like any other, so it is redacted too (ADR-0002).
@@ -277,34 +337,162 @@ export async function resolveAskWithoutHuman(
 				? // No human can answer, so a withheld allow denies.
 					withholdModelAllow(state.policyDegraded, { verdict: "allow", reason: `second model allows: ${outcome.reason}` }, "deny")
 				: { verdict: "deny", reason: `second model did not approve (${opinion}): ${outcome.reason}` };
-	return {
-		verdict,
-		reason,
-		fb: {
-			...base,
-			model: resolved.model.id,
-			verdict: outcome.source === "model" ? outcome.verdict : null,
-			reason: outcome.source === "model" ? outcome.reason : null,
-			durationMs: Date.now() - start,
-			error: outcome.source === "model" ? null : outcome.reason,
-			effective: verdict,
-		},
-	};
+	return { verdict, reason, fb: { ...fallbackAudit(audited, resolved.model.id, start, outcome), effective: verdict } };
 }
 
-/**
- * Pipeline implementation: built-in floor → user deny → denyPaths ask → user allow
- * → gray-zone classifier. Ask degradation and fail-closed handling live here; the
- * handler presents verdicts using source alone. Exported for tests (#35).
- */
 /** [pi-verdict local patch: autoDeny] reason suffix on asks that would have been auto-denies */
 const AUTO_DENY_OFF_SUFFIX = " (autoDeny is off: this would have been denied — your call)";
 
-export async function adjudicate(
-	state: SessionState,
-	call: { toolName: string; input: Record<string, unknown> },
-	env: AdjudicateEnv,
+/** How a ruling settles into a verdict. */
+interface Settlement {
+	readonly ruling: Ruling;
+	/** Builds the audit record, told whether the ruling is an ask no human can answer; null leaves the call
+	 *  unaudited. */
+	readonly record: ((headlessAsk: boolean) => Readonly<AuditRecord>) | null;
+	readonly autoResolve: AskVerdict["autoResolve"];
+	readonly detail?: string;
+	/** False for a deny that `autoDeny: false` may not turn into an ask (self-protection, ADR-0005). */
+	readonly autoDenyExempt: boolean;
+}
+
+/** Turns a ruling into the verdict the handler presents. With a UI, an ask stays an ask, and so does a deny
+ *  while `autoDeny` is off; the ask carries its audit record for the handler to finish. Without a UI an ask
+ *  fails closed to a deny marked `degraded`, and every other record is appended here. */
+function settle(a: Adjudication, s: Settlement): Verdict {
+	const { state, env } = a;
+	const { verdict, reason, source } = s.ruling;
+	const headlessAsk = verdict === "ask" && !env.hasUI;
+	const record = s.record?.(headlessAsk) ?? null;
+	const detail = s.detail === undefined ? {} : { detail: s.detail };
+	const autoDenyOff = verdict === "deny" && s.autoDenyExempt && !state.userRules.autoDeny;
+	if (env.hasUI && (verdict === "ask" || autoDenyOff)) {
+		return {
+			verdict: "ask",
+			reason: verdict === "deny" ? reason + AUTO_DENY_OFF_SUFFIX : reason,
+			...detail,
+			source,
+			degraded: false,
+			autoResolve: s.autoResolve,
+			...(state.audit && record ? { pendingAudit: record } : {}),
+		};
+	}
+	if (record) state.audit?.append(record);
+	switch (verdict) {
+		case "allow":
+			return { verdict: "allow", reason, source, degraded: false };
+		case "deny":
+			return { verdict: "deny", reason, ...detail, source, degraded: false };
+		case "ask":
+			return { verdict: "deny", reason, ...detail, source, degraded: true };
+		default: {
+			const unhandled: never = verdict;
+			throw new Error(`unhandled ruling: ${unhandled}`);
+		}
+	}
+}
+
+/** Settles a rule-layer ask: a protected-path or rule ask that only the user who declared it may answer
+ *  (ADR-0002), so it never reaches a model. Its record is the first audited rule-layer outcome (#62). */
+function adjudicateRuleAsk(a: Adjudication, rule: RuleResult): Verdict {
+	const reason = rule.reason ?? "";
+	const source = rule.askSource ?? "protected-path";
+	return settle(a, {
+		ruling: { verdict: "ask", reason, source },
+		record: (headlessAsk) =>
+			buildRecord(a, { verdict: headlessAsk ? "deny" : "ask", reason, source, degraded: headlessAsk }, null, { detail: rule.detail }),
+		autoResolve: "deny",
+		detail: rule.detail,
+		autoDenyExempt: true,
+	});
+}
+
+/** Settles a gray call when no classifier model is available: the fallback's ruling applies when there is
+ *  one, since a missing first layer is no negative judgment (#71); otherwise it fails closed. */
+async function adjudicateWithoutModel(a: Adjudication, modelCall: ModelCall, deadlineAt: number): Promise<Verdict> {
+	const reason = "no classifier model available (fail-closed)";
+	const cascade = await runConfidenceCascade(a.state, a.env, modelCall, { kind: "fail-closed" }, deadlineAt);
+	const applied = withholdModelAllow(a.state.policyDegraded, cascade.effective ?? { verdict: "deny", reason }, "ask");
+	const sources = modelPathSources(applied.withheld, cascade.effective?.source ?? "fail-closed", "fail-closed");
+	return settle(a, {
+		ruling: { verdict: applied.verdict, reason: applied.reason, source: sources.verdict },
+		// The record shows the verdict applied: an interactive ask as the ask that ran, a headless one as its deny.
+		record: (headlessAsk) =>
+			buildRecord(
+				a,
+				{ verdict: headlessAsk ? "deny" : applied.verdict, reason: applied.reason, source: sources.record, degraded: headlessAsk },
+				null,
+				cascade.fb ? { fallback: cascade.fb } : {},
+			),
+		autoResolve: "deny",
+		autoDenyExempt: true,
+	});
+}
+
+/** How a gray-zone ask resolves without a human. Only an ask the cascade never reached may go to the
+ *  second model: a cascaded ask's only route to an allow is the ADR-0004 carve-out, which a human decides. */
+function autoResolveFor(ruling: Ruling, cascade: CascadeResult): AskVerdict["autoResolve"] {
+	return ruling.verdict === "ask" && ruling.source === "classifier" && !cascade.fb ? "consult" : "deny";
+}
+
+/** Settles a gray call through the classifier, and through the cascade when the first layer abstains. */
+async function adjudicateGrayZone(
+	a: Adjudication,
+	modelCall: ModelCall,
+	choice: NonNullable<ModelChoice>,
+	deadlineAt: number,
 ): Promise<Verdict> {
+	const { state, env } = a;
+	env.onPhase?.("classifier", choice.model.id);
+	// item 7: hold time back for the fallback only when one is configured.
+	const reserveMs = state.userRules.classifierFallbackModel && env.getFallbackModel ? FALLBACK_TIMEOUT_MS : 0;
+	const outcome = await classifyWithModel(modelCall, choice, CLASSIFIER_TIMEOUT_MS, { deadlineAt, reserveMs });
+
+	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
+	// (the first layer produced no verdict)
+	const demotion = confidenceDemotion(outcome, state.userRules);
+	const cascade: CascadeResult =
+		demotion || outcome.source === "fail-closed"
+			? await runConfidenceCascade(
+					state,
+					env,
+					modelCall,
+					demotion
+						? { kind: "demotion", confidence: demotion.confidence, first: { verdict: outcome.verdict, reason: outcome.reason } }
+						: { kind: "fail-closed" },
+					deadlineAt,
+				)
+			: {};
+	const applied = withholdModelAllow(state.policyDegraded, cascade.effective ?? outcome, "ask");
+	const sources = modelPathSources(applied.withheld, cascade.effective?.source ?? "classifier", outcome.source);
+	const ruling: Ruling = { verdict: applied.verdict, reason: applied.reason, source: sources.verdict };
+	// #62/#67: the record keeps the first layer's ruling, except that a fail-closed origin
+	// rescued by the fallback records the verdict applied, not the default deny.
+	const rescued = cascade.effective !== undefined && outcome.source === "fail-closed";
+	return settle(a, {
+		ruling,
+		record: (headlessAsk) =>
+			buildRecord(
+				a,
+				{
+					verdict: headlessAsk ? "deny" : rescued ? applied.verdict : outcome.verdict,
+					reason: rescued ? applied.reason : outcome.reason,
+					source: sources.record,
+					degraded: headlessAsk,
+				},
+				outcome.auditRaw,
+				{ ...(cascade.demoted ? { demoted: true } : {}), ...(cascade.fb ? { fallback: cascade.fb } : {}) },
+			),
+		autoResolve: autoResolveFor(ruling, cascade),
+		autoDenyExempt: true,
+	});
+}
+
+/**
+ * Pipeline implementation: the rule layer, then the gray-zone classifier. Ask degradation
+ * and fail-closed handling live here; the handler presents verdicts using source alone.
+ * Exported for tests (#35).
+ */
+export async function adjudicate(state: SessionState, call: ToolCall, env: AdjudicateEnv): Promise<Verdict> {
 	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
 	// the wide transcript redactor below, where over-redaction is harmless.
 	const denyPathBases = state.anchoredDenyPathBases(env.cwd);
@@ -318,67 +506,29 @@ export async function adjudicate(
 		host: env.hostKind,
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
-	if (rule.verdict === "deny") {
-		if (!rule.selfProtect && !state.userRules.autoDeny && env.hasUI)
-			return { verdict: "ask", reason: (rule.reason ?? "") + AUTO_DENY_OFF_SUFFIX, source: "rule", degraded: false, autoResolve: "deny" };
-		return { verdict: "deny", reason: rule.reason ?? "", source: "rule", degraded: false };
-	}
-
-	// #62: the audit surface widens to protected-path asks (their user answers grade the
-	// denyPaths rules); rule allow/deny stay unaudited (no corpus value, #54). Record
-	// building is split from appending: an interactive ask returns via pendingAudit and the
-	// handler appends after the confirm resolves (with the ground truth); everything else
-	// appends immediately. Recording stays observe-only — it never changes a verdict; write
-	// failures stay fail-soft in the sink and surface once via drainWarning.
 	// item 6a (Phase 4): the action under review is never elided — actionCallLine is exempt
 	// from toolCallLine's MAX_ENTRY_CHARS cap (an over-cap action already returned its own ask
 	// above, inside classifyByRules, so overCap is always false by the time control reaches
 	// here; discarded rather than re-asserted to avoid a redundant, easy-to-drift invariant).
-	const { line: actionLine } = actionCallLine(call.toolName, call.input);
-	const buildRecord = (
-		v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">,
-		raw: ClassifierOutcome["auditRaw"] | null,
-		extra: Pick<AuditRecord, "detail" | "demoted" | "fallback"> = {},
-	): Readonly<AuditRecord> => ({
-		ts: new Date().toISOString(),
-		sessionId: env.host.getSessionId(),
-		cwd: env.cwd,
-		model: raw?.modelId ?? null,
-		tool: call.toolName,
-		input: call.input,
-		actionLine,
-		thinking: raw?.thinking ?? null,
-		transcript: raw?.transcript ?? null,
-		rawResponse: raw?.rawResponse ?? null,
-		...v,
-		...extra,
-	});
-
-	if (rule.verdict === "ask") {
-		const askSource = rule.askSource ?? "protected-path";
-		// denyPaths match → terminal ask (ADR-0002): exception for the declaring user to decide; no UI degrades to deny
-		if (env.hasUI) {
-			const ppRecord = buildRecord({ verdict: "ask", reason: rule.reason ?? "", source: askSource, degraded: false }, null, {
-				detail: rule.detail,
-			});
-			return {
-				verdict: "ask",
-				reason: rule.reason ?? "",
-				detail: rule.detail,
-				source: askSource,
-				degraded: false,
+	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input).line };
+	switch (rule.verdict) {
+		case "deny":
+			// Rule allows and denies stay unaudited (#54).
+			return settle(a, {
+				ruling: { verdict: "deny", reason: rule.reason ?? "", source: "rule" },
+				record: null,
 				autoResolve: "deny",
-				...(state.audit ? { pendingAudit: ppRecord } : {}),
-			};
+				autoDenyExempt: !rule.selfProtect,
+			});
+		case "ask":
+			return adjudicateRuleAsk(a, rule);
+		case "gray":
+			break;
+		default: {
+			const unhandled: never = rule.verdict;
+			throw new Error(`unhandled rule verdict: ${unhandled}`);
 		}
-		// headless: the ask degrades to deny — recorded like the gray-zone rule (the effective post-degradation verdict is what lands in the record)
-		state.audit?.append(
-			buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: askSource, degraded: true }, null, { detail: rule.detail }),
-		);
-		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: askSource, degraded: true };
 	}
-
-	// Gray zone → classifier; no available model → fail-closed
 
 	// item 7: one end-to-end deadline for the whole gray-zone decision, below omp's default
 	// toolCallTimeoutMs (30 000 ms) — without it the documented worst case (25 + 25 + 15 + 15 s)
@@ -393,127 +543,7 @@ export async function adjudicate(
 	// The strict check above decides the deterministic ask; the wide one still keeps a protected
 	// path out of every model payload, so a call it matches reaches a model only as the marker.
 	// The audit record keeps the raw action line (ADR-0002: audit never leaves the machine).
-	const modelCall = modelCallFor(state, env, redact(call.input) ? PROTECTED_PATH_MARKER : actionLine, redact);
-	if (!resolved) {
-		const reason = "no classifier model available (fail-closed)";
-		// #71: a fail-closed default deny is not a negative judgment. Record the applied
-		// fallback verdict when one exists; a headless ask is recorded as its degraded deny.
-		const cascade = await runConfidenceCascade(state, env, modelCall, null, { kind: "fail-closed" }, deadlineAt);
-		const eff = cascade.effective;
-		const applied = eff && withholdModelAllow(state.policyDegraded, eff, "ask");
-		const effDegraded = applied?.withheld ?? false;
-		const effVerdict = applied?.verdict;
-		const effReason = applied?.reason ?? reason;
-		const effSource: VerdictSource = effDegraded ? "degraded-policy" : (eff?.source ?? "fail-closed");
-		const effAskHeadless = effVerdict === "ask" && !env.hasUI;
-		// What the audit record itself shows: an interactive ask records as the ask that ran;
-		// a headless (or absent) result records the deny that was applied.
-		let fcVerdict: AuditRecord["verdict"] = "deny";
-		if (effVerdict === "allow") fcVerdict = "allow";
-		else if (effVerdict === "ask" && !effAskHeadless) fcVerdict = "ask";
-		const fcRecord = buildRecord(
-			{
-				verdict: fcVerdict,
-				reason: effReason,
-				// AuditRecord vocabulary (#54): the record's origin stays "fail-closed" (the
-				// no-first-model origin) unless the degraded-policy conversion fired; it never
-				// carries "model"/"classifier" here — that is the gray path's own record.
-				source: effDegraded ? "degraded-policy" : "fail-closed",
-				degraded: effAskHeadless,
-			},
-			null,
-			cascade.fb ? { fallback: cascade.fb } : {},
-		);
-		if (effVerdict === "ask" && env.hasUI) {
-			return {
-				verdict: "ask",
-				reason: effReason,
-				source: effSource,
-				degraded: false,
-				autoResolve: "deny",
-				...(state.audit ? { pendingAudit: fcRecord } : {}),
-			};
-		}
-		if (effVerdict !== "allow" && !state.userRules.autoDeny && env.hasUI) {
-			return {
-				verdict: "ask",
-				reason: effReason + AUTO_DENY_OFF_SUFFIX,
-				source: effSource,
-				degraded: false,
-				autoResolve: "deny",
-				...(state.audit ? { pendingAudit: fcRecord } : {}),
-			};
-		}
-		state.audit?.append(fcRecord);
-		if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: "classifier", degraded: false };
-		if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: effAskHeadless };
-		// ask: no UI degrades it to deny — but only a genuine ask conversion is "degraded";
-		// a missing cascade result (no effective verdict at all) is a plain fail-closed deny.
-		if (effVerdict === "ask") return { verdict: "deny", reason: effReason, source: effSource, degraded: true };
-		return { verdict: "deny", reason, source: "fail-closed", degraded: false };
-	}
-
-	env.onPhase?.("classifier", resolved.model.id);
-	// item 7: hold time back for the fallback only when one is configured.
-	const reserveMs = state.userRules.classifierFallbackModel && env.getFallbackModel ? FALLBACK_TIMEOUT_MS : 0;
-	const outcome = await classifyWithModel(modelCall, resolved, CLASSIFIER_TIMEOUT_MS, { deadlineAt, reserveMs });
-
-	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
-	// (the first layer produced no verdict)
-	const demotion = confidenceDemotion(outcome, state.userRules);
-	const cascade =
-		demotion || outcome.source === "fail-closed"
-			? await runConfidenceCascade(
-					state,
-					env,
-					modelCall,
-					demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null,
-					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
-					deadlineAt,
-				)
-			: {};
-	const applied = withholdModelAllow(state.policyDegraded, cascade.effective ?? outcome, "ask");
-	const effDegraded = applied.withheld;
-	const effVerdict = applied.verdict;
-	const effReason = applied.reason;
-	const effSource: VerdictSource = effDegraded ? "degraded-policy" : (cascade.effective?.source ?? "classifier");
-
-	// #62/#67: top-level keeps first-layer semantics except that a fail-closed origin
-	// rescued by an enforcing fallback records its applied verdict, not the default deny.
-	const appliedAskHeadless = !env.hasUI && effVerdict === "ask";
-	const fcRescued = cascade.effective !== undefined && outcome.source === "fail-closed";
-	const grayRecord = buildRecord(
-		{
-			verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict,
-			reason: fcRescued ? effReason : outcome.reason,
-			// item 6c: the record names the degraded-policy origin when the conversion fired;
-			// otherwise the first layer's own outcome (model/fail-closed vocabulary, #54).
-			source: effDegraded ? "degraded-policy" : outcome.source,
-			degraded: appliedAskHeadless,
-		},
-		outcome.auditRaw ?? null,
-		{ ...(cascade.demoted ? { demoted: true } : {}), ...(cascade.fb ? { fallback: cascade.fb } : {}) },
-	);
-	// #62: an interactive ask defers the append to the handler finalize (ground truth);
-	// every other outcome appends immediately as before
-	if (env.hasUI && (effVerdict === "ask" || (effVerdict === "deny" && !state.userRules.autoDeny))) {
-		// Subagent gate: how this ask resolves without a human. A cascaded ask (the second model already
-		// ruled) is never auto-allowed: its only route to an allow is the ADR-0004 carve-out, which turns a
-		// demoted ask or deny plus a second-model allow into an ask so that a human decides. Only an ask the
-		// cascade never reached may still be put to the second model.
-		const autoResolve: AskVerdict["autoResolve"] = effVerdict === "deny" || effSource !== "classifier" || cascade.fb ? "deny" : "consult";
-		return {
-			verdict: "ask",
-			reason: effVerdict === "deny" ? effReason + AUTO_DENY_OFF_SUFFIX : effReason,
-			source: effSource,
-			degraded: false,
-			autoResolve,
-			...(state.audit ? { pendingAudit: grayRecord } : {}),
-		};
-	}
-	state.audit?.append(grayRecord);
-	if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: effSource, degraded: false };
-	if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: false };
-	// ask: no UI degrades it to deny.
-	return { verdict: "deny", reason: effReason, source: effSource, degraded: true };
+	const modelCall = modelCallFor(state, env, redact(call.input) ? PROTECTED_PATH_MARKER : a.actionLine, redact);
+	if (!resolved) return adjudicateWithoutModel(a, modelCall, deadlineAt);
+	return adjudicateGrayZone(a, modelCall, resolved, deadlineAt);
 }

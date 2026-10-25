@@ -181,9 +181,13 @@ type Notify = (msg: string, level: "info" | "warning" | "error") => void;
 
 /** Agent-facing block reason (#53): the text must be self-sufficient — structural
  * error signaling does not reach several provider lanes, and verbatim rule/classifier
- * reasons can be empty or too terse for the acting model to recognize as a block. */
-function blockedReason(tag: BlockTag, detail: string): string {
-	const clean = detail.trim().replace(/\.+$/, "");
+ * reasons can be empty or too terse for the acting model to recognize as a block.
+ * While the policy is degraded every block names that state (ADR-0010). */
+function blockReasonText(tag: BlockTag, detail: string, policyDegraded: boolean): string {
+	const stated = policyDegraded
+		? `${detail} [policy degraded: the user's own rules failed to load, so model-originated allows are withheld — ADR-0010]`
+		: detail;
+	const clean = stated.trim().replace(/\.+$/, "");
 	return `[auto-mode ${tag} block] BLOCKED — this action did NOT run. Reason: ${clean || "(no further reason given)"}. Report the block to the user; never claim it succeeded or completed.`;
 }
 
@@ -220,17 +224,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  redactor through AdjudicateEnv.redact below.) */
 	const sessionRedactor = (cwd: string): RedactorFn => redactorFor(cwd, state.anchoredDenyPathBases(cwd));
 
-	/** item 6c (Phase 6; ADR-0010): every block reason names the degraded-policy state while
-	 *  it holds — a silent degradation would contradict the session-start warning's role as
-	 *  the primary signal. Wraps the module-level blockedReason so its message contract
-	 *  (the BLOCKED … never claim it succeeded wording) stays in one place. */
-	const blockReason = (tag: BlockTag, detail: string): string =>
-		state.policyDegraded
-			? blockedReason(
-					tag,
-					`${detail} [policy degraded: the user's own rules failed to load, so model-originated allows are withheld — ADR-0010]`,
-				)
-			: blockedReason(tag, detail);
+	/** This session's block reason, naming the degraded-policy state while it holds. */
+	const blockReason = (tag: BlockTag, detail: string): string => blockReasonText(tag, detail, state.policyDegraded);
 
 	/** Verdict → UI (the extension's single presentation point): presentation keys on
 	 *  source alone; protected-path wording carries the ask-degradation context. */
