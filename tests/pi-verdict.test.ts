@@ -1424,6 +1424,13 @@ describe("word-view floor rules: quoted text clears, option gaps deny (ADR-0007)
 		test(`${ruleId}: a quote inside a # comment does not hide the next line`, () => floorDeny(`echo # '\n${command} # '`, ruleId));
 		test(`${ruleId}: a $'…' quote does not hide the next command`, () => floorDeny(`echo $'\\'' ; ${command} # '`, ruleId));
 	}
+	test("a | anywhere withholds inert positions from a brace group", () =>
+		floorDeny("{ true; echo 'git " + "reset --hard'; } | sh", "git-reset-hard"));
+	test("a | anywhere withholds inert positions from an if body", () =>
+		floorDeny("if :; then :; echo 'git " + "reset --hard'; fi | sh", "git-reset-hard"));
+	test("a pipe into a text filter keeps inert positions", () =>
+		reachesClassifier("{ true; echo 'git " + "reset --hard'; } | grep -c reset"));
+	test("a |& anywhere withholds inert positions", () => floorDeny("{ true; echo 'git " + "stash clear'; } |& bash", "git-stash-clear"));
 	for (const control of ["echo a#b", 'git commit -m "fix #12"', "grep '#' f"]) {
 		test(`a # that does not start a comment changes nothing: ${JSON.stringify(control)}`, () => reachesClassifier(control));
 	}

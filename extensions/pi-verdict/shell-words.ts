@@ -395,25 +395,19 @@ export function ghRunsIn(seg: readonly string[], invocation: GhInvocation): bool
 	return false;
 }
 
-/** One simple command's words, and whether a pipe takes its output. */
-interface Segment {
-	readonly words: readonly string[];
-	readonly piped: boolean;
-}
-
 /** Split words into simple commands at every operator and unquoted newline. */
-function commandSegments(words: readonly string[]): Segment[] {
-	const segs: Segment[] = [];
+function commandSegments(words: readonly string[]): string[][] {
+	const segs: string[][] = [];
 	let cur: string[] = [];
 	for (const w of words) {
 		if (SHELL_OPERATORS.has(w) || w === "\n") {
-			if (cur.length) segs.push({ words: cur, piped: w === "|" });
+			if (cur.length) segs.push(cur);
 			cur = [];
 		} else {
 			cur.push(w);
 		}
 	}
-	if (cur.length) segs.push({ words: cur, piped: false });
+	if (cur.length) segs.push(cur);
 	return segs;
 }
 
@@ -532,12 +526,45 @@ function inertWordIndexes(seg: readonly string[]): ReadonlySet<number> {
 	return inert;
 }
 
-/** Whether the text holds a construct that can run a command's output: a pipe is judged per segment,
- *  and this covers a redirection other than to `/dev/null` or a descriptor (`echo '…' > f; sh f`) and a
+/** Text filters that only print or count what they read, never run it. */
+const PIPE_FILTERS: ReadonlySet<string> = new Set([
+	"grep",
+	"egrep",
+	"fgrep",
+	"head",
+	"tail",
+	"wc",
+	"sort",
+	"uniq",
+	"cut",
+	"tr",
+	"nl",
+	"column",
+	"cat",
+	"less",
+	"more",
+]);
+
+/** Whether some pipe anywhere in the words feeds a command that may run its input. Every pipe counts,
+ *  since a brace group or an `if` body pipes every command inside it (`{ true; echo '…'; } | sh`); only a
+ *  known text filter is safe, and `|&` scans as `|` then `&`. */
+function pipeMayRun(words: readonly string[]): boolean {
+	return words.some((word, k) => {
+		if (word !== "|") return false;
+		let at = k + 1;
+		if (words[at] === "&") at++;
+		while (words[at] !== undefined && ASSIGNMENT.test(words[at])) at++;
+		const consumer = words[at];
+		return consumer === undefined || isShellOperator(consumer) || !PIPE_FILTERS.has(wordBasename(consumer));
+	});
+}
+
+/** Whether the text holds a construct that can run a command's output: a pipe into anything but a
+ *  text filter, a redirection other than to `/dev/null` or a descriptor (`echo '…' > f; sh f`), and a
  *  process or command substitution (`bash <(echo '…')`, `$(echo '…')`). */
 function outputMayRun(text: string, words: readonly string[]): boolean {
 	const stripped = text.replace(/\d?&?>>?\s*\/dev\/null/g, "").replace(/\d?[<>]&\d/g, "");
-	return /[<>]/.test(stripped) || words.includes("(") || words.includes(")");
+	return /[<>]/.test(stripped) || pipeMayRun(words) || words.includes("(") || words.includes(")");
 }
 
 /** Whether an `eval` or a split-string `env` sits anywhere in the command, behind a keyword or a
@@ -572,10 +599,10 @@ export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): 
 	const words = shellWords(text);
 	if (words.includes(UNSOUND)) return true;
 	const inertAllowed = !outputMayRun(text, words);
-	for (const { words: seg, piped } of commandSegments(words)) {
+	for (const seg of commandSegments(words)) {
 		if (reparsesWords(seg)) return true;
 		if (matcher.runs(seg)) return true;
-		const judged = new Set(inertAllowed && !piped ? inertWordIndexes(seg) : []);
+		const judged = new Set(inertAllowed ? inertWordIndexes(seg) : []);
 		for (let i = 0; i < seg.length; i++) {
 			if (!SHELL_NAMES.has(wordBasename(seg[i]))) continue;
 			const script = shellScriptAt(seg, i);
