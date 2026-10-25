@@ -70,7 +70,7 @@ export class SessionState {
 	userRules: UserRules;
 	audit: AuditLog | null;
 	private denyPathBases: string[] | null = null;
-	private readonly agentDir: string | null;
+	private readonly agentDir: string;
 	/** Final pipeline verdicts this session (root calls only; an ask counts once whatever the user answers). Reset on session start, kept across /verdict reloads. */
 	verdictCounts = { allow: 0, ask: 0, deny: 0 };
 	/** item 6c (Phase 6): the user's own policy failed to load (parse/load/trusted-project
@@ -80,9 +80,9 @@ export class SessionState {
 	/** The warning that the host's handler budget is too short for subagent asks was shown this session. */
 	hostBudgetWarned = false;
 
-	constructor(agentDir: string | null = null) {
+	constructor(agentDir: string = agentDirPath()) {
 		this.agentDir = agentDir;
-		this.protectedSet = buildProtectedSet(agentDir ?? agentDirPath(), OWN_FILE_PATH);
+		this.protectedSet = buildProtectedSet(agentDir, OWN_FILE_PATH);
 		// item 6c: load once (not once as a default param + once here) so rules and
 		// policyDegraded always come from the same load — a direct construction (tests,
 		// install before session_start) must not depend on reloadRules having run.
@@ -94,7 +94,7 @@ export class SessionState {
 
 	/** #54: the audit flag follows the rules (applies to new sessions); the dir is anchored to the install path */
 	private makeAudit(rules: UserRules): AuditLog | null {
-		return rules.audit && this.agentDir ? new AuditLog(path.join(this.agentDir, "verdicts")) : null;
+		return rules.audit ? new AuditLog(path.join(this.agentDir, "verdicts")) : null;
 	}
 
 	/** Reload user (+ trusted project) rules and re-anchor denyPaths to `cwd` (ADR-0002: once per session

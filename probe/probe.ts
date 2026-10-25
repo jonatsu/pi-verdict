@@ -25,7 +25,7 @@ import { buildFixtures, cleanupFixtures, type FixtureTree } from "./fixtures.ts"
 /** The shape of the dynamically loaded extension module (only the members the probe calls). */
 interface Extension {
 	adjudicate: (state: SessionState, call: { toolName: string; input: Record<string, unknown> }, env: AdjudicateEnv) => Promise<Verdict>;
-	SessionState: new (agentDir?: string | null) => SessionState;
+	SessionState: new (agentDir?: string) => SessionState;
 }
 
 // ---- environment (before the extension import) ---------------------------------------
