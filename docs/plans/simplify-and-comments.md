@@ -1,8 +1,11 @@
 # Plan: simplify the gate's modules, then rewrite their comments
 
-Status: in progress. Slices 1 and 2 landed on 2026-10-24 (after v0.20.0), and slices 3 and 4 on
-2026-10-25 (after v0.21.0). This plan defines the finding ids
-`C1`-`C44` that commits and the CHANGELOG may cite; code comments never do (`pv-comments`).
+Status: in progress, through slice 5 and a last classifier step. Slices 1 and 2 landed on 2026-10-24
+(after v0.20.0), and slices 3 and 4 on 2026-10-25 (after v0.21.0). The user narrowed the scope on 2026-10-25
+(`AGENTS.md` "Goals": efficient, human-maintainable code; refactoring is not a goal in itself), so the plan ends
+after slice 5 and the classifier findings `C35` and `C36`. The other open findings moved to `TODO.md`, as the
+table under "Order" shows. This plan defines the finding ids `C1`-`C47` that commits and the CHANGELOG may cite;
+code comments never do (`pv-comments`).
 
 ## Goal
 
@@ -27,19 +30,23 @@ flowchart LR
   S2 --> S3[3 adjudicate and the Verdict union, done]
   S3 --> S4[4 state, done]
   S4 --> S5[5 index.ts breakup]
-  S5 --> S6[6 UI modules]
-  S6 --> S7[7 config, shell, access, floor and the rest]
+  S5 --> S6[6 classifier accuracy and cost]
+  S5 -.-> T5[TODO item 5: one shared reading of each call]
+  S5 -.-> T3[TODO item 3: floor fixes]
+  S5 -.-> TL[TODO Later: taken when work on the module needs it]
 ```
 
-| Slice | Findings |
+| Slice or new home | Findings |
 | --- | --- |
 | 1. Classifier split (done) | `C21`, `C27`, `C28` for the four model-call modules, plus `C26`'s `ModelChoice` |
 | 2. `rules.ts` and `self-protection.ts` (done) | `C22`, `C30`, `C11` (`isWithin`), `C28` for both modules |
 | 3. `adjudicate.ts` and the `Verdict` union (done) | `C20`, `C25`, `C34`, `C42`, `C28` for `adjudicate.ts`, plus `C26` and `C37` in part |
 | 4. `state.ts` (done) | `C32`, `C28` for `state.ts`, plus the `protectedSet` name left from `C42` |
-| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37` |
-| 6. UI modules | `C29`, `C31` |
-| 7. The other modules | `C1`-`C8`, `C11`-`C16`, `C26` (`callModelOnce`), `C35`, `C36`, `C38`-`C41`, `C43`, `C44`, `C45`, `C46`, `C47` |
+| 5. `index.ts` breakup | `C18`, `C19`, `C23`, `C24`, `C33`, `C17`, `C46` (module-level state), the rest of `C37`, `C28` for `index.ts` |
+| 6. Classifier accuracy and cost, the plan's last step | `C35`, `C36` |
+| `TODO.md` item 5, one shared reading of each call | `C3`, `C4`, `C11`, `C13`, `C14`, `C41`, `C44` |
+| `TODO.md` item 3, small floor fixes | `C5`, `C6`, `C7`, `C47` |
+| `TODO.md` "Later", taken only when work on its module needs it | `C1`, `C2`, `C8`, `C9`, `C12`, `C15`, `C16`, `C26` (`callModelOnce`) with `C40` (`runConfidenceCascade`), `C28` for `deny-paths.ts`, `footer.ts`, `audit.ts` and `explain.ts`, `C29`, `C31`, `C38`, `C39`, `C43`, `C45`, the rest of `C46` |
 
 ## Findings
 
@@ -89,6 +96,9 @@ flowchart LR
 - `C28` for `state.ts`.
 
 ### Open
+
+The table under "Order" names each open finding's home: slice 5, this plan's last step, or a `TODO.md` item.
+The entries stay here so commits and the CHANGELOG can keep citing them.
 
 - **C1 `loadUserRules` (`config.ts`, about 240 lines, nesting 7).** Eight jobs in one function:
   first-run template write, parse, unknown-key warning, single-string coercion, project
