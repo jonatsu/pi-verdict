@@ -58,6 +58,11 @@ flowchart LR
 - `C47` the code-loading ask expands `$PI_CODING_AGENT_DIR` and matches agent-directory paths through the
   session's agent directory, as self-protection does (2026-10-25). The `loadUserRules` seam the finding also
   named is left as it is: a `SessionState` still loads its config through `agentDirPath()`.
+- `C6`, the word-view part: one `continuationLength` helper replaces the duplicated line-continuation
+  block, and one `shellScriptAt` scan with a named `SHELL_OPTIONS_WITH_ARG` list replaces the shell option
+  list written twice (2026-10-25).
+- `C7`, the tokenizer part: the tokenizer, command segments, git subcommand reading and `sh -c` recursion
+  moved to `shell-words.ts`, shared by every word-view floor rule (2026-10-25).
 - `C35` a write or edit excerpt stays on the action line after a `| content:` separator, so the
   transcript's last line is the action (2026-10-25).
 - `C36` the transcript redacts and renders only the tool calls it keeps (2026-10-25).
@@ -154,12 +159,10 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
 - **C4 Flat bags where `pv-typescript` asks for discriminated unions:** `RuleResult`, `ToolAccess`,
   `kernelWalk`'s result, `BashDangerRule` (a non-null assertion). Export the types that exported
   functions return (`ToolAccess`, `TrustStore`, `HostPathFormOptions`).
-- **C6 `shellWords` (about 120 lines) and `gitPushInWords`:** a duplicated line-continuation block,
-  the shell option list written twice. Fix: per-construct scanners, `continuationLength`,
-  `scanShellOptions`.
-- **C7 `shell.ts` holds five concerns:** tokenizer, force-push analyzer, danger rules and
-  `classifyBash`, `allowAdmits`, Python cell extraction. Move `RuleResult` and `BASH_MAX_MATCH_LEN`
-  to a shared types module.
+- **C6 `shellWords` (about 120 lines):** still one long function. Fix: per-construct scanners.
+- **C7 `shell.ts` holds four concerns:** force-push and other floor checks with `classifyBash`,
+  `allowAdmits`, Python cell extraction. Move `RuleResult` and `BASH_MAX_MATCH_LEN` to a shared types
+  module.
 - **C8 Orphaned doc comments from the carve:** above `escapeRegExp` (`agent-dir.ts`) and
   `S0_HOME_DIRECTORIES` (`floor.ts`); the `classifyPath` doc is garbled.
 - **C9 Plan and review ids and narrated history** in `shell`, `paths`, `agent-dir`, `trust`,
@@ -226,7 +229,7 @@ The entries stay here so commits and the CHANGELOG can keep citing them.
 These belong to the findings above and must close with them:
 
 - `C1`: `coerceSingleStringLists` mutates its input; several `as` casts in `loadUserRules` lack a why-safe comment.
-- `C6`: a redundant condition in `markReparsers`; name the shell options that take an argument.
+- `C6`: a redundant condition in `markReparsers`.
 - `C7`: `allowAdmits`' lettered comments are out of order; consider named predicates.
 - `C12`: `agentDbS0()` recomputes the agent directory on every call.
 - `C14`: five `fs.existsSync(path.resolve(cwd, …))` copies; a redundant `isWrite &&` in `classifyPath`.

@@ -56,3 +56,33 @@ tripwire only has to never MISS. The floor's coverage can therefore only grow ac
   because the raw text really contains the pattern. No own-reason plumbing is needed.
 - Detection is still token-level: a path or command hidden behind a construct the scanner marks
   unsound is denied (the deny direction), not silently allowed.
+
+## Amendment (2026-10-25): the git and gh danger rules
+
+`git-reset-hard`, `git-stash-clear`, `git-clean-force`, `git-checkout-dot`, `git-restore`, `gh-repo` and
+`gh-release` were regexes over the raw command text. They denied text the shell never runs as that command,
+such as `git commit -m "deny git stash clear"`, and no user `allow` rule can lift a floor deny. They also
+missed a gap between the program and its subcommand, so `git -C dir reset --hard` and
+`git -c k=v stash clear` reached the classifier.
+
+These rules now take the same two layers as `git-push-force`, built from the shared word view in
+`shell-words.ts`:
+
+1. A gap-tolerant raw-text tripwire decides every hit, for example `\bgit\b[\s\S]*?\bstash\b[\s\S]*?\bclear\b`.
+   It is also tested on the spelling with unescaped backslash-newlines removed.
+2. The word view clears a hit only when its parse is sound and no command runs the subcommand with the
+   rule's arguments. For git, the subcommand is read past git's global options; an unreadable option keeps
+   the deny when a later word contains the subcommand's name. For gh, the group word (`repo`, `release`)
+   must follow `gh`, and the action word follows it, read past `--repo` and its value; any other option
+   keeps the deny when a later word contains an action name. A shell's `-c` script is read as a command.
+
+The word view does not join words and re-run the regex, because joining loses the quoting that tells an
+argument from a command.
+
+`raw-device`, `remote-exec`, `env-exfil` and `fork-bomb` stay raw-text only. Their meaning spans a pipe, a
+redirection or a function definition, which the word view splits or drops, so it cannot show that such a
+hit is harmless. `rm-recursive`, `rm-root`, `sudo` and `chmod-777` also remain raw-text rules.
+
+Two scope changes come with the shape. `git-checkout-dot` now denies any `.` argument, so
+`git checkout HEAD -- .` is caught as well as `git checkout .`. The shared `-c` scan also reads a script
+that follows a `+o` option (`bash +o posix -c '…'`), which the force-push word view used to skip.
