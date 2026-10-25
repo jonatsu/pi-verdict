@@ -261,6 +261,34 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "allow" },
 		},
 		{
+			label: "process environment of self",
+			family: "path-tier",
+			tool: "read",
+			input: { path: "/proc/self/" + "environ" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "process environment of a pid",
+			family: "path-tier",
+			tool: "read",
+			input: { path: "/proc/1/" + "environ" },
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "/proc cpuinfo not S0",
+			family: "path-tier",
+			tool: "read",
+			input: { path: "/proc/cpuinfo" },
+			expected: { layer: "allow" },
+		},
+		{
+			label: "/proc self status not S0",
+			family: "path-tier",
+			tool: "read",
+			input: { path: "/proc/self/status" },
+			expected: { layer: "allow" },
+		},
+		{
 			label: "home age key still anchored with XDG set",
 			family: "path-tier",
 			tool: "read",
@@ -608,6 +636,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		});
 	}
+	cases.push({
+		label: "allow operand: cat of the process environment",
+		family: "user-allow",
+		tool: "bash",
+		input: { command: "cat /proc/self/" + "environ" },
+		config: documentedAllow,
+		ref: "ADR-0008",
+		expected: { layer: "classifier" },
+	});
 	cases.push({
 		label: "allow operand: a relative key name inside a credential cwd argument",
 		family: "user-allow",

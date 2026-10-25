@@ -1364,6 +1364,32 @@ describe("S0 credential inventory (fork: XDG dotless homes)", () => {
 	});
 });
 
+describe("process environment files (S0)", () => {
+	const ENVIRON = "environ";
+	for (const p of [`/proc/self/${ENVIRON}`, `/proc/thread-self/${ENVIRON}`, `/proc/1/${ENVIRON}`, `/proc/1/task/1/${ENVIRON}`]) {
+		test(`read ${p} → S0 deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "read", { path: p });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("S0");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	test("other /proc entries keep their read allow", async () => {
+		const h = session({});
+		for (const p of ["/proc/cpuinfo", "/proc/self/status"]) expect(await toolCall(h, "read", { path: p })).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+	test("a cat of the process environment under a cat allow reaches the classifier", async () => {
+		const h = session({ allow: ["^cat\\b"] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "bash", { command: `cat /proc/self/${ENVIRON}` })).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+		expect(await toolCall(h, "bash", { command: "cat /proc/cpuinfo" })).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+});
+
 // ── 1.5 XDG config root (item 9, plan-review F15) ───────────────────────────
 
 describe("XDG config root (item 9)", () => {

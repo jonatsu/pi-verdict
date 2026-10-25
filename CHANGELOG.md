@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A file read of a process environment (`/proc/self/environ`, `/proc/thread-self/environ`, `/proc/<pid>/environ` and a thread's `task/<tid>/environ`), which prints every secret exported to that process, was a silent rule allow; it is now an S0 deny with zero model calls, and `cat /proc/self/environ` under an `allow` rule such as `^cat\b` goes to the classifier instead of being admitted, while other `/proc` entries such as `/proc/cpuinfo` and `/proc/self/status` stay rule allows.
+
 ## [0.22.0] - 2026-10-25
 
 ### Added

@@ -137,6 +137,9 @@ const S0_SECRET = [
 	/\.kube(\/|$)/i,
 	/\.docker\/config\.json$/i,
 	/\.gem\/credentials$/i,
+	// A process environment, which holds the secrets exported to it: `/proc/<pid>/environ`, the
+	// `self` and `thread-self` links, and a thread's `task/<tid>/environ`.
+	/^\/proc\/(?:\d+|self|thread-self)\/(?:task\/\d+\/)?environ$/i,
 ];
 // /private prefixes: macOS firmlinks — /etc, /var are really /private/etc,
 // /private/var, and realpath'd toolchain output uses the real spelling (#21)
