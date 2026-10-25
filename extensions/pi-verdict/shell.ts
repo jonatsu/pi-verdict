@@ -337,7 +337,7 @@ const GIT_GLOBAL_FLAGS = new Set([
  *  (compared case-folded, so `-C` and `-c`, `-P` and `-p` share an entry); -1 when none follows.
  *  Fails closed: an option it does not model returns `undefined`, since it may take a value, and so
  *  does a word holding an expansion or glob, which can expand to no word or to several. */
-function gitSubcommandIndex(seg: readonly string[], at: number): number | undefined {
+export function gitSubcommandIndex(seg: readonly string[], at: number): number | undefined {
 	for (let k = at + 1; k < seg.length; k++) {
 		const word = seg[k].toLowerCase();
 		if (/[$*?[{]/.test(word)) return undefined;

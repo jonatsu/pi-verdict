@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { classifyPath } from "./floor.ts";
 import { baseForms, isWithin } from "./paths.ts";
-import { shellWords, wordBasename } from "./shell.ts";
+import { gitSubcommandIndex, shellWords, wordBasename } from "./shell.ts";
 
 // ============================================================================
 // Rule layer: the operands a user `allow` rule may admit (ADR-0008)
@@ -46,7 +46,7 @@ export function allowOperandsAdmit(command: string, cwd: string, homeReassigned:
 		if (expanded.homeRelative && homeReassigned()) return false;
 		if (classifyPath(expanded.path, cwd, false, true).verdict !== "allow") return false;
 	}
-	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words.slice(at + 1), cwd);
+	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, cwd);
 }
 
 /** Returns every word a command may read as a path, given the index of its command word (-1 for none):
@@ -93,55 +93,59 @@ function expandOperand(word: string, cwd: string): Expanded | null {
 	return { path: text, homeRelative };
 }
 
-/** git global options whose value is the next word. `-C` is handled on its own, and `-c` and
- *  `--config-env` refuse the admission before their value matters. */
-const GIT_GLOBAL_WITH_VALUE: ReadonlySet<string> = new Set(["--git-dir", "--work-tree", "--namespace", "--super-prefix", "--attr-source"]);
 /** git subcommands that read any file named outside the work tree, with or without `--no-index`. */
 const GIT_NO_INDEX_SUBCOMMANDS: ReadonlySet<string> = new Set(["diff", "grep"]);
 
 /**
- * Returns whether a git invocation stays inside the project, given the words after `git`. Refuses
- * configuration a global option injects (`-c`, `--config-env`, `--exec-path=`), each of which can run a
- * program; a `-C` that leaves the cwd; and, for `diff` and `grep`, `--no-index` or any operand outside
- * the cwd, since git then reads arbitrary files and implies `--no-index` itself. Operands after a `-C`
- * resolve from its directory, as git resolves them.
+ * Returns whether the git invocation whose `git` word is `words[at]` stays inside the project. Its global
+ * options are read by `gitSubcommandIndex`, so an option it does not model refuses the admission (fails
+ * closed). `gitRunsInProject` judges the global options and `gitReadsStayInProject` the operands of
+ * `diff` and `grep`.
  */
-function gitStaysInProject(args: readonly string[], cwd: string): boolean {
+function gitStaysInProject(words: readonly string[], at: number, cwd: string): boolean {
+	const sub = gitSubcommandIndex(words, at);
+	if (sub === undefined) return false;
+	const base = gitRunsInProject(words.slice(at + 1, sub === -1 ? words.length : sub), cwd);
+	if (base === null) return false;
+	return sub === -1 || !GIT_NO_INDEX_SUBCOMMANDS.has(words[sub]) || gitReadsStayInProject(words.slice(sub + 1), base, cwd);
+}
+
+/** Returns the directory git runs in after its global options, or null when an option injects
+ *  configuration that can run a program (`injectsGitConfig`) or a `-C` names a directory outside the cwd. */
+function gitRunsInProject(globals: readonly string[], cwd: string): string | null {
 	let base = path.resolve(cwd);
-	let k = 0;
-	for (; k < args.length && args[k].startsWith("-"); k++) {
-		const word = args[k];
-		if (injectsGitConfig(word)) return false;
-		if (word === "-C") {
-			const dir = args[k + 1] === undefined ? null : expandOperand(args[k + 1], cwd);
-			if (dir === null) return false;
-			base = path.resolve(base, dir.path);
-			if (!insideProject(base, cwd)) return false;
-			k++;
-		} else if (word.startsWith("-C")) {
-			return false;
-		} else if (GIT_GLOBAL_WITH_VALUE.has(word)) {
-			k++;
-		}
+	for (let k = 0; k < globals.length; k++) {
+		if (injectsGitConfig(globals[k])) return null;
+		if (globals[k] !== "-C") continue;
+		const dir = expandOperand(globals[k + 1] ?? "", cwd);
+		k++;
+		if (dir === null) return null;
+		base = path.resolve(base, dir.path);
+		if (!insideProject(base, cwd)) return null;
 	}
-	if (k >= args.length || !GIT_NO_INDEX_SUBCOMMANDS.has(args[k])) return true;
+	return base;
+}
+
+/** Returns whether a `diff` or `grep` stays in the project: no `--no-index`, and every operand inside the
+ *  cwd once resolved from `base`, since git implies `--no-index` for a path outside the work tree and then
+ *  reads any file. */
+function gitReadsStayInProject(args: readonly string[], base: string, cwd: string): boolean {
 	let optionsEnded = false;
-	for (const word of args.slice(k + 1)) {
+	for (const word of args) {
 		if (!optionsEnded && word === "--") {
 			optionsEnded = true;
-			continue;
-		}
-		if (!optionsEnded && word.startsWith("-")) {
+		} else if (!optionsEnded && word.startsWith("-")) {
 			if (isNoIndexFlag(word)) return false;
-			continue;
+		} else {
+			const operand = expandOperand(word, cwd);
+			if (operand === null || !insideProject(path.resolve(base, operand.path), cwd)) return false;
 		}
-		const operand = expandOperand(word, cwd);
-		if (operand === null || !insideProject(path.resolve(base, operand.path), cwd)) return false;
 	}
 	return true;
 }
 
-/** True for a global option that sets git configuration or the directory git runs its commands from. */
+/** True for a global option that sets git configuration (`-c`, `--config-env`), each key of which may name
+ *  a program git runs, or that moves the directory git loads its subcommand programs from (`--exec-path=`). */
 function injectsGitConfig(word: string): boolean {
 	return word.startsWith("-c") || word === "--config-env" || word.startsWith("--config-env=") || word.startsWith("--exec-path=");
 }

@@ -998,6 +998,10 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 		await reachesClassifier(GIT_ANY, "git --exec-path=/opt/x status");
 		await reachesClassifier(GIT_ANY, "git -C / status");
 	});
+	test("a git global option the gate does not model reaches the classifier (fails closed)", async () => {
+		await reachesClassifier(["^git\\b"], "git --frobnicate x diff /dev/null /opt/notes.txt");
+		await reachesClassifier(["^git\\b"], "git -Csub status");
+	});
 	test("git calls that stay inside the project stay rule-allowed", async () => {
 		const GIT_ANY = ["^git\\b"];
 		await staysAllowed(GIT_ANY, "git status");
