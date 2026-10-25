@@ -138,8 +138,9 @@ git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the opera
 `$HOME`, expands a one-segment glob to the cwd entries it matches, refuses any other expansion, grades every
 resulting path as a read through `classifyPath` with the floor on, refuses home-relative operands once the session
 may have reassigned `HOME` (`RuleContext.homeReassigned`, read lazily from the session branch by `home-guard.ts`),
-and refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`), that injects configuration,
-or that reads outside the cwd. A refusal only sends the call on to the classifier (ADR-0008 and its amendment).
+and, through `git-reach.ts`, refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`),
+that injects configuration, or that runs or reads outside the session cwd. A refusal only sends the call on to
+the classifier (ADR-0008 and its amendment).
 
 ### Known structural weakness
 
@@ -221,6 +222,7 @@ flowchart BT
     denyp[deny-paths]
     codeload[code-loading]
     redaction[redaction]
+    gitreach[git-reach: whether an allowed git call stays in the project]
     allowops[allow-operands: what a user allow may admit]
     homeguard[home-guard: whether HOME was reassigned]
     rules[rules: the step chain]
