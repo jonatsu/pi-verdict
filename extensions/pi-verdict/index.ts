@@ -89,7 +89,7 @@ import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate }
 import { hostKindOf } from "./floor.ts";
 import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
-import { type RulesLoadReport, SessionState } from "./state.ts";
+import { type FallbackStats, type RulesLoadReport, SessionState } from "./state.ts";
 import {
 	HOST_RETURN_MARGIN_MS,
 	type HostBudget,
@@ -189,6 +189,12 @@ function blockReasonText(tag: BlockTag, detail: string, policyDegraded: boolean)
 		: detail;
 	const clean = stated.trim().replace(/\.+$/, "");
 	return `[auto-mode ${tag} block] BLOCKED — this action did NOT run. Reason: ${clean || "(no further reason given)"}. Report the block to the user; never claim it succeeded or completed.`;
+}
+
+/** The `/automode` status line for the confidence cascade; shadow mode names what enforce would have done. */
+function cascadeSummary(s: Readonly<FallbackStats>, mode: "shadow" | "enforce"): string {
+	if (s.triggered === 0) return "confidence cascade: not triggered this session";
+	return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${mode === "enforce" ? "overruled" : "would-overrule"} ${s.overruled} · ${mode === "enforce" ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
 }
 
 /** Optional dependency injection for tests (#35): fake the compat fallback loader and the host's
@@ -534,7 +540,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	/** Status line cascade hint (#63/#67): shown while the floor or the fallback is configured */
 	const fallbackHint = () =>
 		state.userRules.classifierMinConfidence !== null || state.userRules.classifierFallbackModel
-			? `\n${state.fallback.summary(state.userRules.classifierFallbackMode)}`
+			? `\n${cascadeSummary(state.fallback.stats, state.userRules.classifierFallbackMode)}`
 			: "";
 	/** Status line degraded-policy hint (item 6c, Phase 6): named whenever the state holds */
 	const policyHint = () => (state.policyDegraded ? "\npolicy degraded: model-originated allows withheld (ADR-0010)" : "");

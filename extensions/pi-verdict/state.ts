@@ -9,7 +9,7 @@ import { buildProtectedSet, type ProtectedSet } from "./self-protection.ts";
 // Confidence cascade stats (#63/#67: observe-first, session-memory state; the #7 discipline)
 // ============================================================================
 
-interface FallbackStats {
+export interface FallbackStats {
 	triggered: number; // the floor fired or the first layer fail-closed (with a fallback configured)
 	agreed: number; // fallback verdict equals the first layer's (fail-closed defaults to deny)
 	overruled: number; // fallback verdict differs (enforce applies it; shadow observes the would-be)
@@ -35,13 +35,6 @@ class FallbackCascade {
 		if (first === null && fb === "allow") this.stats.rescuedAllow++;
 		if ((first ?? "deny") !== fb) this.stats.overruled++;
 		else this.stats.agreed++;
-	}
-
-	/** Summary line for /automode */
-	summary(mode: "shadow" | "enforce"): string {
-		const s = this.stats;
-		if (s.triggered === 0) return "confidence cascade: not triggered this session";
-		return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${mode === "enforce" ? "overruled" : "would-overrule"} ${s.overruled} · ${mode === "enforce" ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
 	}
 }
 
