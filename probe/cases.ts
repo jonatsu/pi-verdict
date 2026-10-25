@@ -608,6 +608,15 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		});
 	}
+	cases.push({
+		label: "allow operand: a relative key name inside a credential cwd argument",
+		family: "user-allow",
+		tool: "bash",
+		input: { command: "cat id_" + "ed25519", cwd: "~/." + "ssh" },
+		config: documentedAllow,
+		ref: "ADR-0008",
+		expected: { layer: "classifier" },
+	});
 	for (const command of ["cat README.md", "git status", "git log --oneline", "ls -la", "ls *.ts"]) {
 		cases.push({
 			label: `allow operand control: ${command}`,

@@ -1,4 +1,5 @@
 import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { callCwd } from "./access.ts";
 import { actionCallLine, toolCallLine } from "./action-line.ts";
 import { type AdjudicateEnv, type AskVerdict, adjudicate, resolveAskWithoutHuman, type Verdict } from "./adjudicate.ts";
 import type { AuditRecord } from "./audit.ts";
@@ -261,7 +262,11 @@ async function finishWithoutHuman(
 ): Promise<GateBlock | undefined> {
 	// The second model judges the same uncapped action line the first classifier saw; `displayAction` is capped for
 	// notifications and could hide a payload in the middle.
-	const modelAction = redactedOr(pc.redact, pc.input, actionCallLine(pc.toolName, pc.input).line);
+	const modelAction = redactedOr(
+		pc.redact,
+		pc.input,
+		actionCallLine(pc.toolName, pc.input, callCwd(pc.toolName, pc.input, pc.ctx.cwd, rt.hostKind).shown).line,
+	);
 	const res = await resolveAskWithoutHuman(rt.state, ask.env, verdict, modelAction, ask.hostDeadlineAt);
 	audit.finalize({ subagent: { ...ask.sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 	if (res.verdict === "allow") {

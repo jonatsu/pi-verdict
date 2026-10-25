@@ -57,6 +57,8 @@ const GRAY_ARGS_CHARS = 2000;
 const EXCERPT_CHARS = 2000;
 /** Separates a write's target from its content excerpt on the one action line. */
 const CONTENT_SEPARATOR = "| content:";
+/** Separates a command from the directory it runs in on the one action line. */
+const CWD_SEPARATOR = "| cwd:";
 
 /** Returns a sanitized excerpt behind a visible `[excerpt: N of M chars]` marker, so a cut is never silent. */
 function boundedExcerpt(text: string, maxChars: number): string {
@@ -67,15 +69,18 @@ function boundedExcerpt(text: string, maxChars: number): string {
 
 /** Returns the action under review as its transcript line, uncapped by `MAX_ENTRY_CHARS`. `overCap` is true
  *  when the counted part exceeds `ACTION_LINE_MAX_CHARS`; the rule layer then asks before any model runs.
- *  A content excerpt or an unrecognised tool's JSON is appended bounded and never sets `overCap`. */
-export function actionCallLine(name: string, args: Readonly<Record<string, unknown>>): { line: string; overCap: boolean } {
+ *  A content excerpt or an unrecognised tool's JSON is appended bounded and never sets `overCap`. `runsIn` is the
+ *  directory a command runs in when it is not the session cwd (`callCwd`); it is part of the counted action. */
+export function actionCallLine(
+	name: string,
+	args: Readonly<Record<string, unknown>>,
+	runsIn: string | null = null,
+): { line: string; overCap: boolean } {
 	// The cap counts raw lengths, as the floor reads the raw text: zero-width padding cannot shrink an
 	// action below the cap. Only the displayed line is sanitized.
 	if (typeof args.command === "string") {
-		return {
-			line: `${name}: ${escapeLineBreaks(stripZeroWidth(args.command))}`,
-			overCap: `${name}: ${args.command}`.length > ACTION_LINE_MAX_CHARS,
-		};
+		const raw = `${name}: ${args.command}${runsIn === null ? "" : ` ${CWD_SEPARATOR} ${runsIn}`}`;
+		return { line: escapeLineBreaks(stripZeroWidth(raw)), overCap: raw.length > ACTION_LINE_MAX_CHARS };
 	}
 	const access = toolAccess(name, args);
 	if (access.kind === "code" && access.command !== null) {

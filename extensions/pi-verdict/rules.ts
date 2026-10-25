@@ -20,7 +20,12 @@ import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
 export interface RuleContext {
+	/** The directory the call runs in (`callCwd`), which every relative path of the call resolves from. */
 	readonly cwd: string;
+	/** False when the call names a directory the gate cannot resolve; no allow rule may then vouch for it. */
+	readonly cwdExact: boolean;
+	/** The directory shown beside a command when it is not the session cwd. */
+	readonly runsIn: string | null;
 	readonly userRules: UserRules;
 	readonly protectedSet: ProtectedSet;
 	readonly denyPathBases: readonly string[];
@@ -101,7 +106,7 @@ function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleCon
 		targets: userRuleTargets(toolName, input, ctx.cwd),
 		relocatable,
 		internalUrl,
-		vouchable: !ctx.policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl,
+		vouchable: ctx.cwdExact && !ctx.policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl,
 	};
 }
 
@@ -219,8 +224,8 @@ function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 
 /** Asks on an action longer than the floor reads, before user allow, so no rule allows an unread tail.
  *  The deny-side layers run first; they can only narrow the outcome. */
-function overCapAsk(call: RuleCall, _ctx: RuleContext): RuleResult | null {
-	if (!actionCallLine(call.toolName, call.input).overCap) return null;
+function overCapAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
+	if (!actionCallLine(call.toolName, call.input, ctx.runsIn).overCap) return null;
 	return { verdict: "ask", reason: `action too long to grade safely (over ${ACTION_LINE_MAX_CHARS} chars)`, askSource: "rule" };
 }
 

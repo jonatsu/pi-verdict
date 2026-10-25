@@ -794,6 +794,74 @@ describe("simple-command allow guard (audit F2)", () => {
 	});
 });
 
+// omp's `bash` runs in its `cwd` argument, so every relative path of the call resolves from there.
+describe("bash cwd argument", () => {
+	const SSH_DIR = "~/." + "ssh";
+	const KEY = "id_" + "ed25519";
+	const OMP = { omp: true };
+	const bash = (command: string, cwd: string) => ({ command, cwd });
+
+	test("an allowed cat of a relative name inside a credential cwd reaches the classifier", async () => {
+		const h = session({ allow: ["^cat\\b"] }, OMP);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "bash", bash(`cat ${KEY}`, SSH_DIR))).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+	test("an allowed git diff of relative key names inside a credential cwd reaches the classifier", async () => {
+		const h = session({ allow: ["^git (status|log|diff)\\b"] }, OMP);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "bash", bash(`git diff ${KEY}.pub ${KEY}`, SSH_DIR))).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
+	test("a relative token resolves from the cwd argument for denyPaths", async () => {
+		await withTempDir(
+			"pv-cwd-",
+			async (dir) => {
+				const h = session({ denyPaths: [path.join(dir, "secret-sub")] }, OMP);
+				await toolCall(h, "bash", bash("cat secret-sub/notes.md", dir));
+				expect(h.confirms).toBe(1);
+				expect(h.calls.length).toBe(0);
+			},
+			os.homedir(),
+		);
+	});
+	test("a cwd argument inside a declared path asks even when the command names no path", async () => {
+		await withTempDir(
+			"pv-cwd-",
+			async (dir) => {
+				const h = session({ denyPaths: [dir] }, OMP);
+				await toolCall(h, "bash", bash("ls", path.join(dir, "sub")));
+				expect(h.confirms).toBe(1);
+				expect(h.calls.length).toBe(0);
+			},
+			os.homedir(),
+		);
+	});
+	test("the classifier's action line names the cwd argument when it is not the session cwd", async () => {
+		const h = session({}, OMP);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		await toolCall(h, "bash", bash("make test", "/opt/build"));
+		expect(h.calls[0].messages[0].content).toContain("bash: make test | cwd: /opt/build");
+	});
+	test("a cwd argument the gate cannot resolve withholds the allow (fails closed)", async () => {
+		for (const [cwd, opts] of [
+			["skill://x", OMP],
+			["sub", {}],
+		] as const) {
+			const h = session({ allow: ["^cat\\b"] }, opts);
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(h, "bash", bash("cat README.md", cwd))).toBeUndefined();
+			expect(h.calls.length).toBe(1);
+		}
+	});
+	test("a cwd argument inside the project keeps the allow", async () => {
+		const h = session({ allow: ["^cat\\b"] }, OMP);
+		expect(await toolCall(h, "bash", bash("cat README.md", "sub"))).toBeUndefined();
+		expect(await toolCall(h, "bash", bash("cat README.md", "/"))).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+});
+
 // A user `allow` regex admits a command only when every operand is a path the floor lets a file tool read.
 describe("allow operand grading (ADR-0008 amendment)", () => {
 	const SSH_KEY = "~/.ssh/" + "id_rsa";

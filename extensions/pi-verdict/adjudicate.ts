@@ -1,4 +1,5 @@
 import { parseJevConfidence } from "../jev-adapter.ts";
+import { callCwd } from "./access.ts";
 import { actionCallLine } from "./action-line.ts";
 import { assignsHome } from "./allow-operands.ts";
 import type { AuditRecord, FallbackAudit } from "./audit.ts";
@@ -530,19 +531,23 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
 	// the wide transcript redactor below, where over-redaction is harmless.
 	const denyPathBases = state.anchoredDenyPathBases(env.cwd);
+	// Every relative path of the call resolves from where it runs, which a `bash` call may name itself.
+	const where = callCwd(call.toolName, call.input, env.cwd, env.hostKind);
 	const rule = classifyByRules(call.toolName, call.input, {
-		cwd: env.cwd,
+		cwd: where.cwd,
+		cwdExact: where.exact,
+		runsIn: where.shown,
 		userRules: state.userRules,
 		protectedSet: state.protectedSet,
 		denyPathBases,
 		policyDegraded: state.policyDegraded,
-		namesProtectedPath: redactorFor(env.cwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
+		namesProtectedPath: redactorFor(where.cwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
 		host: env.hostKind,
 		homeReassigned: once(() => homeReassignedInSession(env.host, call.input)),
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	// The action under review is never elided: the rule layer already asked about an over-cap action.
-	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input).line };
+	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input, where.shown).line };
 	switch (rule.verdict) {
 		case "deny":
 			// Rule allows and denies stay unaudited (#54).

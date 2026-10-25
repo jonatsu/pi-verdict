@@ -186,7 +186,9 @@ export function callPathCandidates(
 		// "/"-only, so unify separators first (drive letter is skipped by the absolute-path branch;
 		// a mis-read shell escape only yields extra candidates — false positives ask, the safe direction)
 		const cmd = commandText(input);
-		return bashPathTokens(commandForPathTokens(cmd, path.sep === "\\"));
+		const tokens = bashPathTokens(commandForPathTokens(cmd, path.sep === "\\"));
+		// A command that names the directory it runs in touches that directory (`callCwd` resolved it into `cwd`).
+		return typeof input.cwd === "string" && input.cwd !== "" ? [cwd, ...tokens] : tokens;
 	}
 	const access = toolAccess(toolName, input);
 	if (access.direction === "mutating") return access.gradedWrites;
