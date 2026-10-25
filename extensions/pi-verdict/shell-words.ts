@@ -528,19 +528,7 @@ function inertWordIndexes(seg: readonly string[]): ReadonlySet<number> {
 
 /** Text filters that only print or count what they read, never run it or write it to a file; `sort -o`,
  *  `uniq IN OUT` and `less -o` can write it, so they are left out. */
-const PIPE_FILTERS: ReadonlySet<string> = new Set([
-	"grep",
-	"egrep",
-	"fgrep",
-	"head",
-	"tail",
-	"wc",
-	"cut",
-	"tr",
-	"nl",
-	"column",
-	"cat",
-]);
+const PIPE_FILTERS: ReadonlySet<string> = new Set(["grep", "egrep", "fgrep", "head", "tail", "wc", "cut", "tr", "nl", "column", "cat"]);
 
 /** Whether some pipe anywhere in the words feeds a command that may run its input. Every pipe counts,
  *  since a brace group or an `if` body pipes every command inside it (`{ true; echo '…'; } | sh`); only a
