@@ -356,11 +356,15 @@ function credentialDirectories(): string[] {
 	];
 }
 
-/** Is the target one of `credentialDirectories()` or an ancestor of one, so a recursive search of it
- *  reads a credential? A directory such as `~/.ssh` is already an S0 deny; the agent directory and
+/** Matches `/proc` and the process and thread directories below it that hold an `environ` file. */
+const PROC_ENVIRON_ANCESTOR = /^\/proc(?:\/(?:\d+|self|thread-self)(?:\/task(?:\/\d+)?)?)?\/?$/i;
+
+/** Is the target one of `credentialDirectories()` or an ancestor of one, or a `/proc` directory that
+ *  holds a process environment, so a recursive search of it reads a credential? A directory such as `~/.ssh` is already an S0 deny; the agent directory and
  *  `~/.docker` are not, because only some files inside them are secret. */
 export function s0DirectoryBeneath(target: string, cwd: string): boolean {
 	const abs = path.resolve(cwd, expandHome(target));
+	if (baseForms(abs).some((t) => PROC_ENVIRON_ANCESTOR.test(toRuleForm(t)))) return true;
 	const dirs = credentialDirectories().flatMap((d) => baseForms(d).map(fold));
 	return baseForms(abs).some((t) => {
 		const folded = fold(t);

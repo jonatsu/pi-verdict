@@ -1165,6 +1165,19 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 			expect(await toolCall(h, "grep", { pattern: "apiKey", path: "~/.omp" })).toBeUndefined();
 			expect(h.calls.length).toBe(1);
 		});
+		for (const dir of ["/proc", "/proc/", "/proc/self", "/proc/thread-self", "/proc/1", "/proc/1/task", "/proc/1/task/1/"]) {
+			test(`a recursive grep of ${dir}, which holds a process environment, is refused`, () => refused(dir));
+		}
+		test("a grep tool search of /proc/self reaches the classifier", async () => {
+			const h = session({});
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			expect(await toolCall(h, "grep", { pattern: "AWS_", path: "/proc/self" })).toBeUndefined();
+			expect(h.calls.length).toBe(1);
+		});
+		test("a recursive grep of a /proc subtree with no environment stays admitted", () => {
+			expect(allowOperandsAdmit("grep -r x /proc/sys/kernel", operandContext("/proj"))).toBe(true);
+			expect(allowOperandsAdmit("grep -r x /proc/self/net", operandContext("/proj"))).toBe(true);
+		});
 		test("a recursive grep of a project or of an unrelated home directory stays admitted", () => {
 			expect(allowOperandsAdmit("grep -r x src", operandContext("/proj"))).toBe(true);
 			expect(allowOperandsAdmit(`grep -r x ${path.join(home, "notes")}`, operandContext("/proj"))).toBe(true);

@@ -168,7 +168,9 @@ from the same table as the S0 grade: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, 
 the credential homes under `~/.config` and under a relocated `$XDG_CONFIG_HOME`, `~/.omp/agent`,
 `~/.pi/agent`, the agent directory, and omp's data directory (`~/.local/share/omp` or
 `$XDG_DATA_HOME/omp`). An operand that is such a directory counts as well as one that contains it,
-because the agent directory and `~/.docker` are not secret as a whole. The predicate reads no option's argument, so it over-approximates (`grep -e r`
+because the agent directory and `~/.docker` are not secret as a whole. `/proc` and the process and
+thread directories below it (`/proc/self`, `/proc/<pid>`, `/proc/<pid>/task/<tid>`) count too, since
+each holds an `environ` file. The predicate reads no option's argument, so it over-approximates (`grep -e r`
 counts as recursive); a false match only costs a classifier call. `grep x ~/notes.txt` and
 `grep -rn foo src` in a project stay rule allows.
 
