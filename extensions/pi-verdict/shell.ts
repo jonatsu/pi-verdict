@@ -18,12 +18,34 @@ import {
 /** Whether one command segment's words run a rule's dangerous command. */
 type SegmentMatcher = (seg: readonly string[]) => boolean;
 
+/** Patterns that match one after another, at any distance, each with the `g` flag. */
+type Tripwire = readonly RegExp[];
+
+/** A tripwire from its parts in order. Searching part by part keeps the cost linear in the text,
+ *  where one regex with lazy `[\s\S]*?` gaps backtracks for seconds on a long repeated command. */
+function inOrder(...parts: RegExp[]): Tripwire {
+	return parts.map((part) => new RegExp(part.source, `${part.flags}g`));
+}
+
+/** Whether every part of the tripwire matches, each after the end of the previous one. Each part but
+ *  the last is a fixed word, so its earliest match also ends earliest. */
+function tripwireMatches(text: string, tripwire: Tripwire): boolean {
+	let from = 0;
+	for (const part of tripwire) {
+		part.lastIndex = from;
+		const match = part.exec(text);
+		if (match === null) return false;
+		from = match.index + match[0].length;
+	}
+	return true;
+}
+
 /** A bash floor rule; any hit denies. A `raw` rule matches the full command string, pipelines and
  *  compound commands included. A `words` rule is decided by a raw-text tripwire that the shell-word
  *  view may clear when no command runs it (ADR-0007). */
 type BashDangerRule =
 	| { readonly kind: "raw"; readonly id: string; readonly reason: string; readonly pattern: RegExp }
-	| { readonly kind: "words"; readonly id: string; readonly reason: string; readonly tripwire: RegExp; readonly runs: SegmentMatcher };
+	| { readonly kind: "words"; readonly id: string; readonly reason: string; readonly tripwire: Tripwire; readonly runs: SegmentMatcher };
 
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
  *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the classifier.
@@ -77,7 +99,7 @@ const GIT_PUSH_FORCE_RULE: BashDangerRule = {
 	kind: "words",
 	id: "git-push-force",
 	reason: "git push --force",
-	tripwire: /\bpush\b[\s\S]*?(?:--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z0-9]*f[a-zA-Z0-9]*\b|\s\+)/i,
+	tripwire: inOrder(/\bpush\b/i, /--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z0-9]*f[a-zA-Z0-9]*\b|\s\+/i),
 	runs: (seg) => gitRunsIn(seg, { subcommand: "push", argsHit: pushArgsForce, mayBeSubcommand: (word) => word.toLowerCase() === "push" }),
 };
 
@@ -113,7 +135,7 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	{
 		kind: "words",
 		id: "git-reset-hard",
-		tripwire: /\bgit\b[\s\S]*?\breset\b[\s\S]*?--hard\b/i,
+		tripwire: inOrder(/\bgit\b/i, /\breset\b/i, /--hard\b/i),
 		runs: gitCommand("reset", (args) => args.some((arg) => arg.toLowerCase() === "--hard")),
 		reason: "git reset --hard",
 	},
@@ -121,14 +143,14 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	{
 		kind: "words",
 		id: "git-stash-clear",
-		tripwire: /\bgit\b[\s\S]*?\bstash\b[\s\S]*?\bclear\b/i,
+		tripwire: inOrder(/\bgit\b/i, /\bstash\b/i, /\bclear\b/i),
 		runs: gitCommand("stash", (args) => firstOperandIs(args, ["clear"])),
 		reason: "git stash clear (drops all stashes)",
 	},
 	{
 		kind: "words",
 		id: "git-clean-force",
-		tripwire: /\bgit\b[\s\S]*?\bclean\b[\s\S]*?(?:\s['"]?-[a-zA-Z]*f|--force)/i,
+		tripwire: inOrder(/\bgit\b/i, /\bclean\b/i, /\s['"]?-[a-zA-Z]*f|--force/i),
 		runs: gitCommand("clean", (args) => args.some((arg) => /^-[a-z]*f|^--force/i.test(arg))),
 		reason: "git clean -f",
 	},
@@ -136,14 +158,14 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	{
 		kind: "words",
 		id: "git-checkout-dot",
-		tripwire: /\bgit\b[\s\S]*?\bcheckout\b[\s\S]*?[\s'"]\.(?=[\s'"`;|&)]|$)/i,
+		tripwire: inOrder(/\bgit\b/i, /\bcheckout\b/i, /[\s'"]\.(?=[\s'"`;|&)]|$)/i),
 		runs: gitCommand("checkout", (args) => args.includes(".")),
 		reason: "git checkout . (discard working tree)",
 	},
 	{
 		kind: "words",
 		id: "git-restore",
-		tripwire: /\bgit\b[\s\S]*?\brestore\b/i,
+		tripwire: inOrder(/\bgit\b/i, /\brestore\b/i),
 		runs: gitCommand("restore", () => true),
 		reason: "git restore (discard changes)",
 	},
@@ -170,14 +192,14 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	{
 		kind: "words",
 		id: "gh-repo",
-		tripwire: /\bgh\b[\s\S]*?\brepo\b[\s\S]*?\b(?:create|delete|rename|archive)\b/i,
+		tripwire: inOrder(/\bgh\b/i, /\brepo\b/i, /\b(?:create|delete|rename|archive)\b/i),
 		runs: ghCommand("repo", ["create", "delete", "rename", "archive"]),
 		reason: "GitHub repository-level change",
 	},
 	{
 		kind: "words",
 		id: "gh-release",
-		tripwire: /\bgh\b[\s\S]*?\brelease\b[\s\S]*?\b(?:create|delete|edit)\b/i,
+		tripwire: inOrder(/\bgh\b/i, /\brelease\b/i, /\b(?:create|delete|edit)\b/i),
 		runs: ghCommand("release", ["create", "delete", "edit"]),
 		reason: "GitHub release change",
 	},
@@ -190,11 +212,11 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
  * word in the raw text, so the tripwire also tests the spelling with unescaped continuations removed
  * (an escaped `\\` pair is left alone: the shell splits there, and both views still hit that input).
  */
-function tripwireHit(command: string, pattern: RegExp): boolean {
+function tripwireHit(command: string, tripwire: Tripwire): boolean {
 	const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
-	if (pattern.test(capped)) return true;
+	if (tripwireMatches(capped, tripwire)) return true;
 	const joined = capped.replace(/(?<!\\)\\\r?\n/g, "");
-	return joined !== capped && pattern.test(joined);
+	return joined !== capped && tripwireMatches(joined, tripwire);
 }
 
 /** Whether a rule hits the command. A `words` rule hits when its tripwire matches and the word view
