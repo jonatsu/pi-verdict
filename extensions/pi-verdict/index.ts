@@ -68,12 +68,10 @@
  *               research/pi-model-call-and-ref-implementations.md
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { UserRules } from "./config.ts";
-import { POLICY_DEGRADED } from "./present.ts";
-import { type AutoModeDeps, createRuntime, refreshStatus as refreshRuntimeStatus } from "./runtime.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerMasterSwitch } from "./master-switch.ts";
+import { type AutoModeDeps, createRuntime, refreshStatus } from "./runtime.ts";
 import { endSession, reloadRules, startSession } from "./session-start.ts";
-import type { FallbackStats } from "./state.ts";
 import { handleToolCall } from "./tool-call.ts";
 import { runConfigEditor } from "./ui/config-editor.ts";
 
@@ -107,13 +105,6 @@ export { type FooterInfo, renderFooter } from "./ui/footer.ts";
 // Extension body
 // ============================================================================
 
-/** The `/automode` status line for the confidence cascade; shadow mode names what enforce would have done. */
-function cascadeSummary(s: Readonly<FallbackStats>, mode: UserRules["classifierFallbackMode"]): string {
-	if (s.triggered === 0) return "confidence cascade: not triggered this session";
-	const enforced = mode === "enforce";
-	return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${enforced ? "overruled" : "would-overrule"} ${s.overruled} · ${enforced ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
-}
-
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	pi.registerFlag("auto-mode", {
 		description: "Enable Auto Mode (rules + model classifier gating for tool calls)",
@@ -127,73 +118,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows", type: "boolean", default: false });
 
 	const rt = createRuntime(pi, deps);
-	const { state } = rt;
-	const refreshStatus = (ctx: ExtensionContext): void => refreshRuntimeStatus(rt, ctx);
-
-	/** Set the master toggle (shared, #15): /automode command and toggle shortcut use the same entry point, with no extra rules from the interaction surface. */
-	function setMasterSwitch(next: boolean, ctx: ExtensionContext) {
-		rt.enabled = next;
-		refreshStatus(ctx);
-	}
-
 	pi.on("session_start", (_event, ctx) => startSession(rt, ctx));
 	pi.on("session_shutdown", () => endSession(rt));
-	pi.on("model_select", (_e, ctx) => refreshStatus(ctx));
-
-	// Master toggle shortcut (#15): key comes from the user rules loaded first (fixed for the session—takes effect after config changes on
-	// /reload or a new session); handler matches /automode semantics, toggles silently,
-	// footer display is the only feedback
-	const registeredToggleKey = state.userRules.toggleShortcut;
-	if (registeredToggleKey) {
-		// KeyId is pi's compile-time union type (a string at runtime); user-configured keys are validated at runtime by KEY_COMBO_RE
-		// before an assertion cast; the zero-dependency constraint means no pi internal type path is imported
-		type PiShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
-		pi.registerShortcut(registeredToggleKey as PiShortcutKey, {
-			description: "Toggle Auto Mode (pi-verdict)",
-			handler: (ctx) => setMasterSwitch(!rt.enabled, ctx),
-		});
-	}
-	/** Toggle hint on the Usage line (#15): hidden when no key is registered; otherwise shows the registered key. */
-	const toggleHint = () => (registeredToggleKey ? ` · toggle: ${registeredToggleKey}` : "");
-	/** Status line denyPaths count (ADR-0002): shown only when configured */
-	const denyPathsHint = () => (state.userRules.denyPaths.length > 0 ? `\ndenyPaths: ${state.userRules.denyPaths.length} active` : "");
-	/** Status line audit hint (#54): shown only while the sink is active */
-	const auditHint = () => (state.audit ? `\naudit: on → ${state.audit.dir}` : "");
-	/** Status line cascade hint (#63/#67): shown while the floor or the fallback is configured */
-	const fallbackHint = () =>
-		state.userRules.classifierMinConfidence !== null || state.userRules.classifierFallbackModel
-			? `\n${cascadeSummary(state.fallback.stats, state.userRules.classifierFallbackMode)}`
-			: "";
-	/** Status line degraded-policy hint (item 6c, Phase 6): named whenever the state holds */
-	const policyHint = () => (state.policyDegraded ? `\n${POLICY_DEGRADED.status}` : "");
-
-	pi.registerCommand("automode", {
-		description: "Show Auto Mode status, or set it: /automode on|off",
-		handler: async (args, ctx) => {
-			const arg = args.trim().toLowerCase();
-			// Bare call: read-only status.
-			if (arg === "") {
-				ctx.ui.notify(
-					`${rt.enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${policyHint()}${denyPathsHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`,
-					"info",
-				);
-				return;
-			}
-			// Idempotent set: if the value matches the current state, do not toggle; only confirm
-			if (arg === "on" || arg === "off") {
-				const next = arg === "on";
-				const changed = next !== rt.enabled;
-				setMasterSwitch(next, ctx);
-				const head = next
-					? `🛡️ Auto Mode enabled${changed ? "" : " (unchanged)"}: tool calls adjudicated by rules + classifier`
-					: `Auto Mode disabled${changed ? "" : " (unchanged)"}: tool calls execute directly`;
-				ctx.ui.notify(`${head}${fallbackHint()}`, "info");
-				return;
-			}
-			// Unknown argument: reject strictly and show usage (case has been normalized)
-			ctx.ui.notify(`unknown argument: ${arg}\nUsage: /automode (status) | /automode on | /automode off${toggleHint()}`, "warning");
-		},
-	});
+	pi.on("model_select", (_e, ctx) => refreshStatus(rt, ctx));
+	registerMasterSwitch(rt);
 
 	pi.registerCommand("verdict", {
 		description: "Edit pi-verdict rules (allow/deny/denyPaths/tools/rules lists, gateOmpDir switch, footer style): /verdict [user|local]",
