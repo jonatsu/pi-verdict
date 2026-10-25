@@ -7,6 +7,7 @@ import {
 	type ClassifierOutcome,
 	classifyWithModel,
 	FALLBACK_TIMEOUT_MS,
+	type ModelCall,
 } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
@@ -78,6 +79,19 @@ function confidenceDemotion(outcome: ClassifierOutcome, rules: UserRules): { con
 	return null;
 }
 
+/** The model call every classifier consulted for this action shares. */
+function modelCallFor(state: SessionState, env: AdjudicateEnv, actionLine: string, redact: RedactorFn): ModelCall {
+	return {
+		host: env.host,
+		signal: env.signal,
+		complete: env.complete,
+		actionLine,
+		denyPathsActive: state.userRules.denyPaths.length > 0,
+		classifierRules: state.userRules.classifierRules,
+		redact,
+	};
+}
+
 interface CascadeResult {
 	/** set whenever the confidence floor fired (with or without a fallback) */
 	demoted?: true;
@@ -101,11 +115,9 @@ interface CascadeResult {
 async function runConfidenceCascade(
 	state: SessionState,
 	env: AdjudicateEnv,
+	call: ModelCall,
 	first: { verdict: "allow" | "ask" | "deny"; reason: string } | null,
 	trigger: { kind: "demotion"; confidence: number } | { kind: "fail-closed" },
-	denyPathsActive: boolean,
-	actionLine: string,
-	redact: RedactorFn,
 	deadlineAt: number,
 ): Promise<CascadeResult> {
 	const rules = state.userRules;
@@ -141,21 +153,8 @@ async function runConfidenceCascade(
 	const resolved = getFb();
 	if (!resolved) return failed(rules.classifierFallbackModel, "fallback model unresolvable (not found or no configured auth)");
 	env.onPhase?.("fallback", resolved.model.id);
-	const outcome = await classifyWithModel(
-		env.host,
-		env.signal,
-		env.complete,
-		resolved.model,
-		actionLine,
-		resolved.thinking,
-		denyPathsActive,
-		FALLBACK_TIMEOUT_MS,
-		state.userRules.classifierRules,
-		redact,
-		// item 7: the fallback is the last step, so nothing is reserved behind it — it may use
-		// whatever the shared deadline has left.
-		{ deadlineAt, reserveMs: 0 },
-	);
+	// The fallback is the last step, so it may use whatever the shared deadline has left.
+	const outcome = await classifyWithModel(call, resolved, FALLBACK_TIMEOUT_MS, { deadlineAt, reserveMs: 0 });
 	if (outcome.source !== "model") return failed(resolved.model.id, outcome.reason);
 	state.fallback.note(first?.verdict ?? null, outcome.verdict);
 	const fb: FallbackAudit = {
@@ -233,18 +232,12 @@ export async function resolveAskWithoutHuman(
 			},
 		};
 	}
+	// The second-model prompt is a model payload like any other, so it is redacted too (ADR-0002).
+	const call = modelCallFor(state, env, actionLine, env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd)));
 	const outcome = await classifyWithModel(
-		env.host,
-		env.signal,
-		env.complete,
-		resolved.model,
-		actionLine,
-		resolved.thinking,
-		rules.denyPaths.length > 0,
+		call,
+		resolved,
 		FALLBACK_TIMEOUT_MS,
-		rules.classifierRules,
-		// The second-model prompt is a model payload like any other, so it is redacted too (ADR-0002).
-		env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd)),
 		deadlineAt === undefined ? undefined : { deadlineAt, reserveMs: 0 },
 	);
 	state.fallback.note("ask", outcome.source === "model" ? outcome.verdict : null);
@@ -387,21 +380,12 @@ export async function adjudicate(
 	// The strict check above decides the deterministic ask; the wide one still keeps a protected
 	// path out of every model payload, so a call it matches reaches a model only as the marker.
 	// The audit record keeps the raw action line (ADR-0002: audit never leaves the machine).
-	const modelActionLine = redact(call.input) ? PROTECTED_PATH_MARKER : actionLine;
+	const modelCall = modelCallFor(state, env, redact(call.input) ? PROTECTED_PATH_MARKER : actionLine, redact);
 	if (!resolved) {
 		const reason = "no classifier model available (fail-closed)";
 		// #71: a fail-closed default deny is not a negative judgment. Record the applied
 		// fallback verdict when one exists; a headless ask is recorded as its degraded deny.
-		const cascade = await runConfidenceCascade(
-			state,
-			env,
-			null,
-			{ kind: "fail-closed" },
-			state.userRules.denyPaths.length > 0,
-			modelActionLine,
-			redact,
-			deadlineAt,
-		);
+		const cascade = await runConfidenceCascade(state, env, modelCall, null, { kind: "fail-closed" }, deadlineAt);
 		const eff = cascade.effective;
 		// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a
 		// model-originated allow (the cascade's second model here) becomes an ask — the
@@ -461,19 +445,7 @@ export async function adjudicate(
 	env.onPhase?.("classifier", resolved.model.id);
 	// item 7: hold time back for the fallback only when one is configured.
 	const reserveMs = state.userRules.classifierFallbackModel && env.getFallbackModel ? FALLBACK_TIMEOUT_MS : 0;
-	const outcome = await classifyWithModel(
-		env.host,
-		env.signal,
-		env.complete,
-		resolved.model,
-		modelActionLine,
-		resolved.thinking,
-		state.userRules.denyPaths.length > 0,
-		CLASSIFIER_TIMEOUT_MS,
-		state.userRules.classifierRules,
-		redact,
-		{ deadlineAt, reserveMs },
-	);
+	const outcome = await classifyWithModel(modelCall, resolved, CLASSIFIER_TIMEOUT_MS, { deadlineAt, reserveMs });
 
 	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
 	// (the first layer produced no verdict)
@@ -483,11 +455,9 @@ export async function adjudicate(
 			? await runConfidenceCascade(
 					state,
 					env,
+					modelCall,
 					demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null,
 					demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" },
-					state.userRules.denyPaths.length > 0,
-					modelActionLine,
-					redact,
 					deadlineAt,
 				)
 			: {};

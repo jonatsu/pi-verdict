@@ -1,8 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { USER_RULES_HEADER } from "../jev-adapter.ts";
 import { toolCallLine, transcriptSafe } from "./action-line.ts";
 import type { CompletionFn } from "./completion.ts";
-import { callModelOnce, type PipelineHost, type ThinkingLevel } from "./model-call.ts";
+import { callModelOnce, type ModelChoice, type PipelineHost, type ThinkingLevel } from "./model-call.ts";
 import { PROTECTED_PATH_MARKER, type RedactorFn } from "./redaction.ts";
 
 // ============================================================================
@@ -121,25 +120,34 @@ const CLASSIFIER_MAX_TOKENS = 512;
 // The retry's larger window covers models that ignore disabled reasoning or think past the first window.
 const CLASSIFIER_RETRY_MAX_TOKENS = 1024;
 
+/** What every classifier model consulted for one call shares: the session, the action under review and the
+ *  prompt inputs. Built once per adjudication, so the first layer and the fallback judge the same payload. */
+export interface ModelCall {
+	readonly host: PipelineHost;
+	readonly signal: AbortSignal | undefined;
+	readonly complete: CompletionFn;
+	/** The action line as models may see it: `PROTECTED_PATH_MARKER` when the redactor matches the call. */
+	readonly actionLine: string;
+	readonly denyPathsActive: boolean;
+	readonly classifierRules: readonly string[];
+	readonly redact: RedactorFn;
+}
+
 /** Classifies a gray-zone action in up to two attempts, the second with a larger token window. An error, an
  *  abort or output outside the verdict prefix contract retries; a timed-out attempt does not, even when the
- *  provider returns on the abort, since the retry would spend the fallback's budget. Fails closed: with no verdict, it returns a deny naming each attempt's failure. */
+ *  provider returns on the abort, since the retry would spend the fallback's budget. Fails closed: with no
+ *  verdict, it returns a deny naming each attempt's failure. */
 export async function classifyWithModel(
-	host: PipelineHost,
-	signal: AbortSignal | undefined,
-	complete: CompletionFn,
-	model: NonNullable<ExtensionContext["model"]>,
-	actionLine: string,
-	thinking: ThinkingLevel,
-	denyPathsActive: boolean,
+	call: ModelCall,
+	choice: NonNullable<ModelChoice>,
 	timeoutMs: number,
-	rules: readonly string[],
-	redact: RedactorFn,
 	budget?: ClassifierBudget,
 ): Promise<ClassifierOutcome> {
-	const transcript = buildTranscript(host, actionLine, redact);
+	const { host, signal, complete } = call;
+	const { model, thinking } = choice;
+	const transcript = buildTranscript(host, call.actionLine, call.redact);
 	const userMessage = `<transcript>\n${transcript}\n</transcript>\nJudge the LAST action in the transcript above. Your entire response MUST begin with <verdict>.`;
-	const systemPrompt = CLASSIFIER_SYSTEM + (denyPathsActive ? DENY_PATHS_HINT : "") + userRulesHint(rules);
+	const systemPrompt = CLASSIFIER_SYSTEM + (call.denyPathsActive ? DENY_PATHS_HINT : "") + userRulesHint(call.classifierRules);
 	const attempts: Array<[number, number]> = [
 		[1, CLASSIFIER_MAX_TOKENS],
 		[2, CLASSIFIER_RETRY_MAX_TOKENS],
