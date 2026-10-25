@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-25
+
 ### Added
 
 - The built-in deny floor now grades `~/.config/gcloud` (and `$XDG_CONFIG_HOME/gcloud`) as S0, so a `read` or `write` of the gcloud OAuth tokens (`access_tokens.db`) and service-account keys is a rule deny with zero model calls (plan item 3); the entry joins `gnupg|age|sops` in the home-anchored pattern, so a repository's own `.config/gcloud/` still reaches the classifier, and the pattern follows jev-engineering's `hard_deny` list (`eugeniughelbur/jev-engineering@82655a6d`, MIT).
@@ -479,7 +481,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/jonatsu/pi-verdict/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jonatsu/pi-verdict/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jonatsu/pi-verdict/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jonatsu/pi-verdict/compare/v0.18.1...v0.19.0
