@@ -16,7 +16,7 @@ decides happens inside that one handler call, and the host waits for it.
 sequenceDiagram
   participant Agent as Agent (model)
   participant Host as Host (omp / pi)
-  participant Handler as tool_call handler (index.ts)
+  participant Handler as tool_call handler (tool-call.ts)
   participant Core as adjudicate (pure, no UI)
   participant Model as Classifier model
   participant User as User (dialog)
@@ -38,8 +38,9 @@ sequenceDiagram
 
 The split between the handler and `adjudicate` is the main structural rule. `adjudicate` is pure decision code:
 it gets everything host-specific through `AdjudicateEnv` (model lookup, completion, UI presence, host kind, the
-session transcript), so tests and the probe drive it without a host. The handler owns everything that touches the
-user: dialogs, notifications, the footer, the status widget, and the subagent bridge.
+session transcript), so tests and the probe drive it without a host. The host-facing modules own everything that
+touches the user: the handler and the subagent bridge (`tool-call.ts`), presentation (`present.ts`), the footer
+and the status widget, and the commands.
 
 ## The decision flow: fast path and slow path
 
@@ -149,9 +150,15 @@ human.
 
 ## Presentation and the subagent bridge
 
-`settle` turns the ruling into a `Verdict` (`allow | deny | ask`, with the deciding layer as `source`).
-`presentVerdict` in the handler is the single place that turns a verdict into user-visible text: a block reason
-for the agent, a notification, or a dialog.
+`settle` turns the ruling into a `Verdict` (`allow | deny | ask`, with the deciding layer as `source`). The handler
+(`handleToolCall` in `tool-call.ts`) reads the call once into a `PresentedCall`: the action line, the form a
+notification may show, the session redactor built once for the call, the UI the call's notifications and dialogs go
+to, and the subagent label. `presentVerdict` (`present.ts`) is the single place that turns a verdict into
+user-visible text: a block reason for the agent, a notification, or a dialog. The degraded-policy texts of those
+surfaces sit together in `POLICY_DEGRADED`.
+
+An ask's audit record is appended exactly once, after the answer: with the user's answer, with the subagent
+resolution, or without an answer when the presentation throws.
 
 ```mermaid
 flowchart TD
@@ -159,26 +166,29 @@ flowchart TD
   Kind -->|allow| Run[run the tool]
   Kind -->|deny| Block[block with reason, notify]
   Kind -->|ask| Who{whose call?}
-  Who -->|root session| Dialog["dialog on its own UI<br/>Yes / No / No with explanation / Explain"]
-  Who -->|"subagent (omp)"| Gate{subagentGate}
+  Who -->|"root session: handleRootCall"| Dialog["dialog on its own UI<br/>Yes / No / No with explanation / Explain"]
+  Who -->|"subagent (omp): handleSubagentAsk"| Gate{subagentGate}
   Gate -->|off| Run
-  Gate -->|auto, or no root UI| Second["resolveAskWithoutHuman:<br/>second model, only an explicit allow runs"]
-  Gate -->|normal| RootDialog["dialog on the root UI, closed before<br/>omp's handler budget ends"]
+  Gate -->|auto, or no root UI| Second["finishWithoutHuman → resolveAskWithoutHuman:<br/>second model, only an explicit allow runs"]
+  Gate -->|"normal: askOnRootUi"| RootDialog["dialog on the root UI, closed before<br/>omp's handler budget ends"]
   RootDialog -->|answered| Answer[user's answer]
   RootDialog -->|"timed out (ask window)"| Second
   RootDialog -->|host budget nearly over| Expired[block: subagent-expired]
+  RootDialog -->|subagent run cancelled| Cancelled[block: subagent-cancelled]
   Dialog --> Answer
 ```
 
-A subagent has no UI of its own, so its asks go to the root session's UI. omp stops a subagent's handler after
-`extensionHandlers.toolCallTimeoutMs` and does not pause that clock for a dialog on another UI, so the gate reads
-the enforced value and closes the dialog first (`docs/host-contract.md`, `subagentAskWindow`). An ask that ends
-without a human answer denies unless the second model explicitly allows it in enforce mode.
+A subagent has no UI of its own, so its asks go to the root session's UI. `root-ui.ts` holds that UI and the
+dialog queue at module level, the one place shared by every session in the process: the host builds one extension
+instance per session, so everything else lives on that instance's `GateRuntime`. omp stops a subagent's handler
+after `extensionHandlers.toolCallTimeoutMs` and does not pause that clock for a dialog on another UI, so the gate
+reads the enforced value and closes the dialog first (`docs/host-contract.md`, `subagentAskWindow`). An ask that
+ends without a human answer denies unless the second model explicitly allows it in enforce mode.
 
 ## Module map
 
-Each arrow points from a group to the group that imports it; no module imports `index.ts`, which is the one
-place that wires host, state and UI together. Leaves at the bottom:
+Each arrow points from a group to the group that imports it; no module imports `index.ts`, which only registers
+the flags and wires each host hook to the module that owns it. Leaves at the bottom:
 
 ```mermaid
 flowchart BT
@@ -210,20 +220,29 @@ flowchart BT
     adjudicate[adjudicate]
   end
   subgraph host [host and user]
-    subagent[subagent bridge]
+    subagent[subagent: identity, host budget, ask window]
+    rootui[root-ui: shared root UI, dialog queue]
+    roles[model-roles: classifier, fallback, EXPLAIN-GATE models]
+    runtime[runtime: GateRuntime, footer refresh]
     ui[ui: dialog, footer, config editor]
-    index[index.ts: handler, commands]
+    present[present: block reasons, notifications, dialogs]
+    toolcall[tool-call: the tool_call handler]
+    session[session-start + master-switch: session hooks, /automode]
   end
+  index[index.ts: flags and hook wiring]
   knowledge --> layers
   knowledge --> model
   layers --> core
   model --> core
   core --> host
   model --> host
+  host --> index
 ```
 
 Inside a group, modules also import each other in order (for example `floor` imports `shell`, and `rules` imports
-the other rule steps). `config` sits in the bottom group because `access` reads its tool-name lists from it,
+the other rule steps). In the host group, `runtime` builds the `GateRuntime` that every later module takes: the
+session state, the master switch, the debug flag and the host seams. `present` builds on `runtime`, `model-roles`
+and the dialog; `tool-call` and `session-start` build on `present`; `index.ts` imports only the hook entry points. `config` sits in the bottom group because `access` reads its tool-name lists from it,
 lists that belong with the tool-access adapter itself.
 
 `jev-adapter.ts` sits beside the gate as a second extension: it registers the jev classifier backend (ADR-0003),
