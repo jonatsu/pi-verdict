@@ -99,20 +99,23 @@ flowchart LR
 - `C23` `model-roles.ts` resolves the classifier, fallback and EXPLAIN-GATE models through one `resolveModelRole`;
   `THINKING_LEVELS` is a const tuple with `isThinkingLevel`; the warn-once latches live in `SessionState`, cleared by
   `reset()`, and the classifier's two warnings have their own latches (a `### Fixed` entry under `## [Unreleased]`).
-- `C18` `index.ts` is flag registration and hook wiring (73 lines). One `GateRuntime` (`runtime.ts`) carries what
+- `C18` `index.ts` is flag registration and hook wiring (66 lines). One `GateRuntime` (`runtime.ts`) carries what
   the hooks share; the jobs live in `present.ts`, `tool-call.ts`, `session-start.ts`, `root-ui.ts`,
-  `master-switch.ts`, `model-roles.ts` and `ui/config-editor.ts`. `GateRuntime` came first rather than last, so
+  `master-switch.ts`, `model-roles.ts`, `ui/status.ts` and `ui/config-editor.ts`, which registers `/verdict` as
+  `master-switch.ts` registers `/automode`. `GateRuntime` came first rather than last, so
   every extracted module took it instead of a parameter list, and `root-ui.ts` came before `tool-call.ts`, which
   reads the root UI through it. `describeAction` is gone, and `presentVerdict` takes one `PresentedCall`.
 - `C19` the handler reads as `buildEnv`, `withStatusWidget`, `handleRootCall`, `handleSubagentAsk`, `askOnRootUi`
   and `finishWithoutHuman`; `GateBlock` is the one block type; `AskAudit` appends an ask's record once, built as a
   new record. Outside the subagent ask window, `presentNow` treats "aborted" as a decline.
-- `C33` the handler builds the session redactor once per call and every presentation site reuses it; adjudicate's
-  fallback builds it through the same `sessionRedactor`, and `redactedOr` replaces the redact-or-show ternary.
+- `C33` one construction point, `SessionState.redactor`, serves the handler and adjudicate's fallback, and
+  `redactedOr` (`redaction.ts`) replaces the redact-or-show ternary. The handler builds one redactor for
+  adjudication and widens it with one built afterwards for presentation (`anyRedactor`), so a `denyPaths` entry
+  added by `/verdict` during the call is still redacted; Explain widens it again when the user asks.
   `AdjudicateEnv.redact` stays optional, because the probe and the tests build an env without it.
 - `C37` the degraded-policy texts of the block reason, the deny notice, the `/automode` status and the load warning
-  sit together in `POLICY_DEGRADED` (`present.ts`); the footer badge and `WITHHELD_ALLOW_PREFIX` keep their short
-  forms in their modules.
+  sit together in `POLICY_DEGRADED` (`state.ts`, beside the flag); the footer badge and `WITHHELD_ALLOW_PREFIX` keep
+  their short forms in their modules.
 - `C17` the prototype header is replaced by the entry's role, and the floor's test hooks are no longer re-exported
   through `index.ts`; no pure helpers were left to move.
 - `C46`, the module-level state part: `rootUi` and the dialog queue sit together in `root-ui.ts`, because every
