@@ -4770,6 +4770,27 @@ describe("/verdict config editor", () => {
 		expect(h.calls.length).toBe(0);
 	});
 
+	test("a denyPaths entry added while the classifier runs keeps the path out of the deny notification (ADR-0002)", async () => {
+		const secret = path.join(os.homedir(), "pv-midcall-secret-dir");
+		const h = session({});
+		await h.handlers.session_start({}, h.ctx);
+		const complete = h.ctx.modelRegistry.complete;
+		h.ctx.modelRegistry.complete = async (m: any, req: any, opts: any) => {
+			h.selectPicks = ["denyPaths", "+ Add", "← Back", "Done"];
+			h.inputs = [secret];
+			await h.commands.verdict.handler("user", h.ctx);
+			return complete(m, req, opts);
+		};
+		h.responses = [{ text: "<verdict>deny</verdict> mock" }];
+		const r = await toolCall(h, "bash", { command: `cat ${secret}/notes.txt` });
+		expect(r?.block).toBe(true);
+		expect(readUser().denyPaths).toContain(secret);
+		const blocked = h.notifies.filter(([m]) => m.includes("Auto Mode blocked"));
+		expect(blocked.length).toBe(1);
+		expect(blocked[0][0]).toContain("<protected-path>");
+		expect(h.notifies.some(([m]) => m.includes(secret))).toBe(false);
+	});
+
 	test("invalid regex is rejected: file unchanged, warning notified", async () => {
 		const h = session({ allow: ["^keep"] });
 		const before = fs.readFileSync(USER_FILE(), "utf8");

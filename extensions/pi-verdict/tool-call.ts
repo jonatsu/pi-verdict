@@ -5,7 +5,7 @@ import type { AuditRecord } from "./audit.ts";
 import type { UserRules } from "./config.ts";
 import { resolveClassifier, resolveFallbackClassifier } from "./model-roles.ts";
 import { type AskWait, blockReason, type GateBlock, type PresentedCall, presentVerdict } from "./present.ts";
-import { type RedactorFn, redactedOr } from "./redaction.ts";
+import { anyRedactor, type RedactorFn, redactedOr } from "./redaction.ts";
 import { currentRootUi } from "./root-ui.ts";
 import { completionFor, type GateRuntime, refreshStatus } from "./runtime.ts";
 import type { SessionState } from "./state.ts";
@@ -141,8 +141,15 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 	const ui = !sub || ctx.hasUI ? ctx.ui : currentRootUi();
 	// Safe: the host passes a tool's arguments as a plain object, and every layer narrows each field it reads.
 	const input = event.input as Record<string, unknown>;
+	const adjudicationRedact = rt.state.redactor(ctx.cwd);
+	const env = buildEnv(rt, ctx, sub !== null, adjudicationRedact);
+	const verdict = await withStatusWidget(ctx, sub === null, event.toolName, (onPhase) =>
+		adjudicate(rt.state, { toolName: event.toolName, input }, onPhase ? { ...env, onPhase } : env),
+	);
+	// Rebuilt after adjudication, so a `denyPaths` entry a `/verdict` edit added while the call was in flight is
+	// redacted too; it keeps the earlier redactor's matches, so it fails toward the marker (ADR-0002).
+	const redact = anyRedactor(adjudicationRedact, rt.state.redactor(ctx.cwd));
 	const action = toolCallLine(event.toolName, input);
-	const redact = rt.state.redactor(ctx.cwd);
 	const pc: PresentedCall = {
 		toolName: event.toolName,
 		input,
@@ -153,10 +160,6 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 		ui: ui ?? ctx.ui,
 		label: sub ? subagentLabel(sub) : null,
 	};
-	const env = buildEnv(rt, ctx, sub !== null, redact);
-	const verdict = await withStatusWidget(ctx, sub === null, event.toolName, (onPhase) =>
-		adjudicate(rt.state, { toolName: event.toolName, input }, onPhase ? { ...env, onPhase } : env),
-	);
 	if (!sub) {
 		rt.state.countVerdict(verdict.verdict);
 		refreshStatus(rt, ctx);
@@ -167,7 +170,8 @@ export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx:
 	const audit = new AskAudit(rt.state, verdict, warn);
 	if (!sub) return handleRootCall(rt, verdict, pc, audit);
 	if (verdict.verdict !== "ask") return presentNow(rt, verdict, pc, audit);
-	return handleSubagentAsk(rt, verdict, pc, audit, { sub, mode, rootUi: ui, ctx, env, handlerStart });
+	// The second model's payload takes the presentation redactor too, the wider of the two.
+	return handleSubagentAsk(rt, verdict, pc, audit, { sub, mode, rootUi: ui, ctx, env: { ...env, redact }, handlerStart });
 }
 
 /** A root session's call: the user answers on the session's own UI, with no deadline. */

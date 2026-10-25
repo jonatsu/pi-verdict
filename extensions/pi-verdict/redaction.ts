@@ -18,6 +18,12 @@ export type RedactorFn = CallPredicate;
 /** The fixed text a redacted payload line becomes: a neutral privacy marker, not an instruction to the model. */
 export const PROTECTED_PATH_MARKER = "<protected-path>";
 
+/** A redactor that matches when any of `redactors` does. Combining an earlier and a later build of the session
+ *  redactor never redacts less than either, so a `denyPaths` edit in between fails toward the marker (ADR-0002). */
+export function anyRedactor(...redactors: readonly RedactorFn[]): RedactorFn {
+	return (input) => redactors.some((redact) => redact(input));
+}
+
 /** Returns `text`, or `PROTECTED_PATH_MARKER` when the redactor matches the call's input (ADR-0002). */
 export function redactedOr(redact: RedactorFn, input: Record<string, unknown>, text: string): string {
 	return redact(input) ? PROTECTED_PATH_MARKER : text;

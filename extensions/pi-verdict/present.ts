@@ -3,7 +3,7 @@ import { parseJevReason } from "../jev-adapter.ts";
 import type { AllowVerdict, AskVerdict, DenyVerdict, Verdict, VerdictSource } from "./adjudicate.ts";
 import { declineDetail, type ExplainGateResult, explainGate } from "./explain.ts";
 import { resolveExplainGate } from "./model-roles.ts";
-import { PROTECTED_PATH_MARKER, type RedactorFn } from "./redaction.ts";
+import { anyRedactor, PROTECTED_PATH_MARKER, type RedactorFn } from "./redaction.ts";
 import { completionFor, type GateRuntime } from "./runtime.ts";
 import type { SessionState } from "./state.ts";
 import type { UiContext } from "./subagent.ts";
@@ -56,7 +56,7 @@ export interface PresentedCall {
 	/** `action`, or the protected-path marker when the call names a protected path: the only form a notification
 	 *  carries (ADR-0002). */
 	readonly displayAction: string;
-	/** The session redactor, built once for this call. */
+	/** The session redactor as of the end of adjudication, widened by the one adjudication used. */
 	readonly redact: RedactorFn;
 	readonly ctx: ExtensionContext;
 	/** The UI the call's notifications and dialogs go to: its own, or the root session's for a subagent. */
@@ -201,7 +201,9 @@ async function explainAsk(
 ): Promise<ExplainGateResult> {
 	const role = resolveExplainGate(pc.ctx, rt.state);
 	if (!role) return { ok: false, error: "no model available" };
-	const hidden = pc.redact(pc.input);
+	// Widened when the user asks, so a `denyPaths` entry added since the call arrived is redacted too (ADR-0002).
+	const redact = anyRedactor(pc.redact, rt.state.redactor(pc.ctx.cwd));
+	const hidden = redact(pc.input);
 	const shown = (text: string): string => (hidden ? PROTECTED_PATH_MARKER : text);
 	return explainGate({
 		host: pc.ctx.sessionManager,
@@ -217,6 +219,6 @@ async function explainAsk(
 		defaultPrompt: rt.state.userRules.explainGatePrompt,
 		question,
 		// The EXPLAIN-GATE transcript is a model payload like the classifier's, so it takes the same redactor.
-		redact: pc.redact,
+		redact,
 	});
 }
