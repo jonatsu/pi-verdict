@@ -1430,6 +1430,8 @@ describe("word-view floor rules: quoted text clears, option gaps deny (ADR-0007)
 		floorDeny("if :; then :; echo 'git " + "reset --hard'; fi | sh", "git-reset-hard"));
 	test("a pipe into a text filter keeps inert positions", () =>
 		reachesClassifier("{ true; echo 'git " + "reset --hard'; } | grep -c reset"));
+	test("a pipe into a filter that can write a file withholds inert positions", () =>
+		floorDeny("echo 'git " + "reset --hard' | sort -o x.sh; sh x.sh", "git-reset-hard"));
 	test("a |& anywhere withholds inert positions", () => floorDeny("{ true; echo 'git " + "stash clear'; } |& bash", "git-stash-clear"));
 	for (const control of ["echo a#b", 'git commit -m "fix #12"', "grep '#' f"]) {
 		test(`a # that does not start a comment changes nothing: ${JSON.stringify(control)}`, () => reachesClassifier(control));
