@@ -87,8 +87,9 @@ The cutoff between the two paths is soundness. The rule layer may allow a call o
 is harmless, and it may deny or ask only on a pattern it can match reliably. Today the fast path allows a file
 read the path floor grades safe, a write inside the project, a user `allow` rule or `tools` entry, and an omp
 `xd://` device call; it allows no bash command on its own (no built-in command allowlist), so every command that
-the floor does not deny and no user rule covers takes the slow path. Widening the fast path to read-only commands
-is planned (TODO item 6) and waits for allow rules that grade a command's operands (TODO item 3).
+the floor does not deny and no user rule covers takes the slow path. A user `allow` rule admits a command only
+when the rule layer can grade every operand as a safe read. Widening the fast path to read-only commands is
+planned (TODO item 6) and builds on that operand grading.
 
 Every exit fails closed. A missing model, a timeout, an unparseable model reply or a failed config load ends in
 deny or ask, never allow. One deadline (`ADJUDICATION_BUDGET_MS`, 27 s) covers the whole slow path, inside which
@@ -115,7 +116,7 @@ flowchart TD
     Code --> Cap["5 Over-cap ask"]
   end
   subgraph allowside [allow steps: only for a vouchable call]
-    UAllow["6 User allow regexes<br/>(one simple command, ADR-0008),<br/>then the tools exemption"]
+    UAllow["6 User allow regexes<br/>(one simple command, operands graded,<br/>ADR-0008), then the tools exemption"]
   end
   Cap --> UAllow
   UAllow --> Opaque["7 Opaque ask<br/>(mutating call with no target)"]
@@ -126,6 +127,14 @@ A call is "vouchable", so the allow steps may admit it, only when no target is a
 relocatable read or opaque, and the user's policy loaded in full. The floor's allow is also turned gray for those
 same target shapes (`withholdFloorAllow`), so a call the rules cannot read as a literal path reaches the
 classifier instead of a silent allow.
+
+A user `allow` regex admits a bash or powershell command only after two checks, both run after the regex
+matches. `allowAdmits` (`shell.ts`) checks the shape: one simple command, no redirection, no re-parser and no
+git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the operands touch: it expands `~` and
+`$HOME`, refuses any other expansion, grades every operand as a read through `classifyPath` with the floor on,
+refuses home-relative operands once the session may have reassigned `HOME` (`RuleContext.homeReassigned`, read
+lazily from the session branch by `adjudicate`), and refuses a `git` call that injects configuration or reads
+outside the cwd. A refusal only sends the call on to the classifier (ADR-0008 and its amendment).
 
 ### Known structural weakness
 
@@ -207,6 +216,7 @@ flowchart BT
     denyp[deny-paths]
     codeload[code-loading]
     redaction[redaction]
+    allowops[allow-operands: what a user allow may admit]
     rules[rules: the step chain]
   end
   subgraph model [model calls]
