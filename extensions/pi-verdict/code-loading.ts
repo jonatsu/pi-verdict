@@ -132,7 +132,9 @@ const under = (child: string, root: string): boolean => child === root || strict
 const join = (root: string, name: string): string => `${withSlash(root)}${name}`;
 const relSegments = (child: string, root: string): string[] => child.slice(withSlash(root).length).split("/");
 
-/** The roots one call is graded against, computed once per call: the resolved agent directory,
+/** The roots one call is graded against, computed once per call: the session's agent directory and
+ *  the resolved one (the same directory unless a session was built on its own; both count, so the
+ *  set only grows),
  *  omp's data roots (`~/.omp`, and `$XDG_DATA_HOME/omp` when that variable is absolute), the
  *  home directory and the working directory, each in its lexical and realpath form. */
 interface Roots {
@@ -142,11 +144,12 @@ interface Roots {
 	cwd: string[];
 }
 
-function rootsFor(cwd: string): Roots {
+function rootsFor(cwd: string, agentDir: string): Roots {
 	const forms = (p: string): string[] => baseForms(path.resolve(p)).map(comparable);
 	const xdg = process.env.XDG_DATA_HOME;
 	const ompData = [path.join(os.homedir(), ".omp"), ...(xdg && path.isAbsolute(xdg) ? [path.join(xdg, "omp")] : [])];
-	return { agent: forms(agentDirPath()), ompData: ompData.flatMap(forms), home: forms(os.homedir()), cwd: forms(cwd) };
+	const agent = [...new Set([agentDir, agentDirPath()].flatMap(forms))];
+	return { agent, ompData: ompData.flatMap(forms), home: forms(os.homedir()), cwd: forms(cwd) };
 }
 
 /** The agent-directory spellings that sit anywhere in a path: `.omp/agent`,
@@ -272,10 +275,10 @@ function coveredEntry(scope: string, roots: Roots): CodeLoadHit | null {
 
 /** A command with `$PWD`, `$(pwd)`, `` `pwd` `` and `$PI_CODING_AGENT_DIR` (bare or braced, with an adjoining double quote)
  *  spelled out, so the path tokenizer sees the directory they name. */
-function expandCommandVariables(command: string, cwd: string): string {
+function expandCommandVariables(command: string, cwd: string, agentDir: string): string {
 	return command
 		.replace(/"?(?:\$(?:\{PWD\}|PWD\b)|\$\(\s*pwd\s*\)|`\s*pwd\s*`)"?/g, () => cwd)
-		.replace(/"?\$(?:\{PI_CODING_AGENT_DIR\}|PI_CODING_AGENT_DIR\b)"?/g, () => agentDirPath());
+		.replace(/"?\$(?:\{PI_CODING_AGENT_DIR\}|PI_CODING_AGENT_DIR\b)"?/g, () => agentDir);
 }
 
 /** Does the call write where the host loads code in a later session (ADR-0011)? Returns the first
@@ -284,11 +287,17 @@ function expandCommandVariables(command: string, cwd: string): string {
  *  because their direction is unknown. A mutating scope tool also hits when a location sits
  *  inside the subtree it edits. Each target is compared in every form the host can resolve it
  *  to, including the form rebuilt from its nearest existing ancestor, so a new file under a
- *  symlinked directory is matched by where it lands. */
-export function hitCodeLoadPath(toolName: string, input: Record<string, unknown>, cwd: string): CodeLoadHit | null {
-	const roots = rootsFor(cwd);
+ *  symlinked directory is matched by where it lands. `$PI_CODING_AGENT_DIR` in a command expands
+ *  to `agentDir`, the session's agent directory. */
+export function hitCodeLoadPath(
+	toolName: string,
+	input: Record<string, unknown>,
+	cwd: string,
+	agentDir: string = agentDirPath(),
+): CodeLoadHit | null {
+	const roots = rootsFor(cwd, agentDir);
 	const access = toolAccess(toolName, input);
-	const command = isCommandTool(toolName) ? expandCommandVariables(commandText(input), cwd) : null;
+	const command = isCommandTool(toolName) ? expandCommandVariables(commandText(input), cwd, agentDir) : null;
 	const graded = command === null ? input : { ...input, command };
 	const subtree = access.scope && access.direction === "mutating";
 	for (const candidate of callPathCandidates(toolName, graded, cwd, "written")) {

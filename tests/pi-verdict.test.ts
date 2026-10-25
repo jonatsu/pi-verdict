@@ -5124,6 +5124,46 @@ describe("code-loading ask (ADR-0011)", () => {
 			expectAnyCodeLoadAsk(await toolCall(h, "bash", { command }), h);
 		}
 	});
+
+	describe("a session built on its own agent directory", () => {
+		const env: AdjudicateEnv = {
+			cwd: "/proj",
+			hasUI: false,
+			getModel: () => null,
+			complete: async () => {
+				throw new Error("unreachable");
+			},
+			host: { getBranch: () => [], getSessionId: () => "s1" },
+		};
+		const judge = (agentDir: string, command: string) => {
+			setConfig({});
+			return adjudicate(new SessionState(agentDir), { toolName: "bash", input: { command } }, env);
+		};
+
+		test("$PI_CODING_AGENT_DIR expands to the session's agent directory", async () => {
+			await withTempDir("pv-cl-agent-", async (agentDir) => {
+				expect(agentDir).not.toBe(TMP_AGENT);
+				const verdict = await judge(agentDir, "cp x $PI_CODING_AGENT_DIR/extensions/x.ts");
+				expect(verdict).toMatchObject({ verdict: "deny", source: "rule", degraded: true });
+				expect(verdict.reason).toContain(path.join(agentDir, "extensions", "x.ts"));
+			});
+		});
+		test("a path relative to the session's agent directory is graded where it lands", async () => {
+			await withTempDir("pv-cl-agent-", async (dir) => {
+				const agentDir = path.join(dir, ".omp", "agent");
+				const verdict = await judge(agentDir, "cp x $PI_CODING_AGENT_DIR/../plugins/x");
+				expect(verdict).toMatchObject({ verdict: "deny", source: "rule", degraded: true });
+				expect(verdict.reason).toContain("project code directory");
+			});
+		});
+		test("a write into the session's agent directory asks", async () => {
+			await withTempDir("pv-cl-agent-", async (agentDir) => {
+				const verdict = await judge(agentDir, `cp x ${path.join(agentDir, "extensions", "x.ts")}`);
+				expect(verdict).toMatchObject({ verdict: "deny", source: "rule", degraded: true });
+				expect(verdict.reason).toContain("agent directory code");
+			});
+		});
+	});
 });
 
 // ── /verdict config editor ──────────────────────────────

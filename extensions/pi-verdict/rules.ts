@@ -221,7 +221,7 @@ function protectedSpellingAsk(call: RuleCall, ctx: RuleContext): RuleResult | nu
  *  path, so it runs after both protected-path asks, which withhold theirs. */
 function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (!ctx.userRules.builtinDenyFloor) return null;
-	const code = hitCodeLoadPath(call.toolName, call.input, ctx.commandCwd);
+	const code = hitCodeLoadPath(call.toolName, call.input, ctx.commandCwd, ctx.protectedSet.agentDir);
 	if (!code) return null;
 	return {
 		verdict: "ask",
