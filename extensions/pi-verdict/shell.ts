@@ -44,12 +44,14 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 	{ id: "git-checkout-dot", pattern: /\bgit\s+checkout\s+(--\s+)?\.(?:\s|$)/i, reason: "git checkout . (discard working tree)" },
 	{ id: "git-restore", pattern: /\bgit\s+restore\b/i, reason: "git restore (discard changes)" },
 	{ id: "remote-exec", pattern: /\b(curl|wget)\b[^;|&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b/i, reason: "remote code execution (curl|sh)" },
-	// Matches the environment or the shell history piped into a network tool. Trivially evaded
-	// (`env > f; curl -T f …`); it only removes the one-line spelling from the classifier's judgement.
+	// Matches the environment or the shell history piped into a network tool: one pipe or `|&` (not the
+	// `||` operator), on the same logical line (a backslash-newline continues it), to a bare or
+	// path-qualified tool name. Trivially evaded (`env > f; curl -T f …`); it only removes the one-line
+	// spelling from the classifier's judgement.
 	// Pattern from eugeniughelbur/jev-engineering@82655a6d policy.json (MIT, Copyright (c) 2026 Eugeniu Ghelbur).
 	{
 		id: "env-exfil",
-		pattern: /\b(env|printenv|history)\b[^;&]*\|\s*(curl|wget|nc|ncat)\b/i,
+		pattern: /\b(env|printenv|history)\b(?:[^;&\n]|\\\n)*(?<!\|)\|&?\s*(?:[\w./-]*\/)?(curl|wget|nc|ncat)\b/i,
 		reason: "environment or history piped to a network tool",
 	},
 	{ id: "gh-repo", pattern: /\bgh\s+repo\s+(create|delete|rename|archive)\b/i, reason: "GitHub repository-level change" },
