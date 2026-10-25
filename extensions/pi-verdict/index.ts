@@ -263,7 +263,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	function presentAllow(v: AllowVerdict, displayAction: string, note: Notify): void {
 		if (debug) {
 			if (v.source === "rule") note(`🛡️ allow (rule): ${displayAction}`, "info");
-			else if (v.source === "protected-path") note("🛡️ allow (protected-path confirm)", "info");
 			else note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
 		} else if (state.userRules.notifyAllows && v.source === "classifier") {
 			note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");

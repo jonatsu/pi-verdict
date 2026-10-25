@@ -35,6 +35,8 @@ interface VerdictBase {
 
 export interface AllowVerdict extends VerdictBase {
 	readonly verdict: "allow";
+	/** Only the rule layer and a model allow; a withheld model allow is an ask or a deny. */
+	readonly source: "rule" | "classifier";
 	readonly degraded: false;
 }
 
@@ -98,10 +100,15 @@ interface Adjudication {
 }
 
 /** A decision before presentation: what to do, why, and the source the presentation keys on. */
-interface Ruling {
-	readonly verdict: VerdictWord;
-	readonly reason: string;
-	readonly source: VerdictSource;
+type Ruling =
+	| { readonly verdict: "allow"; readonly reason: string; readonly source: AllowVerdict["source"] }
+	| { readonly verdict: "ask" | "deny"; readonly reason: string; readonly source: VerdictSource };
+
+/** Returns a model-path ruling with its presentation source; an allow always comes from a model, so it
+ *  presents as the classifier's. */
+function modelRuling(applied: { verdict: VerdictWord; reason: string }, source: VerdictSource): Ruling {
+	if (applied.verdict === "allow") return { verdict: "allow", reason: applied.reason, source: "classifier" };
+	return { verdict: applied.verdict, reason: applied.reason, source };
 }
 
 /** Returns the confidence when the first layer's ruling falls below `classifierMinConfidence`, so the call
@@ -384,16 +391,17 @@ function settle(a: Adjudication, s: Settlement): Verdict {
 		};
 	}
 	if (record) state.audit?.append(record);
-	switch (verdict) {
+	const { ruling } = s;
+	switch (ruling.verdict) {
 		case "allow":
-			return { verdict: "allow", reason, source, degraded: false };
+			return { verdict: "allow", reason, source: ruling.source, degraded: false };
 		case "deny":
 			return { verdict: "deny", reason, ...detail, source, degraded: false };
 		case "ask":
 			return { verdict: "deny", reason, ...detail, source, degraded: true };
 		default: {
-			const unhandled: never = verdict;
-			throw new Error(`unhandled ruling: ${unhandled}`);
+			const unhandled: never = ruling;
+			throw new Error(`unhandled ruling: ${String(unhandled)}`);
 		}
 	}
 }
@@ -419,7 +427,7 @@ async function adjudicateWithoutModel(a: Adjudication, modelCall: ModelCall, dea
 	const applied = withholdModelAllow(a.state.policyDegraded, cascade.effective ?? { verdict: "deny", reason }, "ask");
 	const sources = modelPathSources(applied.withheld, cascade.effective?.source ?? "fail-closed", "fail-closed");
 	return settle(a, {
-		ruling: { verdict: applied.verdict, reason: applied.reason, source: sources.verdict },
+		ruling: modelRuling(applied, sources.verdict),
 		record: {
 			verdict: applied.verdict,
 			reason: applied.reason,
@@ -465,7 +473,7 @@ async function adjudicateGrayZone(
 			: {};
 	const applied = withholdModelAllow(state.policyDegraded, cascade.effective ?? outcome, "ask");
 	const sources = modelPathSources(applied.withheld, cascade.effective?.source ?? "classifier", outcome.source);
-	const ruling: Ruling = { verdict: applied.verdict, reason: applied.reason, source: sources.verdict };
+	const ruling = modelRuling(applied, sources.verdict);
 	// The record keeps the first layer's ruling, except that a first layer that gave none records the
 	// fallback's applied verdict instead of its default deny.
 	const rescued = cascade.effective !== undefined && outcome.source === "fail-closed";
