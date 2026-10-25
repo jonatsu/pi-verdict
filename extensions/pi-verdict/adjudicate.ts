@@ -1,7 +1,6 @@
 import { parseJevConfidence } from "../jev-adapter.ts";
 import { callCwd } from "./access.ts";
 import { actionCallLine } from "./action-line.ts";
-import { assignsHome } from "./allow-operands.ts";
 import type { AuditRecord, FallbackAudit } from "./audit.ts";
 import {
 	ADJUDICATION_BUDGET_MS,
@@ -15,6 +14,7 @@ import {
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
 import type { HostKind } from "./floor.ts";
+import { homeReassignedInSession, once } from "./home-guard.ts";
 import type { ModelChoice, PipelineHost } from "./model-call.ts";
 import { HOST_REDACTION_PLATFORM, type RedactorFn, redactedOr, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
@@ -490,39 +490,6 @@ async function adjudicateGrayZone(
 		},
 		autoResolve: autoResolveFor(ruling, cascade),
 	});
-}
-
-/** Returns `fn`'s value, computed on the first call only. */
-function once<T>(fn: () => T): () => T {
-	let computed: { value: T } | null = null;
-	return () => {
-		computed ??= { value: fn() };
-		return computed.value;
-	};
-}
-
-/** Returns whether this call's command or an earlier command call on the session branch may assign `HOME`.
- *  The agent's shell persists between calls, so one assignment moves `~` for the rest of the session.
- *  Fails closed: a branch the host cannot hand over counts as reassigned. */
-function homeReassignedInSession(host: PipelineHost, input: Readonly<Record<string, unknown>>): boolean {
-	if (typeof input.command === "string" && assignsHome(input.command)) return true;
-	let branch: ReturnType<PipelineHost["getBranch"]>;
-	try {
-		if (typeof host.getBranch !== "function") return true;
-		branch = host.getBranch();
-	} catch {
-		return true;
-	}
-	for (const entry of branch) {
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		for (const block of entry.message.content) {
-			if (block.type !== "toolCall") continue;
-			// Safe: a tool call's arguments are a JSON object, and the field is narrowed before use.
-			const command = (block.arguments as Record<string, unknown>).command;
-			if (typeof command === "string" && assignsHome(command)) return true;
-		}
-	}
-	return false;
 }
 
 /** Returns the verdict for one tool call: the rule layer's, else the gray-zone classifier's. Fails closed:

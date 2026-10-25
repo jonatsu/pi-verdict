@@ -136,7 +136,7 @@ matches. `allowAdmits` (`shell.ts`) checks the shape: one simple command, no red
 git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the operands touch: it expands `~` and
 `$HOME`, refuses any other expansion, grades every operand as a read through `classifyPath` with the floor on,
 refuses home-relative operands once the session may have reassigned `HOME` (`RuleContext.homeReassigned`, read
-lazily from the session branch by `adjudicate`), and refuses a `git` call that injects configuration or reads
+lazily from the session branch by `home-guard.ts`), and refuses a `git` call that injects configuration or reads
 outside the cwd. A refusal only sends the call on to the classifier (ADR-0008 and its amendment).
 
 ### Known structural weakness
@@ -220,6 +220,7 @@ flowchart BT
     codeload[code-loading]
     redaction[redaction]
     allowops[allow-operands: what a user allow may admit]
+    homeguard[home-guard: whether HOME was reassigned]
     rules[rules: the step chain]
   end
   subgraph model [model calls]

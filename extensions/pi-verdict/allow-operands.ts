@@ -11,10 +11,16 @@ import { shellWords, wordBasename } from "./shell.ts";
 /** Operands graded per command; a command with more is refused, so the cost of one admission stays bounded. */
 export const MAX_GRADED_OPERANDS = 64;
 
-/** A leading shell variable assignment (`NAME=value`, `NAME+=value`); its value is an operand too. */
+/** Matches a leading shell variable assignment (`NAME=value`, `NAME+=value`). */
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+/** Matches `$HOME` or `${HOME}`, not the prefix of a longer variable name such as `$HOMEBREW`. */
+const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
+/** Matches a brace expansion: a `{` whose closing `}` follows a `,` or a `..`. */
+const BRACE_EXPANSION = /\{[^}]*(?:,|\.\.)[^}]*\}/;
+/** Matches a glob metacharacter. */
+const GLOB_CHARS = /[*?[]/;
 
-/** An operand after shell expansion, or null when the gate cannot know what the shell would pass. */
+/** An operand after shell expansion. */
 interface Expanded {
 	readonly path: string;
 	/** The operand names a path through the home directory, which a reassigned `HOME` moves. */
@@ -31,7 +37,8 @@ interface Expanded {
  */
 export function allowOperandsAdmit(command: string, cwd: string, homeReassigned: () => boolean): boolean {
 	const words = shellWords(command);
-	const operands = operandWords(words);
+	const at = words.findIndex((word) => !ASSIGNMENT.test(word));
+	const operands = operandWords(words, at);
 	if (operands.length > MAX_GRADED_OPERANDS) return false;
 	for (const word of operands) {
 		const expanded = expandOperand(word, cwd);
@@ -39,47 +46,29 @@ export function allowOperandsAdmit(command: string, cwd: string, homeReassigned:
 		if (expanded.homeRelative && homeReassigned()) return false;
 		if (classifyPath(expanded.path, cwd, false, true).verdict !== "allow") return false;
 	}
-	const at = commandIndex(words);
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words.slice(at + 1), cwd);
 }
 
-/** Index of the command word, the first word that is not a leading assignment; -1 when there is none. */
-function commandIndex(words: readonly string[]): number {
-	return words.findIndex((word) => !ASSIGNMENT.test(word));
-}
-
-/** Returns every word a command may read as a path: each word after the command word that is not an
- *  option, the `=`-attached value of an option or assignment, and every word after `--`. Over-extraction
- *  is the safe direction: a word that is no path grades as an in-project file. */
-function operandWords(words: readonly string[]): string[] {
-	const operands: string[] = [];
-	let commandSeen = false;
+/** Returns every word a command may read as a path, given the index of its command word (-1 for none):
+ *  the value of each leading assignment, each later word that is not an option, the `=`-attached value of
+ *  an option, and every word after `--`. Over-extraction is the safe direction: a word that is no path
+ *  grades as an in-project file. */
+function operandWords(words: readonly string[], at: number): string[] {
+	const assignments = at === -1 ? words : words.slice(0, at);
+	const operands = assignments.map(valueAfterEquals);
 	let optionsEnded = false;
-	for (const word of words) {
-		if (!commandSeen) {
-			if (ASSIGNMENT.test(word)) {
-				operands.push(word.slice(word.indexOf("=") + 1));
-				continue;
-			}
-			commandSeen = true;
-			continue;
-		}
-		if (optionsEnded || !word.startsWith("-")) {
-			operands.push(word);
-		} else if (word === "--") {
-			optionsEnded = true;
-		} else if (word.includes("=")) {
-			operands.push(word.slice(word.indexOf("=") + 1));
-		}
+	for (const word of at === -1 ? [] : words.slice(at + 1)) {
+		if (optionsEnded || !word.startsWith("-")) operands.push(word);
+		else if (word === "--") optionsEnded = true;
+		else if (word.includes("=")) operands.push(valueAfterEquals(word));
 	}
 	return operands;
 }
 
-/** `$HOME` or `${HOME}`, not the prefix of a longer variable name such as `$HOMEBREW`. */
-const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
-/** A brace expansion: a `{` whose closing `}` follows a `,` or a `..`. */
-const BRACE_EXPANSION = /\{[^}]*(?:,|\.\.)[^}]*\}/;
-const GLOB_CHARS = /[*?[]/;
+/** Returns the text after the first `=`. */
+function valueAfterEquals(word: string): string {
+	return word.slice(word.indexOf("=") + 1);
+}
 
 /**
  * Expands an operand the way bash would where the result is exact: a leading `~` or `~/`, `$HOME` and
@@ -91,17 +80,11 @@ const GLOB_CHARS = /[*?[]/;
  */
 function expandOperand(word: string, cwd: string): Expanded | null {
 	const home = os.homedir();
-	let homeRelative = false;
-	let text = word.replace(HOME_VARIABLE, () => {
-		homeRelative = true;
-		return home;
-	});
-	if (text === "~" || text.startsWith("~/")) {
-		text = home + text.slice(1);
-		homeRelative = true;
-	} else if (text.startsWith("~")) {
-		return null;
-	}
+	const viaTilde = word === "~" || word.startsWith("~/");
+	if (!viaTilde && word.startsWith("~")) return null;
+	const replaced = word.replace(HOME_VARIABLE, () => home);
+	const text = viaTilde ? home + replaced.slice(1) : replaced;
+	const homeRelative = viaTilde || replaced !== word;
 	if (text.includes("$") || BRACE_EXPANSION.test(text)) return null;
 	if (GLOB_CHARS.test(text)) {
 		if (text.includes("/") || text.startsWith(".")) return null;
@@ -172,16 +155,4 @@ function isNoIndexFlag(word: string): boolean {
 function insideProject(target: string, cwd: string): boolean {
 	const cwdForms = baseForms(path.resolve(cwd));
 	return baseForms(target).every((form) => cwdForms.some((c) => isWithin(form, c)));
-}
-
-/** Matches text that may assign `HOME`: a plain or `+=` assignment, a `${HOME:=…}` default, a declaring
- *  builtin (`export`, `declare`, `typeset`, `readonly`, `local`, `read`, `unset`) naming it, `for HOME`
- *  and `printf -v HOME`. Over-matching only refuses home-relative admissions. */
-const HOME_ASSIGNMENT =
-	/(?<![\w$])HOME\s*\+?=|\$\{HOME:?=|\b(?:export|declare|typeset|readonly|local|read|unset)\b[^\n;&|]*(?<![\w${])HOME\b|\bfor\s+HOME\b|-v\s*HOME\b/;
-
-/** Returns whether a command text may assign `HOME`, after which `~` names a directory the gate does
- *  not know for the rest of the agent's shell session. */
-export function assignsHome(command: string): boolean {
-	return HOME_ASSIGNMENT.test(command);
 }

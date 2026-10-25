@@ -11,10 +11,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
-import { allowOperandsAdmit, assignsHome, MAX_GRADED_OPERANDS } from "../extensions/pi-verdict/allow-operands.ts";
+import { allowOperandsAdmit, MAX_GRADED_OPERANDS } from "../extensions/pi-verdict/allow-operands.ts";
 import { buildTranscript } from "../extensions/pi-verdict/classifier.ts";
 import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
 import { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "../extensions/pi-verdict/floor.ts";
+import { assignsHome } from "../extensions/pi-verdict/home-guard.ts";
 import autoMode, {
 	type AdjudicateEnv,
 	adjudicate,
