@@ -20,6 +20,7 @@ Judge every change by these goals, set by the user; work that serves none of the
 
 - Read before starting new work: [TODO.md](TODO.md) (ranked open work); plans: [docs/plans/](docs/plans/), finished ones in `docs/plans/archive/`.
 - Read when naming a concept or term: [CONTEXT.md](CONTEXT.md).
+- Read before changing the control flow, a module's role or the design direction: [docs/architecture.md](docs/architecture.md), with diagrams; update it in the same change.
 - Read before changing a layer's order or decision: [docs/layers.md](docs/layers.md); the probe asserts it.
 - Read before adding or changing a config key or default: [docs/configuration.md](docs/configuration.md).
 - Read before changing behavior, or to learn why it is so: [docs/adr/README.md](docs/adr/README.md), the decision index.
