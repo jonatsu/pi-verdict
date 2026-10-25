@@ -782,6 +782,35 @@ describe("simple-command allow guard (audit F2)", () => {
 	test("a re-parser in command position is not rule-allowed", async () => {
 		await reachesClassifier(["^xargs\\b"], "xargs -n1 echo hi");
 	});
+	const executorRows: [string, string][] = [
+		["^find\\b", "find . -ok rm {} \\;"],
+		["^find\\b", "find . -okdir sh {} \\;"],
+		["^find\\b", "find . -ok rm {} +"],
+		["^fd\\b", "fd -x sh"],
+		["^fd\\b", "fd -X sh"],
+		["^fd\\b", "fd --exec sh"],
+		["^fd\\b", "fd --exec-batch sh"],
+		["^fdfind\\b", "fdfind -x sh"],
+		["^rg\\b", "rg --pre=./x.sh foo"],
+		["^rg\\b", "rg --pre ./x.sh foo"],
+		["^tar\\b", "tar --to-command=sh -xf x.tar"],
+		["^tar\\b", "tar --use-compress-program=./x.sh -xf x.tar"],
+		["^tar\\b", "tar -I ./x.sh -xf x.tar"],
+		["^tar\\b", "tar -xIzstd -f x.tar"],
+		["^tar\\b", "tar --checkpoint=1 --checkpoint-action=exec=sh -cf x.tar src"],
+		["^gtar\\b", "gtar --to-command=sh -xf x.tar"],
+	];
+	for (const [allow, command] of executorRows) {
+		test(`a command option that runs a program is not rule-allowed: ${command}`, async () => {
+			await reachesClassifier([allow], command);
+		});
+	}
+	test("the same tools without a program option stay rule-allowed", async () => {
+		await staysAllowed(["^fd\\b"], "fd -e ts");
+		await staysAllowed(["^rg\\b"], "rg foo");
+		await staysAllowed(["^tar\\b"], "tar tf x.tar");
+		await staysAllowed(["^find\\b"], "find . -name x");
+	});
 	test("a redirection (other than /dev/null) is not rule-allowed", async () => {
 		await reachesClassifier(["^ls\\b"], "ls > /tmp/out");
 	});

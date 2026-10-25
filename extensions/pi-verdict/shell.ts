@@ -479,6 +479,58 @@ function gitPushInWords(words: string[], depth: number): boolean {
  *  the configuration that runs a program (`-c`, `--config-env`) are refused by `allowOperandsAdmit`. */
 const GIT_WRITE_FLAGS = ["--output", "-o", "--exec", "--ext-diff", "--textconv", "--git-dir", "--work-tree"];
 
+/** The options with which a command runs another program. `words` match a whole word (find's
+ *  actions); `long` names match bare, with `=value`, or abbreviated to a unique prefix as getopt
+ *  allows; `short` letters match inside a short-option bundle, and for tar also in its old-style first
+ *  word (`tar xIf`). */
+interface ProgramOptions {
+	readonly words?: readonly string[];
+	readonly long?: readonly string[];
+	readonly short?: RegExp;
+	readonly oldStyle?: boolean;
+}
+
+const FD_PROGRAM: ProgramOptions = { long: ["--exec", "--exec-batch"], short: /[xX]/ };
+const TAR_PROGRAM: ProgramOptions = {
+	long: [
+		"--to-command",
+		"--use-compress-program",
+		"--checkpoint-action",
+		"--info-script",
+		"--new-volume-script",
+		"--rsh-command",
+		"--rmt-command",
+	],
+	short: /[IF]/,
+	oldStyle: true,
+};
+
+const PROGRAM_OPTIONS: Readonly<Record<string, ProgramOptions>> = {
+	find: { words: ["-exec", "-execdir", "-ok", "-okdir"] },
+	fd: FD_PROGRAM,
+	fdfind: FD_PROGRAM,
+	rg: { long: ["--pre"] },
+	tar: TAR_PROGRAM,
+	bsdtar: TAR_PROGRAM,
+	gtar: TAR_PROGRAM,
+};
+
+/** The shortest long-option prefix read as an abbreviation. */
+const MIN_LONG_PREFIX = 5;
+
+/** True when `word` is one of the command's program options. Over-approximates: an option's value
+ *  that looks like one also counts, which only sends the call to the classifier. */
+function runsProgram(word: string, first: boolean, options: ProgramOptions): boolean {
+	if (options.words?.includes(word)) return true;
+	if (word.startsWith("--")) {
+		const name = word.split("=")[0];
+		return name.length >= MIN_LONG_PREFIX && (options.long ?? []).some((full) => full.startsWith(name));
+	}
+	if (options.short === undefined) return false;
+	if (word.startsWith("-")) return options.short.test(word.slice(1));
+	return first && options.oldStyle === true && /^[A-Za-z]+$/.test(word) && options.short.test(word);
+}
+
 /**
  * Whether a user `allow` regex may admit this command (audit F2, ADR-0008). The allow layer tests
  * raw command text, so a regex anchored on the first word (`^ls\b`) would otherwise admit a whole
@@ -486,8 +538,9 @@ const GIT_WRITE_FLAGS = ["--output", "-o", "--exec", "--ext-diff", "--textconv",
  * judgment, and a read-shaped `git log --output=<path>` would admit a write. An allow is granted
  * only for ONE simple command: false (allow skipped → the call reaches the classifier) on an
  * operator or newline, an unsound parse, a redirection other than to `/dev/null`, a re-parser in
- * command position (`xargs`, `find … -exec`), or a `git` invocation carrying a write flag. It checks
- * the shape only; `allowOperandsAdmit` grades what the operands touch.
+ * command position (`xargs`, `find … -exec`) or an option that runs a program (`fd -x`, `rg --pre`,
+ * `tar -I`), or a `git` invocation carrying a write flag. It checks the shape only;
+ * `allowOperandsAdmit` grades what the operands touch.
  *
  * The narrowing direction is the safe one: a rejected allow never denies, it only defers to the
  * classifier. Redirect TARGETS are not graded here (they ride the classifier); deterministic target
@@ -508,15 +561,13 @@ export function allowAdmits(command: string): boolean {
 	for (const w of words) {
 		if (SHELL_OPERATORS[w] === true || w === "\n") return false;
 	}
-	// (d) a re-parser in command position: it runs words the scanner never paired.
+	// (d) a re-parser in command position, or an option that runs a program: either runs words the
+	// scanner never paired.
 	for (let i = 0; i < words.length; i++) {
 		const base = wordBasename(words[i]);
 		if (base === "xargs") return false;
-		if (base === "find") {
-			for (let j = i + 1; j < words.length; j++) {
-				if (words[j] === "-exec" || words[j] === "-execdir") return false;
-			}
-		}
+		const executor = PROGRAM_OPTIONS[base];
+		if (executor && words.slice(i + 1).some((w, k) => runsProgram(w, k === 0, executor))) return false;
 	}
 	// (e) a git invocation carrying a write flag (V7).
 	if (words.length > 0 && wordBasename(words[0]) === "git") {
