@@ -77,6 +77,7 @@ export class SessionState {
 	constructor(agentDir: string = agentDirPath()) {
 		this.agentDir = agentDir;
 		this.protectedSet = buildProtectedSet(agentDir, OWN_FILE_PATH);
+		// `loadUserRules` resolves its own path, so the config comes from the global `agentDirPath()`, not `agentDir`.
 		const loaded = loadUserRules();
 		this.userRules = loaded.rules;
 		this.policyDegraded = loaded.degraded;

@@ -215,10 +215,9 @@ export interface LoadedRules {
 	skipped: string[];
 	shortcutWarning: string | null;
 	project: { path: string; trusted: boolean; applied: boolean } | null;
-	/** item 6c (Phase 6): policyDegraded — set when the user's own declarations could not be
-	 *  fully loaded: a config parse failure, a load exception, a trusted-project parse/shape
-	 *  failure, or any skipped `deny`/`denyPaths` entry (Claude-review F11). While set, every
-	 *  model-originated allow becomes an ask (see adjudicate) — see ADR-0010. */
+	/** Set when the user's own declarations did not load in full: a config parse or load failure, a trusted-project
+	 *  parse or shape failure, or a skipped `deny` or `denyPaths` entry. While set, every model-originated allow
+	 *  becomes an ask (ADR-0010). */
 	degraded: boolean;
 }
 
