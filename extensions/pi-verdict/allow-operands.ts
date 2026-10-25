@@ -36,11 +36,19 @@ interface Expanded {
  * read without asking (ADR-0008). Call it only after `allowAdmits` has accepted the command's shape.
  * Fails closed toward the classifier, never toward a deny: an operand that is a secret or system path,
  * one holding an expansion the gate cannot resolve, a home-relative operand after `HOME` was reassigned,
- * or more than `MAX_GRADED_OPERANDS` graded paths (a glob's matches each count) each refuse the admission.
+ * or more than `MAX_GRADED_OPERANDS` graded paths (a glob's matches each count) each refuse the admission,
+ * and so does any backslash in a PowerShell command.
  * The floor grades here even with `builtinDenyFloor` off, because a refused admission only reaches the
  * classifier.
  */
-export function allowOperandsAdmit(command: string, cwd: string, homeReassigned: () => boolean): boolean {
+export function allowOperandsAdmit(
+	command: string,
+	cwd: string,
+	homeReassigned: () => boolean,
+	shell: "bash" | "powershell" = "bash",
+): boolean {
+	// The word view reads a backslash as bash's escape, while PowerShell keeps it as a path separator.
+	if (shell === "powershell" && command.includes("\\")) return false;
 	const words = shellWords(command);
 	const at = words.findIndex((word) => !ASSIGNMENT.test(word));
 	const operands = operandWords(words, at);

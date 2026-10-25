@@ -239,14 +239,15 @@ function userAllow(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (call.targets.length === 0 || !call.vouchable) return null;
 	// The regexes run first: they are cheaper than the operand grading, which reads the filesystem.
 	if (!ctx.userRules.allow.some((re) => call.targets.every((t) => re.test(t)))) return null;
-	if (isCommandTool(call.toolName) && !commandAdmitted(commandText(call.input), ctx)) return null;
+	if (isCommandTool(call.toolName) && !commandAdmitted(call.toolName, commandText(call.input), ctx)) return null;
 	return { verdict: "allow", reason: "user allow rule" };
 }
 
 /** True when a user allow rule may admit this command: one simple command (ADR-0008) whose operands the
  *  floor lets a file tool read. */
-function commandAdmitted(command: string, ctx: RuleContext): boolean {
-	return allowAdmits(command) && allowOperandsAdmit(command, ctx.cwd, ctx.homeReassigned);
+function commandAdmitted(toolName: string, command: string, ctx: RuleContext): boolean {
+	const shell = toolName === "powershell" ? "powershell" : "bash";
+	return allowAdmits(command) && allowOperandsAdmit(command, ctx.cwd, ctx.homeReassigned, shell);
 }
 
 /** Allows a tool listed in `tools` by exact name, after every deny-side layer (ADR-0009), on the same

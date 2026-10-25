@@ -13,7 +13,7 @@ const HOME_ASSIGNMENTS = {
 	/** The `${HOME:=…}` and `${HOME=…}` default expansions, which assign when `HOME` is unset. */
 	defaulted: String.raw`\$\{HOME:?=`,
 	/** A builtin that declares, reads into or unsets a variable named on its line. */
-	builtin: String.raw`\b(?:export|declare|typeset|readonly|local|read|unset)\b[^\n;&|]*(?<![\w\${])HOME\b`,
+	builtin: String.raw`\b(?:export|declare|typeset|readonly|local|read|mapfile|readarray|unset)\b[^\n;&|]*(?<![\w\${])HOME\b`,
 	/** A loop variable. */
 	loop: String.raw`\bfor\s+HOME\b`,
 	/** `printf -v HOME`. */

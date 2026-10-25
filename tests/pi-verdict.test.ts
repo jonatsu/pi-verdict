@@ -1046,6 +1046,18 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 		await staysAllowed(["^dd\\b"], "dd if=README.md");
 		await staysAllowed(CAT_ALLOW, "cat -n README.md");
 	});
+	test("mapfile and readarray into HOME count as a HOME assignment", () => {
+		expect(assignsHome("mapfile HOME < f")).toBe(true);
+		expect(assignsHome("readarray -t HOME < f")).toBe(true);
+	});
+	test("a PowerShell command with a backslash is not admitted", async () => {
+		const h = session({ allow: ["^Get-Content\\b"] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "powershell", { command: "Get-Content C:\\Users\\u\\.ss" + "h\\id_rsa" })).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+		expect(await toolCall(h, "powershell", { command: "Get-Content README.md" })).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	});
 	test("a cwd glob whose matches pass the cap is refused", async () => {
 		await withTempDir("pv-glob-", (dir) => {
 			for (let i = 0; i <= MAX_GRADED_OPERANDS; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "");
