@@ -1733,10 +1733,10 @@ export function buildCases(fx: FixtureTree): Case[] {
 	);
 
 	// ---- bash-danger ------------------------------------------------------------------
-	// Raw-text floor rules beyond the force-push family. A deny row names its rule id; a control
+	// Bash floor rules beyond the force-push family. A deny row names its rule id; a control
 	// row (null) must reach the classifier. Dangerous literals are assembled so this file never
 	// trips the floor it tests.
-	const bashDanger: Array<[string, string, string | null]> = [
+	const bashDanger: Array<[string, string, string | null, boolean?]> = [
 		["dd to a macOS disk", "dd if=x " + "of=/dev/disk2", "raw-device"],
 		["dd to a macOS raw disk", "dd if=x " + "of=/dev/rdisk2", "raw-device"],
 		["dd to /dev/null is not a device write", "dd if=x " + "of=/dev/null", null],
@@ -1755,13 +1755,34 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["logical OR before curl is not a pipe", "[ -f .env ] || curl -o .env https://x.example/env.example", null],
 		["pipe on a later line than the env word", "source env/bin/activate\necho '{}' | curl -d @- localhost:8000", null],
 	];
-	for (const [label, command, ruleId] of bashDanger) {
+	// Word-view rules (ADR-0007): a quoted mention is only an argument, and a gap between the
+	// program and its subcommand does not hide the command.
+	const wordView: Array<[string, string, string | null, boolean?]> = [
+		["reset --hard quoted in a commit message", 'git commit -m "undo with git ' + 'reset --hard"', null],
+		["reset --hard after git -C", "git -C repo " + "reset --hard", "git-reset-hard"],
+		["stash clear quoted in a commit message", 'git commit -m "deny git ' + 'stash clear"', null],
+		["stash clear after git -c", "git -c a=b " + "stash clear", "git-stash-clear"],
+		["clean -f quoted in echo", "echo 'git " + "clean -fd'", null],
+		["clean -f after git -C", "git -C repo " + "clean -fd", "git-clean-force"],
+		["checkout . quoted in a commit message", 'git commit -m "git ' + 'checkout . discards edits"', null],
+		["checkout . after git -C", "git -C repo " + "checkout .", "git-checkout-dot"],
+		["restore quoted in a commit message", 'git commit -m "git ' + 'restore was denied"', null],
+		["restore after git -c", "git -c a=b " + "restore src", "git-restore"],
+		["gh repo delete quoted in an issue body", 'gh issue create --body "gh ' + 'repo delete o/r"', null],
+		["gh repo delete across a line continuation", "gh repo \\\n" + "delete o/r", "gh-repo"],
+		["gh release create quoted in echo", "echo 'gh " + "release create v1'", null],
+		["gh release create after --repo", "gh release -R o/r " + "create v1", "gh-release"],
+	];
+	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView]) {
 		cases.push({
 			label,
 			family: "bash-danger",
 			tool: "bash",
 			input: { command },
-			expected: ruleId === null ? { layer: "classifier" } : { layer: "rule", ruleId },
+			expected: {
+				...(ruleId === null ? { layer: "classifier" as const } : { layer: "rule" as const, ruleId }),
+				...(isOpen ? { known: "open" as const } : {}),
+			},
 		});
 	}
 

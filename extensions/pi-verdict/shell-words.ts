@@ -354,19 +354,16 @@ type ShellScript = { kind: "none" } | { kind: "unsound" } | { kind: "script"; te
  * data the scanner cannot see.
  */
 function shellScriptAt(seg: readonly string[], at: number): ShellScript {
-	// A `+` word before `-c` hides the script from this scan; the force-push word view always skipped it.
-	let sawPlusOption = false;
 	for (let j = at + 1; j < seg.length; j++) {
 		const opt = seg[j].toLowerCase();
 		if (!opt.startsWith("-") && !opt.startsWith("+")) return { kind: "none" };
 		if (SHELL_OPTIONS_WITH_ARG.has(opt)) {
-			if (opt.startsWith("+")) sawPlusOption = true;
 			j++;
 			continue;
 		}
 		if (!/^-[a-z]*c[a-z]*$/.test(opt)) return { kind: "unsound" };
 		const text = seg[j + 1];
-		if (text === undefined || sawPlusOption) return { kind: "script", text: undefined };
+		if (text === undefined) return { kind: "script", text: undefined };
 		if (/\$\{[0-9]+\}|\$[0-9]+|\$@|\$\*/.test(text)) return { kind: "unsound" };
 		return { kind: "script", text };
 	}

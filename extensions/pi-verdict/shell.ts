@@ -2,11 +2,20 @@
 // Rule layer: bash
 // ============================================================================
 
-import { anyCommandIn, type GitInvocation, gitRunsIn, hasUnsoundWord, isShellOperator, shellWords, wordBasename } from "./shell-words.ts";
+import {
+	anyCommandIn,
+	type GitInvocation,
+	gitRunsIn,
+	hasUnsoundWord,
+	isShellOperator,
+	mayExpand,
+	shellWords,
+	wordBasename,
+} from "./shell-words.ts";
 
-/** Dangerous patterns: match the full command string (including pipelines and compound commands); any match denies (from research report §4.3).
- *  `git-push-force` is a `check` instead of a `pattern`: a regex over the raw string cannot tell an
- *  argument from a command (see `gitPushForce` below), so it evaluates a shell-word view instead. */
+/** Dangerous commands; any hit denies. A `pattern` matches the full command string, pipelines and
+ *  compound commands included. A `check` pairs a raw-text tripwire with a shell-word view that clears
+ *  quoted text the shell never runs as the command (ADR-0007). */
 type BashDangerRule = { id: string; reason: string; pattern?: RegExp; check?: (command: string) => boolean };
 const BASH_DANGER_RULES: BashDangerRule[] = [
 	{
@@ -39,12 +48,36 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 	// recursed into. `--force-with-lease[=ref]` is the only escaping `--force-*` spelling; every other
 	// `--force-*` form stays denied (explicit is better than an unbounded lookahead).
 	{ id: "git-push-force", reason: "git push --force", check: gitPushForce },
-	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
+	// Each tripwire allows any gap between `git` and its subcommand, so `git -C dir …` and `git -c k=v …`
+	// reach the word view; `gitRule` decides which `git` really runs the subcommand.
+	{
+		id: "git-reset-hard",
+		check: gitRule(/\bgit\b[\s\S]*?\breset\b[\s\S]*?--hard\b/i, "reset", (args) => args.some((arg) => arg.toLowerCase() === "--hard")),
+		reason: "git reset --hard",
+	},
 	// Pattern from eugeniughelbur/jev-engineering@82655a6d policy.json (MIT, Copyright (c) 2026 Eugeniu Ghelbur).
-	{ id: "git-stash-clear", pattern: /\bgit\s+stash\s+clear\b/i, reason: "git stash clear (drops all stashes)" },
-	{ id: "git-clean-force", pattern: /\bgit\s+clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)/i, reason: "git clean -f" },
-	{ id: "git-checkout-dot", pattern: /\bgit\s+checkout\s+(--\s+)?\.(?:\s|$)/i, reason: "git checkout . (discard working tree)" },
-	{ id: "git-restore", pattern: /\bgit\s+restore\b/i, reason: "git restore (discard changes)" },
+	{
+		id: "git-stash-clear",
+		check: gitRule(/\bgit\b[\s\S]*?\bstash\b[\s\S]*?\bclear\b/i, "stash", (args) => firstOperandIs(args, ["clear"])),
+		reason: "git stash clear (drops all stashes)",
+	},
+	{
+		id: "git-clean-force",
+		check: gitRule(/\bgit\b[\s\S]*?\bclean\b[\s\S]*?(?:\s['"]?-[a-zA-Z]*f|--force)/i, "clean", (args) =>
+			args.some((arg) => /^-[a-z]*f|^--force/i.test(arg)),
+		),
+		reason: "git clean -f",
+	},
+	{
+		// Any `.` argument discards changes, `git checkout -- .` and `git checkout HEAD -- .` included.
+		id: "git-checkout-dot",
+		check: gitRule(/\bgit\b[\s\S]*?\bcheckout\b[\s\S]*?[\s'"]\.(?=[\s'"`;|&)]|$)/i, "checkout", (args) => args.includes(".")),
+		reason: "git checkout . (discard working tree)",
+	},
+	{ id: "git-restore", check: gitRule(/\bgit\b[\s\S]*?\brestore\b/i, "restore", () => true), reason: "git restore (discard changes)" },
+	// `raw-device`, `remote-exec`, `env-exfil` and `fork-bomb` stay raw-text only: their meaning spans a
+	// pipe, a redirection or a function definition, which the word view splits or drops, so it cannot
+	// show that such a hit is harmless (ADR-0007).
 	{ id: "remote-exec", pattern: /\b(curl|wget)\b[^;|&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b/i, reason: "remote code execution (curl|sh)" },
 	// Matches the environment or the shell history piped into a network tool: one pipe or `|&` (not the
 	// `||` operator), on the same logical line (a backslash-newline continues it), to a bare or
@@ -56,10 +89,76 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 		pattern: /\b(env|printenv|history)\b(?:[^;&\n]|\\\n)*(?<!\|)\|&?\s*(?:[\w./-]*\/)?(curl|wget|nc|ncat)\b/i,
 		reason: "environment or history piped to a network tool",
 	},
-	{ id: "gh-repo", pattern: /\bgh\s+repo\s+(create|delete|rename|archive)\b/i, reason: "GitHub repository-level change" },
-	{ id: "gh-release", pattern: /\bgh\s+release\s+(create|delete|edit)\b/i, reason: "GitHub release change" },
+	{
+		id: "gh-repo",
+		check: ghRule(/\bgh\b[\s\S]*?\brepo\b[\s\S]*?\b(?:create|delete|rename|archive)\b/i, "repo", ["create", "delete", "rename", "archive"]),
+		reason: "GitHub repository-level change",
+	},
+	{
+		id: "gh-release",
+		check: ghRule(/\bgh\b[\s\S]*?\brelease\b[\s\S]*?\b(?:create|delete|edit)\b/i, "release", ["create", "delete", "edit"]),
+		reason: "GitHub release change",
+	},
 	{ id: "fork-bomb", pattern: /:\(\)\s*\{/, reason: "fork bomb" },
 ];
+
+/** A floor check that the raw-text `tripwire` decides and the word view may clear: true when the
+ *  tripwire hits and some command, or an unsound parse, satisfies `segmentHit` (ADR-0007). */
+function wordRule(tripwire: RegExp, segmentHit: (seg: readonly string[]) => boolean): (command: string) => boolean {
+	return (command) => tripwireHit(command, tripwire) && anyCommandIn(shellWords(command), segmentHit);
+}
+
+/** A floor check for `git <subcommand>` whose arguments pass `argsHit`. An unreadable global option
+ *  keeps the deny when any later word contains the subcommand's name (`git $X stash clear`). */
+function gitRule(tripwire: RegExp, subcommand: string, argsHit: (args: readonly string[]) => boolean): (command: string) => boolean {
+	const invocation: GitInvocation = { subcommand, argsHit, mayBeSubcommand: (word) => word.toLowerCase().includes(subcommand) };
+	return wordRule(tripwire, (seg) => gitRunsIn(seg, invocation));
+}
+
+/** Whether the first word after the options is one of `names`, or may expand to one. */
+function firstOperandIs(args: readonly string[], names: readonly string[]): boolean {
+	const operand = args.find((arg) => !arg.startsWith("-"));
+	return operand !== undefined && (names.includes(operand.toLowerCase()) || mayExpand(operand));
+}
+
+/** gh options that take the next word as their value, compared case-folded (`-R`). */
+const GH_OPTIONS_WITH_VALUE = new Set(["-r", "--repo"]);
+
+/** Index of the action word in `seg` from `from` on, read past `--repo` and its value; -1 when none
+ *  follows. Fails closed: another option may take a value, so it returns `undefined`. */
+function ghActionIndex(seg: readonly string[], from: number): number | undefined {
+	for (let k = from; k < seg.length; k++) {
+		const word = seg[k].toLowerCase();
+		if (!word.startsWith("-")) return k;
+		if (GH_OPTIONS_WITH_VALUE.has(word)) k++;
+		else if (!word.startsWith("--repo=") && !/^-r./.test(word)) return undefined;
+	}
+	return -1;
+}
+
+/** A floor check for `gh <group> <action>`. Fails closed: when a word before the group or the action
+ *  cannot be read, a later word that contains the group or an action name keeps the deny. */
+function ghRule(tripwire: RegExp, group: string, actions: readonly string[]): (command: string) => boolean {
+	const mentions = (names: readonly string[]) => (word: string) => names.some((name) => word.toLowerCase().includes(name));
+	return wordRule(tripwire, (seg) => {
+		for (let i = 0; i + 1 < seg.length; i++) {
+			if (wordBasename(seg[i]) !== "gh") continue;
+			const first = seg[i + 1].toLowerCase();
+			if (first.startsWith("-") || mayExpand(first)) {
+				if (seg.slice(i + 1).some(mentions([group]))) return true;
+				continue;
+			}
+			if (first !== group) continue;
+			const action = ghActionIndex(seg, i + 2);
+			if (action === undefined) {
+				if (seg.slice(i + 2).some(mentions(actions))) return true;
+			} else if (action !== -1 && firstOperandIs([seg[action]], actions)) {
+				return true;
+			}
+		}
+		return false;
+	});
+}
 
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
  *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the
