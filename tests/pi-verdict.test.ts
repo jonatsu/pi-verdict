@@ -855,6 +855,14 @@ describe("bash cwd argument", () => {
 			expect(h.calls.length).toBe(1);
 		}
 	});
+	test("a git allow does not admit git run from a cwd argument outside the project", async () => {
+		const h = session({ allow: ["^git (status|log|diff)\\b"] }, OMP);
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "bash", bash("git diff self/" + "environ self/cmdline", "/proc"))).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+		expect(await toolCall(h, "bash", bash("git status", "sub"))).toBeUndefined();
+		expect(h.calls.length).toBe(1); // an in-project subdirectory keeps the rule allow
+	});
 	test("a cwd argument inside the project keeps the allow", async () => {
 		const h = session({ allow: ["^cat\\b"] }, OMP);
 		expect(await toolCall(h, "bash", bash("cat README.md", "sub"))).toBeUndefined();
@@ -870,6 +878,8 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	const BRACED_HOME = "$" + "{HOME}";
 	const GIT_ALLOW = ["^git (status|log|diff)\\b"];
 	const CAT_ALLOW = ["^cat\\b"];
+	/** Operand grading for a bash command run in its project root, in a session that never assigned HOME. */
+	const operandContext = (cwd: string) => ({ cwd, projectRoot: cwd, homeReassigned: () => false, shell: "bash" as const });
 	/** A command under an allow list must reach the classifier (one stub model call). */
 	const reachesClassifier = async (allow: string[], command: string, cfg: { cwd?: string; builtinDenyFloor?: boolean } = {}) => {
 		const h = session({ allow, builtinDenyFloor: cfg.builtinDenyFloor }, { cwd: cfg.cwd });
@@ -920,13 +930,13 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	});
 	test("an option's attached value is graded as an operand", async () => {
 		await reachesClassifier(CAT_ALLOW, `cat --file=${SSH_KEY}`);
-		expect(allowOperandsAdmit(`tool --file=${SSH_KEY}`, "/proj", () => false)).toBe(false);
-		expect(allowOperandsAdmit("tool --file=notes.txt", "/proj", () => false)).toBe(true);
+		expect(allowOperandsAdmit(`tool --file=${SSH_KEY}`, operandContext("/proj"))).toBe(false);
+		expect(allowOperandsAdmit("tool --file=notes.txt", operandContext("/proj"))).toBe(true);
 	});
 	test("a command with more operands than the cap is refused", () => {
 		const words = (n: number) => Array.from({ length: n }, (_, i) => `f${i}`).join(" ");
-		expect(allowOperandsAdmit(`cat ${words(MAX_GRADED_OPERANDS)}`, "/proj", () => false)).toBe(true);
-		expect(allowOperandsAdmit(`cat ${words(MAX_GRADED_OPERANDS + 1)}`, "/proj", () => false)).toBe(false);
+		expect(allowOperandsAdmit(`cat ${words(MAX_GRADED_OPERANDS)}`, operandContext("/proj"))).toBe(true);
+		expect(allowOperandsAdmit(`cat ${words(MAX_GRADED_OPERANDS + 1)}`, operandContext("/proj"))).toBe(false);
 	});
 	test("a HOME assignment earlier in the session refuses home-relative operands", async () => {
 		const h = session({ allow: CAT_ALLOW });
@@ -1075,8 +1085,8 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	test("a cwd glob whose matches pass the cap is refused", async () => {
 		await withTempDir("pv-glob-", (dir) => {
 			for (let i = 0; i <= MAX_GRADED_OPERANDS; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "");
-			expect(allowOperandsAdmit("cat *.txt", dir, () => false)).toBe(false);
-			expect(allowOperandsAdmit("cat f1.txt", dir, () => false)).toBe(true);
+			expect(allowOperandsAdmit("cat *.txt", operandContext(dir))).toBe(false);
+			expect(allowOperandsAdmit("cat f1.txt", operandContext(dir))).toBe(true);
 		});
 	});
 });

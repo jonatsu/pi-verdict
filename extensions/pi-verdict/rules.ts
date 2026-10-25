@@ -24,6 +24,8 @@ export interface RuleContext {
 	readonly cwd: string;
 	/** False when the call names a directory the gate cannot resolve; no allow rule may then vouch for it. */
 	readonly cwdExact: boolean;
+	/** The session cwd: the project a call's own `cwd` may leave, which a git allow must stay inside. */
+	readonly projectRoot: string;
 	/** The directory shown beside a command when it is not the session cwd. */
 	readonly runsIn: string | null;
 	readonly userRules: UserRules;
@@ -247,7 +249,10 @@ function userAllow(call: RuleCall, ctx: RuleContext): RuleResult | null {
  *  floor lets a file tool read. */
 function commandAdmitted(toolName: string, command: string, ctx: RuleContext): boolean {
 	const shell = toolName === "powershell" ? "powershell" : "bash";
-	return allowAdmits(command) && allowOperandsAdmit(command, ctx.cwd, ctx.homeReassigned, shell);
+	return (
+		allowAdmits(command) &&
+		allowOperandsAdmit(command, { cwd: ctx.cwd, projectRoot: ctx.projectRoot, homeReassigned: ctx.homeReassigned, shell })
+	);
 }
 
 /** Allows a tool listed in `tools` by exact name, after every deny-side layer (ADR-0009), on the same

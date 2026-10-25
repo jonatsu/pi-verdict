@@ -127,6 +127,10 @@ runs only when a home-relative operand needs it.
 abbreviation git's option parser accepts) refuses the admission, and so does any operand that is not an
 option and resolves outside the cwd in its lexical or real form, because git implies `--no-index` for
 such a path and then prints any file. Operands resolve from a `-C` directory as git resolves them.
+"The project" is the session cwd, not the directory a `bash` call names in its `cwd` argument: a git
+call that runs outside the project, through that argument or a `-C`, refuses the admission, since
+outside any repository `git diff` implies `--no-index` (`cwd: "/proc"` with
+`git diff self/environ self/cmdline` prints the environment).
 Refusing a `git diff` of two revisions spelled like outside paths only costs a classifier call.
 
 **(h) Git configuration injection.** Before the subcommand, `-c` (bare or attached), `--config-env` and

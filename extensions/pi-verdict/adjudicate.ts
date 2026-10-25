@@ -503,6 +503,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 	const rule = classifyByRules(call.toolName, call.input, {
 		cwd: where.cwd,
 		cwdExact: where.exact,
+		projectRoot: env.cwd,
 		runsIn: where.shown,
 		userRules: state.userRules,
 		protectedSet: state.protectedSet,
