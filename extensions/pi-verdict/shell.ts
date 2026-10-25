@@ -62,7 +62,7 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 // ---- git-push-force: shell-word view (fork; 2026-10-04 path-layer review, items 1–2) ----
 
 /** Basename of a command word under both separator conventions (`/usr/bin/git`, `C:\bin\git`). */
-function wordBasename(w: string): string {
+export function wordBasename(w: string): string {
 	const i = Math.max(w.lastIndexOf("/"), w.lastIndexOf("\\"));
 	return (i === -1 ? w : w.slice(i + 1)).toLowerCase();
 }

@@ -240,7 +240,7 @@ function gradeTarget(rawPath: string, cwd: string, isWrite: boolean, floorOn: bo
 }
 
 /** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
-function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
+export function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the

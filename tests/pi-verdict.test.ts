@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
+import { allowOperandsAdmit, assignsHome, MAX_GRADED_OPERANDS } from "../extensions/pi-verdict/allow-operands.ts";
 import { buildTranscript } from "../extensions/pi-verdict/classifier.ts";
 import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
 import { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "../extensions/pi-verdict/floor.ts";
@@ -790,6 +791,133 @@ describe("simple-command allow guard (audit F2)", () => {
 	test("git --output= is not rule-allowed under a git-log allow", async () => {
 		await reachesClassifier(["^git (log)(\\s|$)"], "git log --format=x --output=~/Library/LaunchAgents/x.plist");
 		await reachesClassifier(["^git (log)(\\s|$)"], "git log -o/tmp/out");
+	});
+});
+
+// A user `allow` regex admits a command only when every operand is a path the floor lets a file tool read.
+describe("allow operand grading (ADR-0008 amendment)", () => {
+	const SSH_KEY = "~/.ssh/" + "id_rsa";
+	/** The shell spelling `${HOME}`, built so it is not read as a template placeholder. */
+	const BRACED_HOME = "$" + "{HOME}";
+	const GIT_ALLOW = ["^git (status|log|diff)\\b"];
+	const CAT_ALLOW = ["^cat\\b"];
+	/** A command under an allow list must reach the classifier (one stub model call). */
+	const reachesClassifier = async (allow: string[], command: string, cfg: { cwd?: string; builtinDenyFloor?: boolean } = {}) => {
+		const h = session({ allow, builtinDenyFloor: cfg.builtinDenyFloor }, { cwd: cfg.cwd });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "bash", { command });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	};
+	/** A command under an allow list is a rule allow with zero model calls. */
+	const staysAllowed = async (allow: string[], command: string) => {
+		const h = session({ allow });
+		const r = await toolCall(h, "bash", { command });
+		expect(r).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	};
+
+	test("git diff of a key outside the repository reaches the classifier, with or without --no-index", async () => {
+		await reachesClassifier(GIT_ALLOW, `git diff --no-index /dev/null ${SSH_KEY}`);
+		await reachesClassifier(GIT_ALLOW, `git diff /dev/null ${SSH_KEY}`);
+	});
+	test("cat of a secret or a system path reaches the classifier", async () => {
+		await reachesClassifier(CAT_ALLOW, `cat ${SSH_KEY}`);
+		await reachesClassifier(CAT_ALLOW, "cat ~/.aws/" + "credentials");
+		await reachesClassifier(CAT_ALLOW, "cat /etc/" + "shadow");
+	});
+	test("cat of a bare .env filename reaches the classifier", async () => {
+		await withTempDir(
+			"pv-operands-",
+			async (dir) => {
+				fs.writeFileSync(path.join(dir, ".env"), "K=v\n");
+				await reachesClassifier(CAT_ALLOW, "cat .env", { cwd: dir });
+			},
+			os.homedir(),
+		);
+	});
+	test("an operand the gate cannot expand exactly reaches the classifier", async () => {
+		for (const command of [
+			"cat $HOME/.config/age/" + "keys.txt",
+			`cat ${BRACED_HOME}/.config/age/` + "keys.txt",
+			'cat "$HOME"/.ssh/' + "id_rsa",
+			"cat ~/.s*/" + "id_rsa",
+			"cat ~/.{ssh,x}/" + "id_rsa",
+			"cat $KEYFILE",
+			"cat ~root/.bashrc",
+		]) {
+			await reachesClassifier(CAT_ALLOW, command);
+		}
+	});
+	test("an option's attached value is graded as an operand", async () => {
+		await reachesClassifier(CAT_ALLOW, `cat --file=${SSH_KEY}`);
+		expect(allowOperandsAdmit(`tool --file=${SSH_KEY}`, "/proj", () => false)).toBe(false);
+		expect(allowOperandsAdmit("tool --file=notes.txt", "/proj", () => false)).toBe(true);
+	});
+	test("a command with more operands than the cap is refused", () => {
+		const words = (n: number) => Array.from({ length: n }, (_, i) => `f${i}`).join(" ");
+		expect(allowOperandsAdmit(`cat ${words(MAX_GRADED_OPERANDS)}`, "/proj", () => false)).toBe(true);
+		expect(allowOperandsAdmit(`cat ${words(MAX_GRADED_OPERANDS + 1)}`, "/proj", () => false)).toBe(false);
+	});
+	test("a HOME assignment earlier in the session refuses home-relative operands", async () => {
+		const h = session({ allow: CAT_ALLOW });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "export HOME=/tmp/x" } }] },
+		});
+		expect(await toolCall(h, "bash", { command: "cat ~/notes.txt" })).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+		expect(await toolCall(h, "bash", { command: "cat README.md" })).toBeUndefined();
+		expect(h.calls.length).toBe(1); // an operand that does not go through the home stays a rule allow
+	});
+	test("a home-relative operand stays allowed in a session that never assigns HOME", async () => {
+		await staysAllowed(CAT_ALLOW, "cat ~/notes.txt");
+	});
+	test("the HOME scan recognises the declaring spellings and ignores reads of $HOME", () => {
+		for (const command of [
+			"HOME=/x cat a",
+			"export HOME=/x",
+			"declare -x HOME=/x",
+			"typeset HOME",
+			"readonly HOME",
+			"local HOME=/x",
+			"unset HOME",
+			"read HOME",
+			": $" + "{HOME:=/x}",
+		]) {
+			expect(assignsHome(command)).toBe(true);
+		}
+		for (const command of ["cat $HOME/a", `echo ${BRACED_HOME}/b`, "export PATH=$HOME/bin:$PATH", "ls ~"]) {
+			expect(assignsHome(command)).toBe(false);
+		}
+	});
+	test("an unreadable session branch refuses home-relative operands (fails closed)", async () => {
+		setConfig({ allow: CAT_ALLOW });
+		// No model: the gray call fails closed before the classifier would read the branch itself.
+		const env = {
+			...adjudicateEnv({ hasUI: false, failModel: true }),
+			host: {
+				getBranch: () => {
+					throw new Error("no branch");
+				},
+				getSessionId: () => "s1",
+			},
+		};
+		const home = await adjudicate(new SessionState(), { toolName: "bash", input: { command: "cat ~/notes.txt" } }, env);
+		expect(home).toMatchObject({ verdict: "deny", source: "fail-closed" });
+		const local = await adjudicate(new SessionState(), { toolName: "bash", input: { command: "cat README.md" } }, env);
+		expect(local).toMatchObject({ verdict: "allow", source: "rule" });
+	});
+	test("with builtinDenyFloor off, a secret operand still does not rule-allow", async () => {
+		await reachesClassifier(CAT_ALLOW, `cat ${SSH_KEY}`, { builtinDenyFloor: false });
+	});
+	test("plain commands over project files stay rule-allowed", async () => {
+		await staysAllowed(CAT_ALLOW, "cat README.md");
+		await staysAllowed(GIT_ALLOW, "git status");
+		await staysAllowed(GIT_ALLOW, "git log --oneline");
+		await staysAllowed(["^ls\\b"], "ls -la");
+		await staysAllowed(["^ls\\b"], "ls *.ts");
 	});
 });
 

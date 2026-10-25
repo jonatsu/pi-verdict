@@ -9,6 +9,7 @@ import {
 	userRuleTargets,
 } from "./access.ts";
 import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
+import { allowOperandsAdmit } from "./allow-operands.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
@@ -31,6 +32,9 @@ export interface RuleContext {
 	readonly namesProtectedPath: CallPredicate;
 	/** The host, which decides whether an `xd://` target is a tool device (omp) or a relative path (pi). */
 	readonly host: HostKind;
+	/** True when an earlier command of the session, or this one, may have assigned `HOME`; read only when a
+	 *  user allow would admit a home-relative command operand. */
+	readonly homeReassigned: () => boolean;
 }
 
 /** One tool call as every rule step reads it. */
@@ -221,17 +225,23 @@ function overCapAsk(call: RuleCall, _ctx: RuleContext): RuleResult | null {
 }
 
 /** Allows when a user `allow` rule matches every target. A command must be one simple command
- *  (ADR-0008): a compound command, an unsound parse, a redirection or a write-shaped git call reaches
- *  the classifier instead. Never while the policy is degraded (ADR-0010), nor for a target a rule cannot
- *  read as a literal project path (a glob, an internal URL, a relocatable read), nor for an opaque call,
- *  whose real target is unknown. */
+ *  (ADR-0008): a compound command, an unsound parse, a redirection, a write-shaped git call, or an
+ *  operand that is a secret, a system path or an unresolvable expansion reaches the classifier instead.
+ *  Never while the policy is degraded (ADR-0010), nor for a target a rule cannot read as a literal
+ *  project path (a glob, an internal URL, a relocatable read), nor for an opaque call, whose real target
+ *  is unknown. */
 function userAllow(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (call.targets.length === 0 || !call.vouchable) return null;
-	if (isCommandTool(call.toolName) && !allowAdmits(commandText(call.input))) return null;
-	for (const re of ctx.userRules.allow) {
-		if (call.targets.every((t) => re.test(t))) return { verdict: "allow", reason: "user allow rule" };
-	}
-	return null;
+	// The regexes run first: they are cheaper than the operand grading, which reads the filesystem.
+	if (!ctx.userRules.allow.some((re) => call.targets.every((t) => re.test(t)))) return null;
+	if (isCommandTool(call.toolName) && !commandAdmitted(commandText(call.input), ctx)) return null;
+	return { verdict: "allow", reason: "user allow rule" };
+}
+
+/** True when a user allow rule may admit this command: one simple command (ADR-0008) whose operands the
+ *  floor lets a file tool read. */
+function commandAdmitted(command: string, ctx: RuleContext): boolean {
+	return allowAdmits(command) && allowOperandsAdmit(command, ctx.cwd, ctx.homeReassigned);
 }
 
 /** Allows a tool listed in `tools` by exact name, after every deny-side layer (ADR-0009), on the same

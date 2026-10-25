@@ -1,5 +1,6 @@
 import { parseJevConfidence } from "../jev-adapter.ts";
 import { actionCallLine } from "./action-line.ts";
+import { assignsHome } from "./allow-operands.ts";
 import type { AuditRecord, FallbackAudit } from "./audit.ts";
 import {
 	ADJUDICATION_BUDGET_MS,
@@ -490,6 +491,39 @@ async function adjudicateGrayZone(
 	});
 }
 
+/** Returns `fn`'s value, computed on the first call only. */
+function once<T>(fn: () => T): () => T {
+	let computed: { value: T } | null = null;
+	return () => {
+		computed ??= { value: fn() };
+		return computed.value;
+	};
+}
+
+/** Returns whether this call's command or an earlier command call on the session branch may assign `HOME`.
+ *  The agent's shell persists between calls, so one assignment moves `~` for the rest of the session.
+ *  Fails closed: a branch the host cannot hand over counts as reassigned. */
+function homeReassignedInSession(host: PipelineHost, input: Readonly<Record<string, unknown>>): boolean {
+	if (typeof input.command === "string" && assignsHome(input.command)) return true;
+	let branch: ReturnType<PipelineHost["getBranch"]>;
+	try {
+		if (typeof host.getBranch !== "function") return true;
+		branch = host.getBranch();
+	} catch {
+		return true;
+	}
+	for (const entry of branch) {
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		for (const block of entry.message.content) {
+			if (block.type !== "toolCall") continue;
+			// Safe: a tool call's arguments are a JSON object, and the field is narrowed before use.
+			const command = (block.arguments as Record<string, unknown>).command;
+			if (typeof command === "string" && assignsHome(command)) return true;
+		}
+	}
+	return false;
+}
+
 /** Returns the verdict for one tool call: the rule layer's, else the gray-zone classifier's. Fails closed:
  *  a missing or failing model denies, and an ask with no UI becomes a deny marked `degraded`. */
 export async function adjudicate(state: SessionState, call: ToolCall, env: AdjudicateEnv): Promise<Verdict> {
@@ -504,6 +538,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		policyDegraded: state.policyDegraded,
 		namesProtectedPath: redactorFor(env.cwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
 		host: env.hostKind,
+		homeReassigned: once(() => homeReassignedInSession(env.host, call.input)),
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	// The action under review is never elided: the rule layer already asked about an over-cap action.

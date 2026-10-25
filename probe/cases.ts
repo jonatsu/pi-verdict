@@ -568,6 +568,41 @@ export function buildCases(fx: FixtureTree): Case[] {
 		},
 	);
 
+	// ---- user-allow: operand grading (ADR-0008 amendment) ------------------------------
+	// The documented example policy plus `cat`: an allow admits a command only when every operand is a
+	// path the floor lets a file tool read, after the shell expansions the gate can resolve.
+	const documentedAllow = { allow: ["^git (status|log|diff)\\b", "^cat\\b", "^ls\\b"] };
+	const sshKey = "~/.ssh/" + "id_rsa";
+	const operandRows: [string, string][] = [
+		["git diff --no-index of a key outside the repository", `git diff --no-index /dev/null ${sshKey}`],
+		["git diff of a key outside the repository (implicit --no-index)", `git diff /dev/null ${sshKey}`],
+		["cat of a bare .env filename", "cat .env"],
+		["cat of a home-relative key", `cat ${sshKey}`],
+		["cat through $HOME of an anchored credential home", "cat $HOME/.config/age/" + "keys.txt"],
+	];
+	for (const [label, command] of operandRows) {
+		cases.push({
+			label: `allow operand: ${label}`,
+			family: "user-allow",
+			tool: "bash",
+			input: { command },
+			config: documentedAllow,
+			ref: "ADR-0008",
+			expected: { layer: "classifier" },
+		});
+	}
+	for (const command of ["cat README.md", "git status", "git log --oneline", "ls -la", "ls *.ts"]) {
+		cases.push({
+			label: `allow operand control: ${command}`,
+			family: "user-allow",
+			tool: "bash",
+			input: { command },
+			config: documentedAllow,
+			ref: "ADR-0008",
+			expected: { layer: "allow", reasonIncludes: "user allow rule" },
+		});
+	}
+
 	// ---- tool-access (ADR-0009: the tool-access adapter) ------------------------------
 	cases.push(
 		{
