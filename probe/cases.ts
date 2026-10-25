@@ -1582,6 +1582,10 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["dd to a macOS raw disk", "dd if=x " + "of=/dev/rdisk2", "raw-device"],
 		["dd to /dev/null is not a device write", "dd if=x " + "of=/dev/null", null],
 		["reading a diskutil-named file is not a device write", "cat /dev/diskutil-notes", null],
+		["stash clear", "git " + "stash clear", "git-stash-clear"],
+		["stash list", "git stash list", null],
+		["stash pop", "git stash pop", null],
+		["stash drop of one entry", "git stash drop", null],
 	];
 	for (const [label, command, ruleId] of bashDanger) {
 		cases.push({

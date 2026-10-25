@@ -832,6 +832,27 @@ describe("raw-device rule (macOS disk names)", () => {
 	}
 });
 
+describe("git-stash-clear rule", () => {
+	for (const command of ["git " + "stash clear", "git  " + "stash   clear", "GIT " + "STASH CLEAR", "cd repo && git " + "stash clear"]) {
+		test(`${command}: floor deny, zero model calls`, async () => {
+			const h = session({});
+			const r = await toolCall(h, "bash", { command });
+			expect(r?.block).toBe(true);
+			expect(String(r?.reason)).toContain("git-stash-clear");
+			expect(h.calls.length).toBe(0);
+		});
+	}
+	for (const command of ["git stash list", "git stash pop", "git stash drop", "git stash drop stash@{1}"]) {
+		test(`${command}: not a stash-clear deny (gray → classifier)`, async () => {
+			const h = session({});
+			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+			const r = await toolCall(h, "bash", { command });
+			expect(r).toBeUndefined();
+			expect(h.calls.length).toBe(1);
+		});
+	}
+});
+
 // ── 1b. Fork: S0 credential inventory (XDG dotless homes included) ──────────
 
 describe("S0 credential inventory (fork: XDG dotless homes)", () => {

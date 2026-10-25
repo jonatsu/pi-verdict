@@ -38,6 +38,8 @@ const BASH_DANGER_RULES: BashDangerRule[] = [
 	// `--force-*` form stays denied (explicit is better than an unbounded lookahead).
 	{ id: "git-push-force", reason: "git push --force", check: gitPushForce },
 	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
+	// Pattern from eugeniughelbur/jev-engineering@82655a6d policy.json (MIT, Copyright (c) 2026 Eugeniu Ghelbur).
+	{ id: "git-stash-clear", pattern: /\bgit\s+stash\s+clear\b/i, reason: "git stash clear (drops all stashes)" },
 	{ id: "git-clean-force", pattern: /\bgit\s+clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)/i, reason: "git clean -f" },
 	{ id: "git-checkout-dot", pattern: /\bgit\s+checkout\s+(--\s+)?\.(?:\s|$)/i, reason: "git checkout . (discard working tree)" },
 	{ id: "git-restore", pattern: /\bgit\s+restore\b/i, reason: "git restore (discard changes)" },
