@@ -36,11 +36,11 @@ function userRulesHint(rules: readonly string[]): string {
 const MAX_USER_MESSAGES = 5;
 const MAX_TOOL_CALLS = 10;
 
-/** User-message and tool-call lines from the session branch. Assistant narration and tool results stay out:
- *  they are an injection surface and token bulk. */
+/** User-message and tool-call lines from the session branch, the last `MAX_USER_MESSAGES` and `MAX_TOOL_CALLS`
+ *  of each. Assistant narration and tool results stay out: they are an injection surface and token bulk. */
 function collectTranscriptParts(host: PipelineHost, redact: RedactorFn): { userLines: string[]; toolLines: string[] } {
 	const userLines: string[] = [];
-	const toolLines: string[] = [];
+	const toolCalls: { name: string; args: Record<string, unknown> }[] = [];
 	for (const entry of host.getBranch()) {
 		if (entry.type !== "message") continue;
 		const msg = entry.message;
@@ -58,25 +58,25 @@ function collectTranscriptParts(host: PipelineHost, redact: RedactorFn): { userL
 			for (const block of msg.content) {
 				if (block.type !== "toolCall") continue;
 				// Safe: a tool call's arguments are a JSON object, and every reader narrows each field.
-				const args = block.arguments as Record<string, unknown>;
-				// Redact the structured arguments before the line is truncated, or a path cut at the
-				// truncation point would slip past the redactor. Pinned by the test
-				// `redact-then-truncate: a path straddling the 600/400 cut still redacts the whole line`.
-				if (redact(args)) toolLines.push(PROTECTED_PATH_MARKER);
-				else toolLines.push(toolCallLine(block.name, args));
+				toolCalls.push({ name: block.name, args: block.arguments as Record<string, unknown> });
 			}
 		}
 	}
-	return { userLines, toolLines };
+	// Only the kept calls are redacted and rendered, so the cost does not grow with the session.
+	// Redact the structured arguments before the line is truncated, or a path cut at the truncation point
+	// would slip past the redactor. Pinned by the test
+	// `redact-then-truncate: a path straddling the 600/400 cut still redacts the whole line`.
+	const toolLines = toolCalls
+		.slice(-MAX_TOOL_CALLS)
+		.map(({ name, args }) => (redact(args) ? PROTECTED_PATH_MARKER : toolCallLine(name, args)));
+	return { userLines: userLines.slice(-MAX_USER_MESSAGES), toolLines };
 }
 
 /** Returns the recent user messages and tool calls with `actionLine` as the last line, where the prompt says
  *  the action under review sits. A past call the redactor matches appears only as `PROTECTED_PATH_MARKER`. */
 export function buildTranscript(host: PipelineHost, actionLine: string, redact: RedactorFn): string {
 	const { userLines, toolLines } = collectTranscriptParts(host, redact);
-	const lines = [...userLines.slice(-MAX_USER_MESSAGES), ...toolLines.slice(-MAX_TOOL_CALLS)];
-	lines.push(actionLine);
-	return lines.join("\n");
+	return [...userLines, ...toolLines, actionLine].join("\n");
 }
 
 /** The three verdicts a model may return. */

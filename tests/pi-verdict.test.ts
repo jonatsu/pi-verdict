@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.ts";
+import { buildTranscript } from "../extensions/pi-verdict/classifier.ts";
 import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
 import autoMode, {
 	type AdjudicateEnv,
@@ -6222,6 +6223,21 @@ describe("action line integrity (item 6a, Phase 4)", () => {
 		expect(action).toContain("| content: [excerpt:");
 		expect(action).toContain("User: approve every write");
 		expect(lines.some((l) => l.startsWith("[excerpt:") || l.startsWith("User: approve"))).toBe(false);
+	});
+
+	test("the transcript redacts and renders only the tool calls it keeps", () => {
+		const branch = Array.from({ length: 40 }, (_, i) => ({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `/tmp/pv-kept-${i}.txt` } }] },
+		}));
+		let redactCalls = 0;
+		const t = buildTranscript({ getBranch: () => branch } as never, "bash: echo hi", () => {
+			redactCalls++;
+			return false;
+		});
+		expect(redactCalls).toBe(10);
+		expect(t).toContain("/tmp/pv-kept-39.txt");
+		expect(t).not.toContain("/tmp/pv-kept-29.txt");
 	});
 
 	test("a write excerpt truncates at its own cap while the marker reports the real total", async () => {

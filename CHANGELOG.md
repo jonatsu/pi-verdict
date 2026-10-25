@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The classifier transcript redacts and renders only the past tool calls it keeps (the last 10), instead of every tool call in the session branch, so the per-call cost of a gray-zone decision no longer grows with the session's length; the transcript itself is unchanged (plan finding `C36`)
+
 ### Fixed
 
 - A `write` or `edit` action's content excerpt now stays on the action line after a `| content:` separator instead of on a line of its own, so the transcript's last line, which both the classifier and EXPLAIN-GATE prompts read as the action under review, is the action and not model-written content (plan finding `C35`)
