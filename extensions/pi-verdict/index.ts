@@ -69,26 +69,15 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parseJevReason } from "../jev-adapter.ts";
 import { type CoverageToolInfo, sideEffectingToolsWarning, toolCoverageReport } from "./access.ts";
 import { actionCallLine, toolCallLine } from "./action-line.ts";
-import {
-	type AdjudicateEnv,
-	type AllowVerdict,
-	type AskVerdict,
-	adjudicate,
-	type DenyVerdict,
-	resolveAskWithoutHuman,
-	type Verdict,
-	type VerdictSource,
-} from "./adjudicate.ts";
+import { type AdjudicateEnv, adjudicate, redactedOr, resolveAskWithoutHuman, sessionRedactor, type Verdict } from "./adjudicate.ts";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
 import { completionForHost } from "./completion.ts";
 import type { UserRules } from "./config.ts";
-import { declineDetail, type ExplainGateResult, explainGate } from "./explain.ts";
-import { resolveClassifier, resolveExplainGate, resolveFallbackClassifier } from "./model-roles.ts";
-import { PROTECTED_PATH_MARKER, type RedactorFn, redactorFor } from "./redaction.ts";
+import { resolveClassifier, resolveFallbackClassifier } from "./model-roles.ts";
+import { blockReason, POLICY_DEGRADED, type PresentedCall, presentVerdict } from "./present.ts";
 import { type AutoModeDeps, createRuntime, refreshStatus as refreshRuntimeStatus } from "./runtime.ts";
 import type { FallbackStats, RulesLoadReport } from "./state.ts";
 import {
@@ -114,7 +103,6 @@ import {
 	trustStorePath,
 } from "./trust.ts";
 import { runConfigEditor } from "./ui/config-editor.ts";
-import { approveCodeMarkdown, confirmAsk, displaySafe } from "./ui/dialog.ts";
 
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
@@ -150,33 +138,6 @@ let rootUi: UiContext | null = null;
 // Extension body
 // ============================================================================
 
-/** presentVerdict's ask-dialog reason-line label, keyed by verdict source (presentation only;
- *  the protected-path branch renders its own dialog and never reads this map). */
-const ASK_SOURCE_LABEL: Record<VerdictSource, string> = {
-	rule: "Rule",
-	"protected-path": "Protected path",
-	classifier: "Classifier opinion",
-	"fail-closed": "Fail-closed",
-	"degraded-policy": "Policy degraded", // item 6c (Phase 6): names the state in the dialog's reason line
-};
-
-/** The tag of every block reason: a deny's verdict source, or the step that blocked an ask. */
-type BlockTag = VerdictSource | "user-declined" | "subagent-auto" | "subagent-expired" | "subagent-cancelled";
-
-type Notify = (msg: string, level: "info" | "warning" | "error") => void;
-
-/** Agent-facing block reason (#53): the text must be self-sufficient — structural
- * error signaling does not reach several provider lanes, and verbatim rule/classifier
- * reasons can be empty or too terse for the acting model to recognize as a block.
- * While the policy is degraded every block names that state (ADR-0010). */
-function blockReasonText(tag: BlockTag, detail: string, policyDegraded: boolean): string {
-	const stated = policyDegraded
-		? `${detail} [policy degraded: the user's own rules failed to load, so model-originated allows are withheld — ADR-0010]`
-		: detail;
-	const clean = stated.trim().replace(/\.+$/, "");
-	return `[auto-mode ${tag} block] BLOCKED — this action did NOT run. Reason: ${clean || "(no further reason given)"}. Report the block to the user; never claim it succeeded or completed.`;
-}
-
 /** The `/automode` status line for the confidence cascade; shadow mode names what enforce would have done. */
 function cascadeSummary(s: Readonly<FallbackStats>, mode: UserRules["classifierFallbackMode"]): string {
 	if (s.triggered === 0) return "confidence cascade: not triggered this session";
@@ -200,144 +161,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	const { state } = rt;
 	const refreshStatus = (ctx: ExtensionContext): void => refreshRuntimeStatus(rt, ctx);
 
-	/** One construction point for this session's redactor: the presentation and
-	 *  handler sites build their per-call predicate through this helper instead of repeating
-	 *  the redactorFor + anchored-bases idiom. (adjudicate and resolveAskWithoutHuman live
-	 *  outside this closure and use `env.redact ?? …` — the handler publishes the session
-	 *  redactor through AdjudicateEnv.redact below.) */
-	const sessionRedactor = (cwd: string): RedactorFn => redactorFor(cwd, state.anchoredDenyPathBases(cwd));
-
-	/** This session's block reason, naming the degraded-policy state while it holds. */
-	const blockReason = (tag: BlockTag, detail: string): string => blockReasonText(tag, detail, state.policyDegraded);
-
-	/** Verdict → UI (the extension's single presentation point): presentation keys on
-	 *  source alone; protected-path wording carries the ask-degradation context. */
-	async function presentVerdict(
-		v: Verdict,
-		call: { toolName: string; input: Record<string, unknown> },
-		action: string,
-		ui: UiContext,
-		opts: { label: string | null; signal?: AbortSignal; ctx: ExtensionContext; deadlineAt?: number },
-	): Promise<{ block: true; reason: string } | undefined | "aborted"> {
-		const note = (msg: string, level: "info" | "warning" | "error"): void =>
-			ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
-		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
-		// Notifications carry no protected-path plaintext (ADR-0002): an action that names a protected
-		// path becomes the fixed marker. Block reasons and the local dialog show the action unchanged.
-		const displayAction = sessionRedactor(opts.ctx.cwd)(call.input) ? PROTECTED_PATH_MARKER : action;
-		switch (v.verdict) {
-			case "allow":
-				presentAllow(v, displayAction, note);
-				return undefined;
-			case "deny":
-				return presentDeny(v, displayAction, note);
-			case "ask":
-				return presentAsk(v, call, action, ui, opts, titled);
-			default: {
-				// A fixed message: the verdict may carry a protected path in `detail` (ADR-0002).
-				const _unhandled: never = v;
-				throw new Error("unhandled verdict");
-			}
-		}
-	}
-
-	/** Notifies an allow: a classifier allow with `notifyAllows` or debug, a mechanical one only with debug (#60). */
-	function presentAllow(v: AllowVerdict, displayAction: string, note: Notify): void {
-		if (rt.debug) {
-			if (v.source === "rule") note(`🛡️ allow (rule): ${displayAction}`, "info");
-			else note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
-		} else if (state.userRules.notifyAllows && v.source === "classifier") {
-			note(`🛡️ allow (classifier): ${v.reason}\n  ${displayAction}`, "info");
-		}
-	}
-
-	/** Notifies a deny and returns its block, tagged by the verdict's source. */
-	function presentDeny(v: DenyVerdict, displayAction: string, note: Notify): { block: true; reason: string } {
-		/** A headless ask reaches the agent as a block; saying so tells it a human could have allowed the call. */
-		const headlessAsk = (): string => (v.degraded ? `ask degraded to block in non-interactive mode: ${v.reason}` : v.reason);
-		switch (v.source) {
-			case "degraded-policy":
-				note(`🛡️ Auto Mode blocked (policy degraded, allow withheld): ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason(v.source, v.reason) };
-			case "protected-path":
-				// No action line: notifications carry no protected-path plaintext (ADR-0002).
-				note(`🛡️ Auto Mode blocked (non-interactive, protected-path ask→deny): ${v.reason}`, "warning");
-				return { block: true, reason: blockReason(v.source, `ask degraded to block in non-interactive mode: ${v.reason}`) };
-			case "fail-closed":
-				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason(v.source, v.reason) };
-			case "rule":
-			case "classifier":
-				note(`🛡️ Auto Mode blocked: ${v.reason}\n  ${displayAction}`, "warning");
-				return { block: true, reason: blockReason(v.source, headlessAsk()) };
-			default: {
-				const unhandled: never = v.source;
-				throw new Error(`unhandled verdict source: ${unhandled}`);
-			}
-		}
-	}
-
-	/** Puts an ask to the human; interactive only, since the pipeline turns a headless ask into a deny. */
-	async function presentAsk(
-		v: AskVerdict,
-		call: { toolName: string; input: Record<string, unknown> },
-		action: string,
-		ui: UiContext,
-		opts: { signal?: AbortSignal; ctx: ExtensionContext; deadlineAt?: number },
-		titled: (title: string) => string,
-	): Promise<{ block: true; reason: string } | undefined | "aborted"> {
-		const note = (msg: string, level: "info" | "warning" | "error"): void => ui.notify(titled(msg), level);
-		if (v.source === "protected-path") {
-			// no EXPLAIN-GATE here: the protected path plaintext must not reach a model provider (ADR-0002)
-			const d = await confirmAsk(
-				ui,
-				{
-					title: titled("🛡️ Auto Mode: protected path"),
-					toolName: call.toolName,
-					input: call.input,
-					action,
-					reasonLine: v.reason,
-					detail: v.detail ?? "(see pi-verdict.json)",
-					question: "Allow this access?",
-					jev: null,
-					minConfidence: null,
-					fallbackMessage: `${action}\n\n${v.reason}\n\nProtected path: ${v.detail ?? "(see pi-verdict.json)"}\n\nAllow this access?`,
-				},
-				{ signal: opts.signal, deadlineAt: opts.deadlineAt },
-			);
-			if (d === "aborted") return "aborted";
-			if (d.allow) {
-				// Debug notification omits the action line: as above, notifications must not carry protected-path plaintext
-				if (rt.debug) note("🛡️ allow (protected-path confirm)", "info");
-				return undefined;
-			}
-			return { block: true, reason: blockReason("user-declined", declineDetail("user declined protected-path access", d.reason)) };
-		}
-		const label = ASK_SOURCE_LABEL[v.source];
-		const reasonLine = `${label}: ${v.reason}`;
-		const d = await confirmAsk(
-			ui,
-			{
-				title: titled("🛡️ Auto Mode confirmation"),
-				toolName: call.toolName,
-				input: call.input,
-				action,
-				reasonLine,
-				question: "Allow execution?",
-				jev: v.source === "classifier" ? parseJevReason(v.reason) : null,
-				minConfidence: state.userRules.classifierMinConfidence,
-				fallbackMessage: `${action}\n\n${label}: ${v.reason}\n\nAllow execution?`,
-			},
-			{
-				signal: opts.signal,
-				deadlineAt: opts.deadlineAt,
-				explain: (question) => explainAsk(opts.ctx, call, action, label, v.reason, question),
-			},
-		);
-		if (d === "aborted") return "aborted";
-		return d.allow ? undefined : { block: true, reason: blockReason("user-declined", declineDetail("user declined", d.reason)) };
-	}
-
 	/** Set the master toggle (shared, #15): /automode command and toggle shortcut use the same entry point, with no extra rules from the interaction surface. */
 	function setMasterSwitch(next: boolean, ctx: ExtensionContext) {
 		rt.enabled = next;
@@ -360,11 +183,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// item 6c (Phase 6; ADR-0010): the primary signal for the degraded state — fires
 		// whether or not the failure produced a skipped entry (a parse failure would otherwise
 		// rely on the count line above to imply it).
-		if (report.degraded)
-			ctx.ui.notify(
-				"pi-verdict: policy degraded — your own rules could not be fully loaded, so model-originated allows are withheld (each becomes a confirm) until the config is fixed (ADR-0010)",
-				"warning",
-			);
+		if (report.degraded) ctx.ui.notify(POLICY_DEGRADED.sessionWarning, "warning");
 	}
 
 	// session_start reloads rules and resets per-session verdict statistics.
@@ -473,7 +292,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			? `\n${cascadeSummary(state.fallback.stats, state.userRules.classifierFallbackMode)}`
 			: "";
 	/** Status line degraded-policy hint (item 6c, Phase 6): named whenever the state holds */
-	const policyHint = () => (state.policyDegraded ? "\npolicy degraded: model-originated allows withheld (ADR-0010)" : "");
+	const policyHint = () => (state.policyDegraded ? `\n${POLICY_DEGRADED.status}` : "");
 
 	pi.registerCommand("automode", {
 		description: "Show Auto Mode status, or set it: /automode on|off",
@@ -515,46 +334,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}),
 	});
 
-	/** The dialog's "Explain…" handler: one EXPLAIN-GATE call about the held action. */
-	async function explainAsk(
-		ctx: ExtensionContext,
-		call: { toolName: string; input: Record<string, unknown> },
-		action: string,
-		reasonLabel: string,
-		reason: string,
-		question: string | null,
-	): Promise<ExplainGateResult> {
-		const role = resolveExplainGate(ctx, state);
-		if (!role) return { ok: false, error: "no model available" };
-		// The EXPLAIN prompt carries the held action — when it names a protected
-		// path the model gets the fixed marker; the local dialog that already showed this
-		// action to the human is unaffected (it renders the raw text separately).
-		const redactFn = sessionRedactor(ctx.cwd); // one construction shared by both payloads
-		const redacted = redactFn(call.input);
-		return explainGate({
-			host: ctx.sessionManager,
-			signal: ctx.signal,
-			complete: completionForHost(ctx.modelRegistry, rt.compatLoader),
-			model: role.model,
-			thinking: role.thinking,
-			actionLine: redacted ? PROTECTED_PATH_MARKER : action,
-			actionDetail: redacted
-				? PROTECTED_PATH_MARKER
-				: (approveCodeMarkdown(call.toolName, call.input, () => undefined)?.markdown ?? displaySafe(action)),
-			// A floor reason names the path it matched, so it gets the same marker as the action.
-			reasonLine: `${reasonLabel}: ${redacted ? PROTECTED_PATH_MARKER : reason}`,
-			defaultPrompt: state.userRules.explainGatePrompt,
-			question,
-			// item 6b (Phase 5): the EXPLAIN-GATE transcript is a model-provider payload exactly
-			// like the classifier's own — same cwd + anchored bases, same predicate.
-			redact: redactFn,
-		});
-	}
-
-	function describeAction(toolName: string, input: Record<string, unknown>): string {
-		return toolCallLine(toolName, input);
-	}
-
 	pi.on("tool_call", async (event, ctx) => {
 		if (!rt.enabled) return undefined;
 		const handlerStart = Date.now();
@@ -568,12 +347,10 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 
 		const input = event.input as Record<string, unknown>;
 		const call = { toolName: event.toolName, input };
-		const action = describeAction(event.toolName, input);
-		// The subagent notification sites below embed the action too — same
-		// no-protected-plaintext invariant as presentVerdict's notifications. Built once here
-		// and reused for the env redactor below.
-		const redactFn = sessionRedactor(ctx.cwd);
-		const displayAction = redactFn(input) ? PROTECTED_PATH_MARKER : action;
+		const action = toolCallLine(event.toolName, input);
+		const redactFn = sessionRedactor(state, ctx.cwd);
+		const displayAction = redactedOr(redactFn, input, action);
+		const pc: PresentedCall = { ...call, action, displayAction, redact: redactFn, ctx, ui: ui ?? ctx.ui, label };
 
 		// Live status (root session + UI only): one widget row above the editor while a model call runs.
 		// Text is phase + tool name + model id only; never command or path text (ADR-0002).
@@ -635,7 +412,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		};
 		const present = async (signal?: AbortSignal, deadlineAt?: number): Promise<{ block: true; reason: string } | undefined | "aborted"> => {
 			try {
-				return await presentVerdict(verdict, call, action, ui ?? ctx.ui, { label, signal, ctx, deadlineAt });
+				return await presentVerdict(rt, verdict, pc, signal && deadlineAt !== undefined ? { signal, deadlineAt } : undefined);
 			} catch (err) {
 				if (pendingAudit) state.audit?.append(pendingAudit);
 				throw err;
@@ -649,7 +426,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// Root session (and pi): unchanged behavior; no signal is passed, so "aborted" cannot occur
 		if (!sub) {
 			const r = await present();
-			const presented = r === "aborted" ? { block: true as const, reason: blockReason("user-declined", "user declined") } : r;
+			const presented = r === "aborted" ? { block: true as const, reason: blockReason(state, "user-declined", "user declined") } : r;
 			finalize(answerAudit(presented));
 			return presented;
 		}
@@ -667,7 +444,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		const finishWithoutHuman = async (resolution: "timeout" | "auto"): Promise<{ block: true; reason: string } | undefined> => {
 			// The second model judges the same uncapped action line the first classifier saw;
 			// displayAction is cut to 1000 chars for notifications and would hide a payload in the middle.
-			const modelAction = redactFn(input) ? PROTECTED_PATH_MARKER : actionCallLine(event.toolName, input).line;
+			const modelAction = redactedOr(redactFn, input, actionCallLine(event.toolName, input).line);
 			const res = await resolveAskWithoutHuman(state, env, verdict, modelAction, hostDeadlineAt);
 			finalize({ subagent: { ...sub, resolution }, ...(res.fb ? { fallback: res.fb } : {}) });
 			const out = (ui ?? ctx.ui).notify.bind(ui ?? ctx.ui);
@@ -681,7 +458,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				`🛡️ [${label}] Auto Mode blocked (subagent ask, no human): ${res.reason}${verdict.source === "protected-path" ? "" : `\n  ${displayAction}`}`,
 				"warning",
 			);
-			return { block: true, reason: blockReason("subagent-auto", res.reason) };
+			return { block: true, reason: blockReason(state, "subagent-auto", res.reason) };
 		};
 
 		if (mode === "normal" && ui !== null) {
@@ -694,7 +471,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				ui.notify(`🛡️ [${label}] subagent ask expired before omp's handler timeout: ${why}`, "warning");
 				return {
 					block: true,
-					reason: blockReason("subagent-expired", `no human answer before omp's handler budget ran out: ${why} — ${verdict.reason}`),
+					reason: blockReason(state, "subagent-expired", `no human answer before omp's handler budget ran out: ${why} — ${verdict.reason}`),
 				};
 			};
 			if (window.hostLimited && window.ms < MIN_SUBAGENT_DIALOG_MS) return expireOnHostBudget();
@@ -708,7 +485,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			}
 			if (ctx.signal?.aborted) {
 				finalize({ subagent: { ...sub, resolution: "timeout" } });
-				return { block: true, reason: blockReason("subagent-cancelled", "subagent run was cancelled while awaiting approval") };
+				return { block: true, reason: blockReason(state, "subagent-cancelled", "subagent run was cancelled while awaiting approval") };
 			}
 			if (window.hostLimited) return expireOnHostBudget();
 			return finishWithoutHuman("timeout");
