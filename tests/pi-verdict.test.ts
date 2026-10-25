@@ -824,6 +824,29 @@ describe("simple-command allow guard (audit F2)", () => {
 			await reachesClassifier([allow], command);
 		});
 	}
+	// A write option's value is graded as a read, so under `^find\b` `find . -fprint ~/.bashrc` truncated that file.
+	const writerRows: [string, string][] = [
+		["^find\\b", "find . -fprint ~/.bashrc"],
+		["^find\\b", "find . -fprint0 out"],
+		["^find\\b", "find . -fprintf out %p"],
+		["^find\\b", "find . -fls out"],
+		["^find\\b", "find . -name x -delete"],
+		["^sort\\b", "sort -o ~/.bashrc f"],
+		["^sort\\b", "sort -no out f"],
+		["^sort\\b", "sort --output=out f"],
+		["^sort\\b", "sort --output out f"],
+		["^sort\\b", "sort --compress-program=./x.sh f"],
+	];
+	for (const [allow, command] of writerRows) {
+		test(`a command option that writes a file is not rule-allowed: ${command}`, async () => {
+			await reachesClassifier([allow], command);
+		});
+	}
+	test("find and sort without a write option stay rule-allowed", async () => {
+		await staysAllowed(["^find\\b"], "find . -name x");
+		await staysAllowed(["^sort\\b"], "sort f");
+		await staysAllowed(["^sort\\b"], "sort -rn f");
+	});
 	test("the same tools without a program option stay rule-allowed", async () => {
 		await staysAllowed(["^fd\\b"], "fd -e ts");
 		await staysAllowed(["^rg\\b"], "rg foo");

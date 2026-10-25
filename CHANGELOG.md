@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A user `allow` rule admitted a command whose option writes a file, because the option's value was graded as a read: under `^find\b`, `find . -fprint ~/.bashrc` truncated that file as a silent rule allow, and `sort -o <path>` wrote one the same way; `find -delete`, `-fprint`, `-fprint0`, `-fprintf` and `-fls` and `sort -o`, `--output` and `--compress-program` (bare, attached, in a short-option bundle or abbreviated) now refuse the admission like the program-running options, so such a call reaches the classifier, while `find . -name x` and `sort f` stay rule allows ([ADR-0008](docs/adr/0008-simple-command-allow.md)).
+
 ## [0.23.0] - 2026-10-25
 
 ### Added

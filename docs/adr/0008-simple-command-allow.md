@@ -44,7 +44,10 @@ evidence. The guard rejects a command that is not a single simple command:
   `-execdir`/`-ok`/`-okdir`, `fd`/`fdfind -x`/`-X`/`--exec`/`--exec-batch`, `rg --pre`, `tar`,
   `bsdtar` or `gtar` with `--to-command`, `--use-compress-program`/`-I`, `--checkpoint-action`,
   `--info-script`/`-F`, `--new-volume-script`, `--rsh-command` or `--rmt-command`, `zip -TT`/
-  `--unzip-command`, and `rsync -e`/`--rsh`/`--rsync-path`.
+  `--unzip-command`, and `rsync -e`/`--rsh`/`--rsync-path`. An option that writes a file counts too,
+  because the operand grading would read its target as a read: `find -delete`/`-fprint`/`-fprint0`/
+  `-fprintf`/`-fls` and `sort -o`/`--output`/`--compress-program` (amended 2026-10-25: under
+  `^find\b`, `find . -fprint ~/.bashrc` truncated that file as a silent rule allow).
 - **A `git` invocation carrying a write flag** — `--output`/`-o`, `--exec`, `--ext-diff`,
   `--textconv`, `--git-dir`, `--work-tree`, bare or attached (`--output=…`, `-o<path>`).
 

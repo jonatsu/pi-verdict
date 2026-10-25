@@ -254,19 +254,20 @@ export function gitPushForce(command: string): boolean {
  *  the configuration that runs a program (`-c`, `--config-env`) are refused by `allowOperandsAdmit`. */
 const GIT_WRITE_FLAGS = ["--output", "-o", "--exec", "--ext-diff", "--textconv", "--git-dir", "--work-tree"];
 
-/** The options with which a command runs another program. `words` match a whole word (find's
- *  actions); `long` names match bare, with `=value`, or abbreviated to a unique prefix as getopt
+/** The options with which a command runs another program or writes a file. A write option's value
+ *  would be graded as a read, so the option itself refuses the allow. `words` match a whole word
+ *  (find's actions); `long` names match bare, with `=value`, or abbreviated to a unique prefix as getopt
  *  allows; `short` letters match inside a short-option bundle, and for tar also in its old-style first
  *  word (`tar xIf`). */
-interface ProgramOptions {
+interface SideEffectOptions {
 	readonly words?: readonly string[];
 	readonly long?: readonly string[];
 	readonly short?: RegExp;
 	readonly oldStyle?: boolean;
 }
 
-const FD_PROGRAM: ProgramOptions = { long: ["--exec", "--exec-batch"], short: /[xX]/ };
-const TAR_PROGRAM: ProgramOptions = {
+const FD_PROGRAM: SideEffectOptions = { long: ["--exec", "--exec-batch"], short: /[xX]/ };
+const TAR_PROGRAM: SideEffectOptions = {
 	long: [
 		"--to-command",
 		"--use-compress-program",
@@ -280,8 +281,8 @@ const TAR_PROGRAM: ProgramOptions = {
 	oldStyle: true,
 };
 
-const PROGRAM_OPTIONS: Readonly<Record<string, ProgramOptions>> = {
-	find: { words: ["-exec", "-execdir", "-ok", "-okdir"] },
+const SIDE_EFFECT_OPTIONS: Readonly<Record<string, SideEffectOptions>> = {
+	find: { words: ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"] },
 	fd: FD_PROGRAM,
 	fdfind: FD_PROGRAM,
 	rg: { long: ["--pre"] },
@@ -291,14 +292,15 @@ const PROGRAM_OPTIONS: Readonly<Record<string, ProgramOptions>> = {
 	// zip's `-TT` is one two-letter option, so it matches only spelled out.
 	zip: { long: ["--unzip-command"], short: /TT/ },
 	rsync: { long: ["--rsh", "--rsync-path"], short: /e/ },
+	sort: { long: ["--output", "--compress-program"], short: /o/ },
 };
 
 /** The shortest long-option prefix read as an abbreviation. */
 const MIN_LONG_PREFIX = 5;
 
-/** True when `word` is one of the command's program options. Over-approximates: an option's value
+/** True when `word` is one of the command's side-effect options. Over-approximates: an option's value
  *  that looks like one also counts, which only sends the call to the classifier. */
-function runsProgram(word: string, first: boolean, options: ProgramOptions): boolean {
+function hasSideEffect(word: string, first: boolean, options: SideEffectOptions): boolean {
 	if (options.words?.includes(word)) return true;
 	if (word.startsWith("--")) {
 		const name = word.split("=")[0];
@@ -316,8 +318,8 @@ function runsProgram(word: string, first: boolean, options: ProgramOptions): boo
  * judgment, and a read-shaped `git log --output=<path>` would admit a write. An allow is granted
  * only for ONE simple command: false (allow skipped → the call reaches the classifier) on an
  * operator or newline, an unsound parse, a redirection other than to `/dev/null`, a re-parser in
- * command position (`xargs`, `find … -exec`) or an option that runs a program (`fd -x`, `rg --pre`,
- * `tar -I`), or a `git` invocation carrying a write flag. It checks the shape only;
+ * command position (`xargs`, `find … -exec`), an option that runs a program (`fd -x`, `rg --pre`,
+ * `tar -I`) or writes a file (`find -fprint`, `sort -o`), or a `git` invocation carrying a write flag. It checks the shape only;
  * `allowOperandsAdmit` grades what the operands touch.
  *
  * The narrowing direction is the safe one: a rejected allow never denies, it only defers to the
@@ -337,12 +339,13 @@ export function allowAdmits(command: string): boolean {
 	for (const w of words) {
 		if (isShellOperator(w) || w === "\n") return false;
 	}
-	// A re-parser, or an option that runs a program, runs words the scanner never paired.
+	// A re-parser, or an option that runs a program, runs words the scanner never paired; a write
+	// option's target would be graded as a read.
 	for (let i = 0; i < words.length; i++) {
 		const base = wordBasename(words[i]);
 		if (base === "xargs") return false;
-		const executor = PROGRAM_OPTIONS[base];
-		if (executor && words.slice(i + 1).some((w, k) => runsProgram(w, k === 0, executor))) return false;
+		const effects = SIDE_EFFECT_OPTIONS[base];
+		if (effects && words.slice(i + 1).some((w, k) => hasSideEffect(w, k === 0, effects))) return false;
 	}
 	if (words.length > 0 && wordBasename(words[0]) === "git") {
 		for (const w of words) {
