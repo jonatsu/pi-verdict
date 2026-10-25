@@ -55,6 +55,8 @@ const GRAY_ARGS_CHARS = 2000;
 /** Excerpt cap for a write's content or an edit's patch text: extra evidence for the classifier, never
  *  counted toward the action cap. */
 const EXCERPT_CHARS = 2000;
+/** Separates a write's target from its content excerpt on the one action line. */
+const CONTENT_SEPARATOR = "| content:";
 
 /** Returns a sanitized excerpt behind a visible `[excerpt: N of M chars]` marker, so a cut is never silent. */
 function boundedExcerpt(text: string, maxChars: number): string {
@@ -100,7 +102,9 @@ export function actionCallLine(name: string, args: Readonly<Record<string, unkno
 						: typeof args._input === "string"
 							? args._input
 							: null;
-			if (content !== null) return { line: `${counted}\n${boundedExcerpt(content, EXCERPT_CHARS)}`, overCap: false };
+			// The excerpt stays on the action line: the prompts read the transcript's last line as the action,
+			// and the content is model-written text.
+			if (content !== null) return { line: `${counted} ${CONTENT_SEPARATOR} ${boundedExcerpt(content, EXCERPT_CHARS)}`, overCap: false };
 		}
 		return { line: counted, overCap: false };
 	}
