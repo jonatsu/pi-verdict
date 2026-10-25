@@ -239,10 +239,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		const note = (msg: string, level: "info" | "warning" | "error"): void =>
 			ui.notify(opts.label ? msg.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : msg, level);
 		const titled = (t: string): string => (opts.label ? t.replace(/^🛡️ /u, `🛡️ [${opts.label}] `) : t);
-		// Notifications carry no protected-path plaintext (the invariant the
-		// protected-path branch below states out loud) — an action whose text names a base
-		// becomes the fixed marker; block REASONS and the local dialog surfaces are unchanged
-		// (the EXPLAIN payload is gated separately, in explainAsk).
+		// Notifications carry no protected-path plaintext (ADR-0002): an action that names a protected
+		// path becomes the fixed marker. Block reasons and the local dialog show the action unchanged.
 		const displayAction = sessionRedactor(opts.ctx.cwd)(call.input) ? PROTECTED_PATH_MARKER : action;
 		switch (v.verdict) {
 			case "allow":
@@ -253,8 +251,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			case "ask":
 				return presentAsk(v, call, action, ui, opts, titled);
 			default: {
-				const unhandled: never = v;
-				throw new Error(`unhandled verdict: ${JSON.stringify(unhandled)}`);
+				// A fixed message: the verdict may carry a protected path in `detail` (ADR-0002).
+				const _unhandled: never = v;
+				throw new Error("unhandled verdict");
 			}
 		}
 	}

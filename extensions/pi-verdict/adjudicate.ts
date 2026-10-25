@@ -400,8 +400,8 @@ function settle(a: Adjudication, s: Settlement): Verdict {
 		case "ask":
 			return { verdict: "deny", reason, ...detail, source, degraded: true };
 		default: {
-			const unhandled: never = ruling;
-			throw new Error(`unhandled ruling: ${String(unhandled)}`);
+			const _unhandled: never = ruling;
+			throw new Error("unhandled ruling");
 		}
 	}
 }
