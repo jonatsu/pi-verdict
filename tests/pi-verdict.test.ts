@@ -763,6 +763,18 @@ describe("simple-command allow guard (audit F2)", () => {
 	test("a newline hiding a command is not rule-allowed", async () => {
 		await reachesClassifier(["^ls\\b"], "ls\nbash /tmp/evil.sh");
 	});
+	test("a quote inside a # comment does not hide the next line from the allow guard", async () => {
+		await reachesClassifier(["^echo\\b"], "echo # '\nbash /tmp/evil.sh # '");
+	});
+	test("a $'…' quote does not hide the next command from the allow guard", async () => {
+		await reachesClassifier(["^echo\\b"], "echo $'\\'' ; touch x # '");
+	});
+	test("a key read hidden behind a # comment quote is not a silent rule allow", async () => {
+		const h = session({ allow: ["^echo\\b"] });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		const r = await toolCall(h, "bash", { command: "echo # '\ncat ~/.ssh/" + "id_rsa # '" });
+		expect(r?.block === true || h.calls.length === 1).toBe(true);
+	});
 	test("a single & hiding a command is not rule-allowed", async () => {
 		await reachesClassifier(["^ls\\b"], "ls & npm install evil-pkg");
 	});
@@ -1403,6 +1415,18 @@ describe("word-view floor rules: quoted text clears, option gaps deny (ADR-0007)
 		}
 	}
 	test("a newline ends the echo whose arguments are inert", () => floorDeny("echo x\nssh h 'git " + "reset --hard'", "git-reset-hard"));
+
+	// The tokenizer must read quotes as bash does: a `#` comment hides a quote, and `$'…'` escapes one.
+	for (const [ruleId, command] of [
+		["git-reset-hard", "git " + "reset --hard"],
+		["git-push-force", "git " + "push --force origin main"],
+	] as const) {
+		test(`${ruleId}: a quote inside a # comment does not hide the next line`, () => floorDeny(`echo # '\n${command} # '`, ruleId));
+		test(`${ruleId}: a $'…' quote does not hide the next command`, () => floorDeny(`echo $'\\'' ; ${command} # '`, ruleId));
+	}
+	for (const control of ["echo a#b", 'git commit -m "fix #12"', "grep '#' f"]) {
+		test(`a # that does not start a comment changes nothing: ${JSON.stringify(control)}`, () => reachesClassifier(control));
+	}
 	for (const [ruleId, command] of RULES) {
 		for (const inert of [
 			`printf '%s\\n' '${command}'`,

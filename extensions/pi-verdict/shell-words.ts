@@ -89,6 +89,18 @@ export function shellWords(command: string): string[] {
 	};
 	while (i < n) {
 		const ch = command[i];
+		if (ch === "#" && !inWord) {
+			// An unquoted `#` that starts a word starts a comment to the end of the line, as in bash
+			// (`a#b` is one word), so a quote inside the comment opens nothing.
+			const end = command.indexOf("\n", i);
+			i = end === -1 ? n : end;
+			continue;
+		}
+		if (ch === "$" && command[i + 1] === "'") {
+			// `$'…'` reads backslash escapes (`$'\''` is one quote), which this scanner does not model.
+			unsound();
+			return words;
+		}
 		if (ch === "'") {
 			const end = command.indexOf("'", i + 1);
 			if (end === -1) {
