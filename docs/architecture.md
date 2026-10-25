@@ -150,12 +150,14 @@ human.
 
 ## Presentation and the subagent bridge
 
-`settle` turns the ruling into a `Verdict` (`allow | deny | ask`, with the deciding layer as `source`). The handler
-(`handleToolCall` in `tool-call.ts`) reads the call once into a `PresentedCall`: the action line, the form a
-notification may show, the session redactor built once for the call, the UI the call's notifications and dialogs go
-to, and the subagent label. `presentVerdict` (`present.ts`) is the single place that turns a verdict into
-user-visible text: a block reason for the agent, a notification, or a dialog. The degraded-policy texts of those
-surfaces sit together in `POLICY_DEGRADED`.
+`settle` turns the ruling into a `Verdict` (`allow | deny | ask`, with the deciding layer as `source`). After
+adjudication the handler (`handleToolCall` in `tool-call.ts`) reads the call into a `PresentedCall`: the action
+line, the form a notification may show, the UI the call's notifications and dialogs go to, the subagent label, and
+the session redactor. That redactor is rebuilt after adjudication and kept wider than the one adjudication used, so
+a `denyPaths` entry a `/verdict` edit added during the call is still redacted; Explain widens it again when the user
+asks. `presentVerdict` (`present.ts`) is the single place that turns a verdict into user-visible text: a block
+reason for the agent, a notification, or a dialog. The degraded-policy texts of those surfaces sit together in
+`POLICY_DEGRADED` (`state.ts`).
 
 An ask's audit record is appended exactly once, after the answer: with the user's answer, with the subagent
 resolution, or without an answer when the presentation throws.
@@ -223,8 +225,8 @@ flowchart BT
     subagent[subagent: identity, host budget, ask window]
     rootui[root-ui: shared root UI, dialog queue]
     roles[model-roles: classifier, fallback, EXPLAIN-GATE models]
-    runtime[runtime: GateRuntime, footer refresh]
-    ui[ui: dialog, footer, config editor]
+    runtime[runtime: GateRuntime]
+    ui[ui: dialog, footer and status line, /verdict editor]
     present[present: block reasons, notifications, dialogs]
     toolcall[tool-call: the tool_call handler]
     session[session-start + master-switch: session hooks, /automode]
@@ -242,8 +244,10 @@ flowchart BT
 Inside a group, modules also import each other in order (for example `floor` imports `shell`, and `rules` imports
 the other rule steps). In the host group, `runtime` builds the `GateRuntime` that every later module takes: the
 session state, the master switch, the debug flag and the host seams. `present` builds on `runtime`, `model-roles`
-and the dialog; `tool-call` and `session-start` build on `present`; `index.ts` imports only the hook entry points. `config` sits in the bottom group because `access` reads its tool-name lists from it,
-lists that belong with the tool-access adapter itself.
+and the dialog, and `tool-call` builds on `present`. `index.ts` imports only the hook entry points.
+
+`config` sits in the bottom group because `access` reads its tool-name lists from it, lists that belong with the
+tool-access adapter itself.
 
 `jev-adapter.ts` sits beside the gate as a second extension: it registers the jev classifier backend (ADR-0003),
 and the gate imports only helpers from it.
