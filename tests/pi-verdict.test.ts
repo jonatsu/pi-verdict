@@ -6721,6 +6721,40 @@ describe("end-to-end adjudication deadline (item 7, Phase 7)", () => {
 		expect(elapsed).toBeLessThan(1_000); // ... and it fired well inside the 30 s host bound
 	});
 
+	test("a provider that returns on abort is not retried after its timeout", async () => {
+		setConfig({});
+		const state = new SessionState();
+		const env = adjudicateEnv();
+		env.adjudicationBudgetMs = 50;
+		let calls = 0;
+		// Like jev: the provider resolves with stopReason "aborted" when the attempt deadline fires.
+		env.complete = (async (_m: any, _req: any, opts: any) => {
+			calls++;
+			await new Promise<void>((resolve) => opts.signal?.addEventListener("abort", () => resolve(), { once: true }));
+			return { content: [], stopReason: "aborted" };
+		}) as any;
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		expect(v).toMatchObject({ verdict: "deny", source: "classifier" });
+		expect(v.reason).toContain("timed out after");
+		expect(calls).toBe(1);
+	});
+
+	test("a parseable verdict that arrives as the attempt times out is still used", async () => {
+		setConfig({});
+		const state = new SessionState();
+		const env = adjudicateEnv();
+		env.adjudicationBudgetMs = 50;
+		let calls = 0;
+		env.complete = (async (_m: any, _req: any, opts: any) => {
+			calls++;
+			await new Promise<void>((resolve) => opts.signal?.addEventListener("abort", () => resolve(), { once: true }));
+			return { content: [{ type: "text", text: "<verdict>allow</verdict> late but valid" }], stopReason: "stop" };
+		}) as any;
+		const v = await adjudicate(state, { toolName: "bash", input: { command: "cargo build" } }, env);
+		expect(v).toMatchObject({ verdict: "allow", reason: "late but valid" });
+		expect(calls).toBe(1);
+	});
+
 	test("a contract violation still retries inside the budget", async () => {
 		setConfig({});
 		const state = new SessionState();

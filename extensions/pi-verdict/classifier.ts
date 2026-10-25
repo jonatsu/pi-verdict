@@ -122,8 +122,8 @@ const CLASSIFIER_MAX_TOKENS = 512;
 const CLASSIFIER_RETRY_MAX_TOKENS = 1024;
 
 /** Classifies a gray-zone action in up to two attempts, the second with a larger token window. An error, an
- *  abort or output outside the verdict prefix contract retries; a timeout does not, since the retry would
- *  spend the fallback's budget. Fails closed: with no verdict, it returns a deny naming each attempt's failure. */
+ *  abort or output outside the verdict prefix contract retries; a timed-out attempt does not, even when the
+ *  provider returns on the abort, since the retry would spend the fallback's budget. Fails closed: with no verdict, it returns a deny naming each attempt's failure. */
 export async function classifyWithModel(
 	host: PipelineHost,
 	signal: AbortSignal | undefined,
@@ -150,21 +150,20 @@ export async function classifyWithModel(
 		if (signal?.aborted) break; // User canceled; do not retry
 		const attemptMs = budget ? budgetedTimeoutMs(timeoutMs, budget.deadlineAt - Date.now(), budget.reserveMs) : timeoutMs;
 		const r = await callModelOnce(host, signal, complete, model, userMessage, maxTokens, thinking, systemPrompt, attemptMs);
-		if (r.timedOut && !r.ok) {
-			// A timeout ends the attempts; a response that still arrived is parsed below.
+		const answered = r.ok && r.stopReason !== "error" && r.stopReason !== "aborted";
+		if (r.ok) {
+			rawResponse = r.text;
+			const parsed = answered ? parseVerdict(r.text) : null;
+			if (parsed) return { ...parsed, source: "model", auditRaw: { transcript, rawResponse, modelId: model.id, thinking } };
+		}
+		// A timeout ends the attempts whether the provider threw or returned on the abort.
+		if (r.timedOut) {
 			failures.push(`attempt ${n} (${maxTokens}t) timed out after ${attemptMs}ms`);
 			break;
 		}
 		if (r.ok) {
-			rawResponse = r.text;
 			const diag = `stopReason=${r.stopReason}, model=${model.id}, errorMessage=${JSON.stringify(r.errorMessage ?? null)}, raw output=${JSON.stringify(r.text.slice(0, 200))}`;
-			if (r.stopReason !== "error" && r.stopReason !== "aborted") {
-				const parsed = parseVerdict(r.text);
-				if (parsed) return { ...parsed, source: "model", auditRaw: { transcript, rawResponse, modelId: model.id, thinking } };
-				failures.push(`attempt ${n} (${maxTokens}t) contract violation: ${diag}`);
-			} else {
-				failures.push(`attempt ${n} (${maxTokens}t) aborted/errored: ${diag}`);
-			}
+			failures.push(`attempt ${n} (${maxTokens}t) ${answered ? "contract violation" : "aborted/errored"}: ${diag}`);
 		} else {
 			failures.push(`attempt ${n} (${maxTokens}t) exception: ${r.error}`);
 		}

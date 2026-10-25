@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A classifier attempt that times out is no longer retried when the provider returns on the abort instead of throwing: jev resolves with `stopReason: "aborted"`, so `classifyWithModel` read the attempt as an answer and ran the larger-window retry inside the remaining adjudication budget (`ADJUDICATION_BUDGET_MS`); a timed-out attempt now ends the first layer unless a response that follows the verdict prefix contract arrived, so the call goes to `classifierFallbackModel` or fails closed as for a provider that throws (plan finding `C34`)
+
 ## [0.21.0] - 2026-10-25
 
 ### Fixed
