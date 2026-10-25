@@ -83,9 +83,17 @@ and never runs: any argument of `echo` or `printf` (not `printf -v`), the messag
 of `git commit` and `git tag`, the pattern of `grep`, `egrep`, `fgrep`, `rg` and `ag`, and a `gh` title or
 body. Every other position may be run by its program (`ssh h '…'`, `watch '…'`, `git rebase -x '…'`,
 `git -c alias.x='!…'`, `python3 -c '…'`), so a word there keeps the deny. Inert positions are withheld
-where the output can still run: a command piped onward, a redirection other than to `/dev/null` or a
+where the output can still run: a pipe anywhere into a command other than a known text filter (a brace
+group or an `if` body pipes every command inside it), a redirection other than to `/dev/null` or a
 descriptor, a process or command substitution, and a search program with `--pre`, `--hostname-bin` or
-`--pager`. A simple command ends at an operator or an unquoted newline.
+`--pager`. A simple command ends at an operator or an unquoted newline. The tokenizer reads an unquoted
+`#` that starts a word as a comment to the end of the line, as bash does, and treats a `$'…'` quote as
+unsound, since its backslash escapes can close a quote the scanner would read as open.
+
+Accepted residuals (low): a redirection to a descriptor that an earlier call opened (`>&3`); a planted
+program that passes the basename check (`./echo`, `/x/grep`); an alias set in the same command
+(`shopt -s expand_aliases; alias echo=…`); and `gh -b`/`-t` values, read as inert for every `gh`
+subcommand.
 
 The word view does not join words and re-run the regex, because joining loses the quoting that tells an
 argument from a command. The shell lines of a Python `eval` cell skip the word view and are graded on
