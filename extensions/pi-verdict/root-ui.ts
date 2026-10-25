@@ -17,10 +17,9 @@ export function currentRootUi(): UiContext | null {
 }
 
 /** Publishes a root session's UI, or clears it for a headless root; a replaced root (`/new`, `/resume`) overwrites
- *  it. Returns the published value, which the session hands back to `releaseRootUi`. */
-export function publishRootUi(ui: UiContext | null): UiContext | null {
+ *  it. The session keeps what it published and hands it to `releaseRootUi` at shutdown. */
+export function publishRootUi(ui: UiContext | null): void {
 	rootUi = ui;
-	return ui;
 }
 
 /** Clears the root UI at session shutdown, only when it still holds the one this session published. */

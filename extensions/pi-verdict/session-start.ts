@@ -101,7 +101,10 @@ export async function startSession(rt: GateRuntime, ctx: ExtensionContext): Prom
 	rt.sessionTrustedRoot = null;
 	const prompt = pendingTrustPrompt(rt, ctx);
 	if (prompt) await prompt;
-	if (subagentIdentity(ctx) === null) rt.publishedRootUi = publishRootUi(ctx.hasUI ? ctx.ui : null);
+	if (subagentIdentity(ctx) === null) {
+		rt.publishedRootUi = ctx.hasUI ? ctx.ui : null;
+		publishRootUi(rt.publishedRootUi);
+	}
 	const { state } = rt;
 	const report = state.reset(ctx.cwd, rt.sessionTrustedRoot);
 	state.audit?.prune(); // #54: keeps the most recent session files only
