@@ -5,6 +5,17 @@
 **pi-verdict** (`@jonatsu/pi-verdict`) is a minimal permission-gate extension for [Pi](https://github.com/earendil-works/pi-coding-agent) and oh-my-pi (`omp`): a deterministic **rule layer** plus a **model classifier** for the gray zone. Every tool call is adjudicated to one of three states: `allow` / `ask` / `deny`. Default posture is allow-unless-intercepted ("Auto Mode"), the reverse of Claude Code.
 
 Use the glossary terms exactly (e.g. adjudication pipeline, dual-form matching, gray zone, `denyPaths`, always plural).
+
+## Goals
+
+Judge every change by these goals, set by the user; work that serves none of them is scope drift.
+
+- **Usable every day.** The agent works on its own, and the gate stops only the calls that matter: destructive commands, secrets and protected paths, code-loading writes, and the gate's own files. A needless ask is a defect, because a user who learns to click through asks is no longer protected.
+- **Fast path in code, slow path through the model.** Decide trivial calls deterministically, and send only calls that need judgement to the classifier. Soundness sets the cutoff: a static rule may allow a call only when it can show the call is harmless. Bash has no built-in allow until operand grading lands; the read-only command fast path that follows it is TODO item 6.
+- **Fail closed.** No error, timeout, missing UI or degraded policy ever becomes an allow.
+- **Efficient, and maintainable by humans.** Small modules with one concern each, short functions, why-only comments, no needless model calls or repeated work per call. Refactoring serves this goal and the shared reading of each call (TODO item 5); it is not a goal in itself.
+- **Harden 80/20.** Fix plausible spellings of a path or command; record exotic ones as residuals (ADR-0009). The OS sandbox is the backstop.
+
 ## Where to Read
 
 - Read before starting new work: [TODO.md](TODO.md) (ranked open work); plans: [docs/plans/](docs/plans/), finished ones in `docs/plans/archive/`.
