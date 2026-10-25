@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-25
+
 ### Added
 
 - The git and gh danger rules now deny their spellings with a gap between the program and its subcommand, which used to reach the classifier: `git -C dir reset --hard`, `git -c k=v stash clear`, `git -C dir clean -fd`, `git -C dir checkout .`, `git -c k=v restore src`, `gh release -R o/r create v1` and a backslash-newline inside `gh repo delete` ([ADR-0007](docs/adr/0007-monotone-floor.md) amendment).
@@ -505,7 +507,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/jonatsu/pi-verdict/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/jonatsu/pi-verdict/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jonatsu/pi-verdict/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jonatsu/pi-verdict/compare/v0.19.0...v0.20.0
