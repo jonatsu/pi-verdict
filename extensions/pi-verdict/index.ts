@@ -85,6 +85,7 @@ import {
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
 import type { AuditRecord } from "./audit.ts";
 import { type CompatLoader, completionForHost } from "./completion.ts";
+import type { UserRules } from "./config.ts";
 import { declineDetail, EXPLAIN_GATE_ROLE, type ExplainGateResult, explainGate } from "./explain.ts";
 import { hostKindOf } from "./floor.ts";
 import type { ModelChoice, ThinkingLevel } from "./model-call.ts";
@@ -192,9 +193,10 @@ function blockReasonText(tag: BlockTag, detail: string, policyDegraded: boolean)
 }
 
 /** The `/automode` status line for the confidence cascade; shadow mode names what enforce would have done. */
-function cascadeSummary(s: Readonly<FallbackStats>, mode: "shadow" | "enforce"): string {
+function cascadeSummary(s: Readonly<FallbackStats>, mode: UserRules["classifierFallbackMode"]): string {
 	if (s.triggered === 0) return "confidence cascade: not triggered this session";
-	return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${mode === "enforce" ? "overruled" : "would-overrule"} ${s.overruled} · ${mode === "enforce" ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
+	const enforced = mode === "enforce";
+	return `confidence cascade (${mode}): triggered ${s.triggered} · agreed ${s.agreed} · ${enforced ? "overruled" : "would-overrule"} ${s.overruled} · ${enforced ? "rescued-allow" : "would-rescue-allow"} ${s.rescuedAllow} · errored ${s.errored}`;
 }
 
 /** Optional dependency injection for tests (#35): fake the compat fallback loader and the host's
