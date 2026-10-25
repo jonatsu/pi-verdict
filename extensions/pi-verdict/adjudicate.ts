@@ -8,6 +8,7 @@ import {
 	classifyWithModel,
 	FALLBACK_TIMEOUT_MS,
 	type ModelCall,
+	type VerdictWord,
 } from "./classifier.ts";
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
@@ -77,6 +78,20 @@ function confidenceDemotion(outcome: ClassifierOutcome, rules: UserRules): { con
 	const conf = parseJevConfidence(outcome.reason);
 	if (conf !== null && conf < rules.classifierMinConfidence) return { confidence: conf };
 	return null;
+}
+
+const WITHHELD_ALLOW_PREFIX = "policy degraded: allow withheld (ADR-0010) — ";
+
+/** Applies the degraded-policy rule to a model's ruling (ADR-0010): while the user's own policy failed to
+ *  load, an allow becomes `withheldAs`, an ask where a human can answer and a deny where none can, with a
+ *  reason naming the state. Every other ruling passes unchanged. */
+function withholdModelAllow<V extends VerdictWord, W extends "ask" | "deny">(
+	policyDegraded: boolean,
+	ruling: { verdict: V; reason: string },
+	withheldAs: W,
+): { verdict: V | W; reason: string; withheld: boolean } {
+	if (!policyDegraded || ruling.verdict !== "allow") return { ...ruling, withheld: false };
+	return { verdict: withheldAs, reason: `${WITHHELD_ALLOW_PREFIX}${ruling.reason}`, withheld: true };
 }
 
 /** The model call every classifier consulted for this action shares. */
@@ -199,15 +214,6 @@ export async function resolveAskWithoutHuman(
 	actionLine: string,
 	deadlineAt?: number,
 ): Promise<{ verdict: "allow" | "deny"; reason: string; fb?: FallbackAudit }> {
-	// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a genuine
-	// model-originated allow is withheld — no human answered, so the ask cannot be escalated
-	// and degrades straight to a deny, named for the degraded state. Plain denials below are
-	// unchanged: they never granted anything. (There is no Verdict.source seam here: this
-	// path never produces a Verdict, it only reports allow/deny.)
-	const withhold = (modelAllowReason: string): { verdict: "allow" | "deny"; reason: string } =>
-		state.policyDegraded
-			? { verdict: "deny", reason: `${WITHHELD_ALLOW_PREFIX}${modelAllowReason}` }
-			: { verdict: "allow", reason: modelAllowReason };
 	if (v.autoResolve !== "consult") return { verdict: "deny", reason: `no human answer — ${v.reason}` };
 	const rules = state.userRules;
 	if (!rules.classifierFallbackModel || !env.getFallbackModel) {
@@ -245,17 +251,19 @@ export async function resolveAskWithoutHuman(
 	const opinion = outcome.source === "model" ? outcome.verdict : "error";
 	// Shadow mode records the second model's opinion and never lets it change the outcome, so with no human
 	// the ask denies whatever the model said.
-	const result: { verdict: "allow" | "deny"; reason: string } =
+	const { verdict, reason }: { verdict: "allow" | "deny"; reason: string } =
 		rules.classifierFallbackMode === "shadow"
 			? {
 					verdict: "deny",
 					reason: `no human answer; classifierFallbackMode is shadow, so the second model's opinion (${opinion}) is recorded only — ${v.reason}`,
 				}
 			: allowed
-				? withhold(`second model allows: ${outcome.reason}`)
+				? // No human can answer, so a withheld allow denies.
+					withholdModelAllow(state.policyDegraded, { verdict: "allow", reason: `second model allows: ${outcome.reason}` }, "deny")
 				: { verdict: "deny", reason: `second model did not approve (${opinion}): ${outcome.reason}` };
 	return {
-		...result,
+		verdict,
+		reason,
 		fb: {
 			...base,
 			model: resolved.model.id,
@@ -263,7 +271,7 @@ export async function resolveAskWithoutHuman(
 			reason: outcome.source === "model" ? outcome.reason : null,
 			durationMs: Date.now() - start,
 			error: outcome.source === "model" ? null : outcome.reason,
-			effective: result.verdict,
+			effective: verdict,
 		},
 	};
 }
@@ -275,17 +283,6 @@ export async function resolveAskWithoutHuman(
  */
 /** [pi-verdict local patch: autoDeny] reason suffix on asks that would have been auto-denies */
 const AUTO_DENY_OFF_SUFFIX = " (autoDeny is off: this would have been denied — your call)";
-
-/** item 6c (ADR-0010): shared naming for a withheld model-originated allow — all three
- *  conversion sites (gray first layer, fail-closed cascade, subagent second model) build
- *  their reason from this prefix. */
-const WITHHELD_ALLOW_PREFIX = "policy degraded: allow withheld (ADR-0010) — ";
-
-/** item 6c (ADR-0010): the one predicate the conversion sites share — the policy is broken
- *  AND this result would have been an allow, so it is withheld (an ask, or a denial where
- *  no human can be asked). */
-const withholdsModelAllow = (policyDegraded: boolean, verdict: "allow" | "ask" | "deny" | undefined): boolean =>
-	policyDegraded && verdict === "allow";
 
 export async function adjudicate(
 	state: SessionState,
@@ -387,12 +384,10 @@ export async function adjudicate(
 		// fallback verdict when one exists; a headless ask is recorded as its degraded deny.
 		const cascade = await runConfidenceCascade(state, env, modelCall, null, { kind: "fail-closed" }, deadlineAt);
 		const eff = cascade.effective;
-		// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a
-		// model-originated allow (the cascade's second model here) becomes an ask — the
-		// normal headless ask→deny degradation applies unchanged.
-		const effDegraded = withholdsModelAllow(state.policyDegraded, eff?.verdict);
-		const effVerdict = effDegraded ? ("ask" as const) : eff?.verdict;
-		const effReason = (effDegraded && eff ? `${WITHHELD_ALLOW_PREFIX}${eff.reason}` : eff?.reason) ?? reason;
+		const applied = eff && withholdModelAllow(state.policyDegraded, eff, "ask");
+		const effDegraded = applied?.withheld ?? false;
+		const effVerdict = applied?.verdict;
+		const effReason = applied?.reason ?? reason;
 		const effSource: VerdictSource = effDegraded ? "degraded-policy" : (eff?.source ?? "fail-closed");
 		const effAskHeadless = effVerdict === "ask" && !env.hasUI;
 		// What the audit record itself shows: an interactive ask records as the ask that ran;
@@ -461,18 +456,11 @@ export async function adjudicate(
 					deadlineAt,
 				)
 			: {};
-	let effVerdict = cascade.effective?.verdict ?? outcome.verdict;
-	let effReason = cascade.effective?.reason ?? outcome.reason;
-	let effSource: VerdictSource = cascade.effective?.source ?? "classifier";
-	// item 6c (Phase 6; ADR-0010): while the user's own policy failed to load, a
-	// model-originated allow (first layer or the cascade's second model) becomes an ask —
-	// the normal headless ask→deny degradation below applies unchanged.
-	const effDegraded = withholdsModelAllow(state.policyDegraded, effVerdict);
-	if (effDegraded) {
-		effReason = `${WITHHELD_ALLOW_PREFIX}${effReason}`;
-		effSource = "degraded-policy";
-		effVerdict = "ask";
-	}
+	const applied = withholdModelAllow(state.policyDegraded, cascade.effective ?? outcome, "ask");
+	const effDegraded = applied.withheld;
+	const effVerdict = applied.verdict;
+	const effReason = applied.reason;
+	const effSource: VerdictSource = effDegraded ? "degraded-policy" : (cascade.effective?.source ?? "classifier");
 
 	// #62/#67: top-level keeps first-layer semantics except that a fail-closed origin
 	// rescued by an enforcing fallback records its applied verdict, not the default deny.
