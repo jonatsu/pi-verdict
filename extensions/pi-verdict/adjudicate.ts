@@ -337,8 +337,9 @@ interface Settlement {
 	readonly record: ((headlessAsk: boolean) => Readonly<AuditRecord>) | null;
 	readonly autoResolve: AskVerdict["autoResolve"];
 	readonly detail?: string;
-	/** False for a deny that `autoDeny: false` may not turn into an ask (self-protection, ADR-0005). */
-	readonly autoDenyExempt: boolean;
+	/** Whether `autoDeny: false` may turn this deny into an ask; default true. A self-protection deny sets
+	 *  false, so it stays a deny (ADR-0005). */
+	readonly autoDenyApplies?: boolean;
 }
 
 /** Turns a ruling into the verdict the handler presents. With a UI, an ask stays an ask, and so does a deny
@@ -350,7 +351,7 @@ function settle(a: Adjudication, s: Settlement): Verdict {
 	const headlessAsk = verdict === "ask" && !env.hasUI;
 	const record = s.record?.(headlessAsk) ?? null;
 	const detail = s.detail === undefined ? {} : { detail: s.detail };
-	const autoDenyOff = verdict === "deny" && s.autoDenyExempt && !state.userRules.autoDeny;
+	const autoDenyOff = verdict === "deny" && s.autoDenyApplies !== false && !state.userRules.autoDeny;
 	if (env.hasUI && (verdict === "ask" || autoDenyOff)) {
 		return {
 			verdict: "ask",
@@ -388,7 +389,6 @@ function adjudicateRuleAsk(a: Adjudication, rule: RuleResult): Verdict {
 			buildRecord(a, { verdict: headlessAsk ? "deny" : "ask", reason, source, degraded: headlessAsk }, null, { detail: rule.detail }),
 		autoResolve: "deny",
 		detail: rule.detail,
-		autoDenyExempt: true,
 	});
 }
 
@@ -410,7 +410,6 @@ async function adjudicateWithoutModel(a: Adjudication, modelCall: ModelCall, dea
 				cascade.fb ? { fallback: cascade.fb } : {},
 			),
 		autoResolve: "deny",
-		autoDenyExempt: true,
 	});
 }
 
@@ -467,7 +466,6 @@ async function adjudicateGrayZone(
 				{ ...(cascade.demoted ? { demoted: true } : {}), ...(cascade.fb ? { fallback: cascade.fb } : {}) },
 			),
 		autoResolve: autoResolveFor(ruling, cascade),
-		autoDenyExempt: true,
 	});
 }
 
@@ -496,7 +494,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 				ruling: { verdict: "deny", reason: rule.reason ?? "", source: "rule" },
 				record: null,
 				autoResolve: "deny",
-				autoDenyExempt: !rule.selfProtect,
+				autoDenyApplies: !rule.selfProtect,
 			});
 		case "ask":
 			return adjudicateRuleAsk(a, rule);
