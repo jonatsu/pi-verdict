@@ -1357,6 +1357,47 @@ describe("word-view floor rules: quoted text clears, option gaps deny (ADR-0007)
 		reachesClassifier("git log --grep " + "'stash clear'"));
 	test("a + shell option before -c still reads the script", () =>
 		floorDeny("bash +o posix -c 'git " + "push --force origin main'", "git-push-force"));
+
+	// A program that runs a quoted string keeps the deny; only known inert positions clear.
+	for (const [ruleId, command] of [...RULES, ["git-push-force", "git " + "push --force origin main"] as const]) {
+		for (const runner of [
+			`ssh h '${command}'`,
+			`watch '${command}'`,
+			`git submodule foreach '${command}'`,
+			`git rebase -x '${command}' main`,
+			`git -c alias.x='!${command}' x`,
+			`python3 -c 'import os; os.system("${command}")'`,
+			`perl -e 'system("${command}")'`,
+			`node -e 'run("${command}")'`,
+			`fish -c '${command}'`,
+			`su -c '${command}'`,
+			`script -c '${command}'`,
+			`flock f -c '${command}'`,
+			`echo '${command}' | sh`,
+			`echo '${command}' > x.sh; sh x.sh`,
+			`bash <(echo '${command}')`,
+			`$(echo '${command}')`,
+			`printf -v X '${command}'; $X`,
+			`rg --pre '${command}' x`,
+		]) {
+			test(`${ruleId}: ${JSON.stringify(runner)} is a floor deny`, () => floorDeny(runner, ruleId));
+		}
+	}
+	for (const [ruleId, command] of RULES) {
+		for (const inert of [
+			`printf '%s\\n' '${command}'`,
+			`git commit -m 'x' -m '${command}'`,
+			`git commit --message='${command}'`,
+			`git commit -am '${command}'`,
+			`git tag -a v1 -m '${command}'`,
+			`grep -e '${command}' notes`,
+			`rg -n '${command}' docs`,
+			`gh pr create --title '${command}' --body x`,
+			`echo '${command}' 2>/dev/null`,
+		]) {
+			test(`${ruleId}: inert ${JSON.stringify(inert)} reaches the classifier`, () => reachesClassifier(inert));
+		}
+	}
 });
 
 describe("env-exfil rule (environment or history piped to a network tool)", () => {

@@ -383,26 +383,32 @@ export function ghRunsIn(seg: readonly string[], invocation: GhInvocation): bool
 	return false;
 }
 
-function commandSegments(words: readonly string[]): string[][] {
-	const segs: string[][] = [];
+/** One simple command's words, and whether a pipe takes its output. */
+interface Segment {
+	readonly words: readonly string[];
+	readonly piped: boolean;
+}
+
+function commandSegments(words: readonly string[]): Segment[] {
+	const segs: Segment[] = [];
 	let cur: string[] = [];
 	for (const w of words) {
 		if (SHELL_OPERATORS.has(w)) {
-			if (cur.length) segs.push(cur);
+			if (cur.length) segs.push({ words: cur, piped: w === "|" });
 			cur = [];
 		} else {
 			cur.push(w);
 		}
 	}
-	if (cur.length) segs.push(cur);
+	if (cur.length) segs.push({ words: cur, piped: false });
 	return segs;
 }
 
 /** Shell options that take the next word as their argument, compared case-folded (`-o`/`-O`, `+o`/`+O`). */
 const SHELL_OPTIONS_WITH_ARG = new Set(["-o", "+o", "--rcfile", "--init-file"]);
 
-/** What a shell word's options say about the script it runs. */
-type ShellScript = { kind: "none" } | { kind: "unsound" } | { kind: "script"; text: string | undefined };
+/** What a shell word's options say about the script it runs; `at` is the script word's index. */
+type ShellScript = { kind: "none" } | { kind: "unsound" } | { kind: "script"; text: string | undefined; at: number };
 
 /**
  * Read the options after the shell at `seg[at]`. A `-c` bundle makes the next word a script the shell
@@ -420,25 +426,131 @@ function shellScriptAt(seg: readonly string[], at: number): ShellScript {
 		}
 		if (!/^-[a-z]*c[a-z]*$/.test(opt)) return { kind: "unsound" };
 		const text = seg[j + 1];
-		if (text === undefined) return { kind: "script", text: undefined };
+		if (text === undefined) return { kind: "script", text: undefined, at: j + 1 };
 		if (/\$\{[0-9]+\}|\$[0-9]+|\$@|\$\*/.test(text)) return { kind: "unsound" };
-		return { kind: "script", text };
+		return { kind: "script", text, at: j + 1 };
 	}
 	return { kind: "none" };
+}
+
+/** An option whose value is text the program never runs: its long name, which also takes `=value`,
+ *  and its short letter, case-sensitive, which takes the next word or the rest of its bundle. */
+interface TextOptions {
+	readonly long: readonly string[];
+	readonly short: string;
+}
+
+const GIT_MESSAGE_OPTIONS: TextOptions = { long: ["--message", "--file"], short: "mF" };
+const GREP_PATTERN_OPTIONS: TextOptions = { long: ["--regexp"], short: "e" };
+const GH_TEXT_OPTIONS: TextOptions = { long: ["--body", "--title"], short: "bt" };
+
+/** Programs that only search text: their pattern is never run. */
+const SEARCH_PROGRAMS: ReadonlySet<string> = new Set(["grep", "egrep", "fgrep", "rg", "ag"]);
+/** Options with which a search program runs another program, so none of its words is inert. */
+const SEARCH_RUNS_PROGRAM = ["--pre", "--hostname-bin", "--pager"];
+
+/** Mark the values of `options` among `seg[from…]`, up to a `--`, as inert. Returns whether a
+ *  pattern option was found. */
+function markOptionValues(seg: readonly string[], from: number, options: TextOptions, inert: Set<number>): boolean {
+	let found = false;
+	for (let k = from; k < seg.length; k++) {
+		const word = seg[k];
+		if (word === "--") break;
+		if (options.long.includes(word)) {
+			inert.add(k + 1);
+			found = true;
+			k++;
+		} else if (options.long.some((name) => word.startsWith(`${name}=`))) {
+			inert.add(k);
+			found = true;
+		} else if (/^-[A-Za-z0-9]/.test(word)) {
+			const letter = [...word.slice(1)].findIndex((c) => options.short.includes(c));
+			if (letter === -1) continue;
+			found = true;
+			if (letter === word.length - 2) {
+				inert.add(k + 1);
+				k++;
+			} else {
+				inert.add(k);
+			}
+		}
+	}
+	return found;
+}
+
+/** Index of the first word from `from` on that is neither an option nor an option's value. */
+function firstOperandIndex(seg: readonly string[], from: number, inert: ReadonlySet<number>): number {
+	for (let k = from; k < seg.length; k++) {
+		if (seg[k] === "--") return k + 1;
+		if (!seg[k].startsWith("-") && !inert.has(k)) return k;
+	}
+	return -1;
+}
+
+/** A shell variable assignment before the command word (`X=1 cmd`). */
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * Indexes of the words in one simple command that the program only prints, searches for or records,
+ * never runs: any argument of `echo` or `printf` (not `printf -v`, which sets a variable), the
+ * message and message-file values of `git commit` and `git tag`, a search program's pattern, and a
+ * `gh` title or body. Every other position may be run by its program (`ssh h '…'`, `watch '…'`,
+ * `git rebase -x '…'`, `python3 -c '…'`), so a word there keeps a tripwire's deny (ADR-0007).
+ */
+function inertWordIndexes(seg: readonly string[]): ReadonlySet<number> {
+	const inert = new Set<number>();
+	const at = seg.findIndex((word) => !ASSIGNMENT.test(word));
+	if (at === -1) return inert;
+	const name = wordBasename(seg[at]);
+	if (name === "echo" || (name === "printf" && !seg[at + 1]?.startsWith("-v"))) {
+		for (let k = at + 1; k < seg.length; k++) inert.add(k);
+	} else if (SEARCH_PROGRAMS.has(name)) {
+		if (seg.some((word) => SEARCH_RUNS_PROGRAM.some((option) => word.startsWith(option)))) return inert;
+		if (!markOptionValues(seg, at + 1, GREP_PATTERN_OPTIONS, inert)) {
+			const pattern = firstOperandIndex(seg, at + 1, inert);
+			if (pattern !== -1) inert.add(pattern);
+		}
+	} else if (name === "git") {
+		const sub = gitSubcommandIndex(seg, at);
+		if (sub !== undefined && sub !== -1 && ["commit", "tag"].includes(seg[sub])) markOptionValues(seg, sub + 1, GIT_MESSAGE_OPTIONS, inert);
+	} else if (name === "gh") {
+		markOptionValues(seg, at + 1, GH_TEXT_OPTIONS, inert);
+	}
+	return inert;
+}
+
+/** Whether the text holds a construct that can run a command's output: a pipe is judged per segment,
+ *  and this covers a redirection other than to `/dev/null` or a descriptor (`echo '…' > f; sh f`) and a
+ *  process or command substitution (`bash <(echo '…')`, `$(echo '…')`). */
+function outputMayRun(text: string, words: readonly string[]): boolean {
+	const stripped = text.replace(/\d?&?>>?\s*\/dev\/null/g, "").replace(/\d?[<>]&\d/g, "");
+	return /[<>]/.test(stripped) || words.includes("(") || words.includes(")");
+}
+
+/** What a floor rule's word view looks for. */
+export interface CommandMatcher {
+	/** Whether one simple command runs the rule's dangerous command. */
+	readonly runs: (seg: readonly string[]) => boolean;
+	/** Whether one word holds the rule's dangerous text. */
+	readonly mentions: (word: string) => boolean;
 }
 
 const SHELL_RECURSION_DEPTH = 3;
 
 /**
- * Whether any command in `words` satisfies `segmentHit`, including a command inside a shell's `-c`
- * script, recursed into up to `SHELL_RECURSION_DEPTH` levels. Fails closed: an unsound parse, an
+ * Whether the shell may run the matcher's dangerous command anywhere in `text`: a simple command runs
+ * it, a shell's `-c` script does (recursed into up to `SHELL_RECURSION_DEPTH` levels), or a word that
+ * holds its text sits anywhere but a known inert position. Fails closed: an unsound parse, an
  * unmodelled shell option, a script that forwards positionals or a script past the depth cap is a
  * hit, so a raw-text tripwire's deny stands (ADR-0007).
  */
-export function anyCommandIn(words: readonly string[], segmentHit: (seg: readonly string[]) => boolean, depth = 0): boolean {
+export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): boolean {
+	const words = shellWords(text);
 	if (words.includes(UNSOUND)) return true;
-	for (const seg of commandSegments(words)) {
-		if (segmentHit(seg)) return true;
+	const inertAllowed = !outputMayRun(text, words);
+	for (const { words: seg, piped } of commandSegments(words)) {
+		if (matcher.runs(seg)) return true;
+		const judged = new Set(inertAllowed && !piped ? inertWordIndexes(seg) : []);
 		for (let i = 0; i < seg.length; i++) {
 			if (!SHELL_NAMES.has(wordBasename(seg[i]))) continue;
 			const script = shellScriptAt(seg, i);
@@ -446,8 +558,10 @@ export function anyCommandIn(words: readonly string[], segmentHit: (seg: readonl
 			if (script.kind === "none") continue;
 			if (depth >= SHELL_RECURSION_DEPTH) return true;
 			if (script.text === undefined) continue;
-			if (anyCommandIn(shellWords(script.text), segmentHit, depth + 1)) return true;
+			if (anyCommandIn(script.text, matcher, depth + 1)) return true;
+			judged.add(script.at);
 		}
+		if (seg.some((word, k) => !judged.has(k) && matcher.mentions(word))) return true;
 	}
 	return false;
 }

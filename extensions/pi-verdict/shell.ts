@@ -220,13 +220,17 @@ function tripwireHit(command: string, tripwire: Tripwire): boolean {
 }
 
 /** Whether a rule hits the command. A `words` rule hits when its tripwire matches and the word view
- *  finds a command that runs it or cannot read the command soundly. */
+ *  finds a command that runs it, a word holding its text outside a known inert position, or a
+ *  construct it cannot read soundly. */
 function ruleHits(rule: BashDangerRule, command: string): boolean {
 	switch (rule.kind) {
 		case "raw":
 			return rule.pattern.test(command);
 		case "words":
-			return tripwireHit(command, rule.tripwire) && anyCommandIn(shellWords(command), rule.runs);
+			return (
+				tripwireHit(command, rule.tripwire) &&
+				anyCommandIn(command, { runs: rule.runs, mentions: (word) => tripwireHit(word, rule.tripwire) })
+			);
 		default: {
 			const unknown: never = rule;
 			return unknown;

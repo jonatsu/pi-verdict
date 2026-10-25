@@ -1772,6 +1772,11 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["gh repo delete across a line continuation", "gh repo \\\n" + "delete o/r", "gh-repo"],
 		["gh release create quoted in echo", "echo 'gh " + "release create v1'", null],
 		["gh release create after --repo", "gh release -R o/r " + "create v1", "gh-release"],
+		// Only a known inert position clears quoted text: ssh, watch and similar programs run it.
+		["reset --hard run on a remote host by ssh", "ssh h 'git " + "reset --hard'", "git-reset-hard"],
+		["force push run on a remote host by ssh", "ssh h 'git " + "push --force origin main'", "git-push-force"],
+		["stash clear echoed into a shell", "echo 'git " + "stash clear' | sh", "git-stash-clear"],
+		["reset --hard as a grep pattern", "grep -rn 'git " + "reset --hard' docs", null],
 	];
 	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView]) {
 		cases.push({
