@@ -1,6 +1,10 @@
 # Call model, rule hardening and measurement — plan
 
-**Status.** Approved by the user on 2026-10-05, not yet executed: items 1-8, item 1's shell-expansion amendment
+**Status (2026-10-25).** Delivery steps 1-5 are done: item 12 (the module split), items 3-6 and items 1-2 with 1a
+shipped by v0.22.0, and their review follow-ups by v0.23.0. Their residuals are tracked in `TODO.md` item 3. Next is
+step 6 (item 11), then steps 7-9.
+
+**Approval.** Approved by the user on 2026-10-05: items 1-8, item 1's shell-expansion amendment
 (1a), and items 9-12. On 2026-10-07 the user reordered delivery: item 12 (the file split) now comes first, along
 the file's existing sections, and item 9 follows items 3-6, 1-2 and 11; see "Delivery" and decision 11. Item 9's
 ADR is reviewed by the user before any of its code is written; see "Decisions". The plan is
