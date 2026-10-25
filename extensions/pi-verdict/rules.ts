@@ -13,22 +13,24 @@ import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
-import type { RedactorFn } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, pyEvalShellLines, type RuleResult } from "./shell.ts";
+
+/** A test over a tool call's input. */
+export type CallPredicate = (input: Readonly<Record<string, unknown>>) => boolean;
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
 export interface RuleContext {
 	readonly cwd: string;
-	readonly user: UserRules;
-	readonly prot: ProtectedSet;
+	readonly userRules: UserRules;
+	readonly protectedSet: ProtectedSet;
 	readonly denyPathBases: readonly string[];
 	/** Set while the user's own policy failed to load in whole or part (ADR-0010): user `allow` rules
 	 *  and the `tools` exemption are suspended, and the floor and the deny-side layers still run. */
 	readonly policyDegraded: boolean;
 	/** True when the call names a user-declared protected path through a spelling the denyPaths
 	 *  tokeniser cannot extract, such as a home variable behind a command substitution. */
-	readonly namesProtectedPath: RedactorFn;
+	readonly namesProtectedPath: CallPredicate;
 	/** The host, which decides whether an `xd://` target is a tool device (omp) or a relative path (pi). */
 	readonly host: HostKind;
 }
@@ -54,7 +56,7 @@ interface RuleCall {
  */
 export function classifyByRules(toolName: string, input: Record<string, unknown>, ctx: RuleContext): RuleResult {
 	const call = readCall(toolName, input, ctx);
-	const selfProtected = selfProtectCheck(toolName, input, call.access, ctx.cwd, ctx.prot);
+	const selfProtected = selfProtectCheck(toolName, input, call.access, ctx.cwd, ctx.protectedSet);
 	if (selfProtected) return selfProtected;
 
 	const floorGrade = withholdFloorAllow(gradeBase(call, ctx), call, ctx);
@@ -104,7 +106,7 @@ function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleCon
 /** Returns the built-in floor's grade for the call, before any target shape turns its allow gray. */
 function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	const { toolName, input, access } = call;
-	const floorOn = ctx.user.builtinDenyFloor;
+	const floorOn = ctx.userRules.builtinDenyFloor;
 	if (isCommandTool(toolName)) return classifyBash(commandText(input), floorOn);
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
@@ -154,7 +156,7 @@ function userDeny(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	const { access, targets } = call;
 	const urls = access.direction === "unknown" ? [] : [...access.gradedReads, ...access.gradedWrites].filter(isHostInternalUrl);
 	const denyTargets = [...targets, ...urls, ...(access.kind === "code" && access.command !== null ? [access.command] : [])];
-	for (const re of ctx.user.deny) {
+	for (const re of ctx.userRules.deny) {
 		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
 	}
 	return null;
@@ -163,7 +165,7 @@ function userDeny(call: RuleCall, ctx: RuleContext): RuleResult | null {
 /** Asks on any `.omp` access while `gateOmpDir` is on, an unknown tool's targets included. The path goes
  *  to `detail` only, because the reason reaches the agent. */
 function forcedOmpGate(call: RuleCall, ctx: RuleContext): RuleResult | null {
-	if (!ctx.user.gateOmpDir) return null;
+	if (!ctx.userRules.gateOmpDir) return null;
 	const omp = hitOmpDir(call.toolName, call.input, ctx.cwd);
 	if (!omp) return null;
 	return {
@@ -203,7 +205,7 @@ function protectedSpellingAsk(call: RuleCall, ctx: RuleContext): RuleResult | nu
  *  one action a classifier is asked about (ADR-0011). It goes off with the floor. Its reason carries the
  *  path, so it runs after both protected-path asks, which withhold theirs. */
 function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
-	if (!ctx.user.builtinDenyFloor) return null;
+	if (!ctx.userRules.builtinDenyFloor) return null;
 	const code = hitCodeLoadPath(call.toolName, call.input, ctx.cwd);
 	if (!code) return null;
 	return {
@@ -228,7 +230,7 @@ function overCapAsk(call: RuleCall, _ctx: RuleContext): RuleResult | null {
 function userAllow(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (call.targets.length === 0 || !call.vouchable) return null;
 	if (isCommandTool(call.toolName) && !allowAdmits(commandText(call.input))) return null;
-	for (const re of ctx.user.allow) {
+	for (const re of ctx.userRules.allow) {
 		if (call.targets.every((t) => re.test(t))) return { verdict: "allow", reason: "user allow rule" };
 	}
 	return null;
@@ -238,7 +240,7 @@ function userAllow(call: RuleCall, ctx: RuleContext): RuleResult | null {
  *  condition as a user `allow` rule. An eval cell is never exempt, because its code can do anything a
  *  command can. */
 function toolsExemption(call: RuleCall, ctx: RuleContext): RuleResult | null {
-	if (!ctx.user.tools.includes(call.toolName) || call.access.kind === "code" || !call.vouchable) return null;
+	if (!ctx.userRules.tools.includes(call.toolName) || call.access.kind === "code" || !call.vouchable) return null;
 	return { verdict: "allow", reason: "user tools allow rule" };
 }
 

@@ -301,13 +301,14 @@ export async function adjudicate(
 ): Promise<Verdict> {
 	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
 	// the wide transcript redactor below, where over-redaction is harmless.
+	const denyPathBases = state.anchoredDenyPathBases(env.cwd);
 	const rule = classifyByRules(call.toolName, call.input, {
 		cwd: env.cwd,
-		user: state.userRules,
-		prot: state.prot,
-		denyPathBases: state.anchoredDenyPathBases(env.cwd),
+		userRules: state.userRules,
+		protectedSet: state.prot,
+		denyPathBases,
 		policyDegraded: state.policyDegraded,
-		namesProtectedPath: redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd), HOST_REDACTION_PLATFORM, true),
+		namesProtectedPath: redactorFor(env.cwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
 		host: env.hostKind,
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
@@ -382,7 +383,7 @@ export async function adjudicate(
 	// One redactor per adjudication, built from cwd + the anchored denyPaths bases, passed to every
 	// model call that renders a transcript from this session's branch (first layer, cascade
 	// fallback, and the EXPLAIN-GATE path, which builds its own from state).
-	const redact = env.redact ?? redactorFor(env.cwd, state.anchoredDenyPathBases(env.cwd));
+	const redact = env.redact ?? redactorFor(env.cwd, denyPathBases);
 	// The strict check above decides the deterministic ask; the wide one still keeps a protected
 	// path out of every model payload, so a call it matches reaches a model only as the marker.
 	// The audit record keeps the raw action line (ADR-0002: audit never leaves the machine).
