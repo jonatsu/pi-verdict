@@ -15,7 +15,6 @@ import { allowOperandsAdmit, MAX_GRADED_OPERANDS } from "../extensions/pi-verdic
 import { buildTranscript } from "../extensions/pi-verdict/classifier.ts";
 import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
 import { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "../extensions/pi-verdict/floor.ts";
-import { assignsHome } from "../extensions/pi-verdict/home-guard.ts";
 import autoMode, {
 	type AdjudicateEnv,
 	adjudicate,
@@ -45,6 +44,7 @@ import autoMode, {
 	SessionState,
 	shellWords,
 } from "../extensions/pi-verdict/index.ts";
+import { shellStateOf } from "../extensions/pi-verdict/shell-state.ts";
 import {
 	HOST_BUDGET_MARGIN_MS,
 	MIN_SUBAGENT_DIALOG_MS,
@@ -970,6 +970,86 @@ describe("bash cwd argument", () => {
 	});
 });
 
+// omp runs a session's bash calls in one shell, so an earlier call can change what a later allowed command runs.
+describe("session shell-state guard (ADR-0008 amendment)", () => {
+	const GIT_ALLOW = ["^git (status|log|diff|show|branch|remote -v)(\\s|$)"];
+	const LS_ALLOW = ["^ls(\\s|$)"];
+	const RG_ALLOW = ["^rg(\\s|$)"];
+	/** Runs `earlier` as a past bash call on the branch, then `command`; returns the model calls it took
+	 *  (0 is a rule allow). */
+	const modelCallsAfter = async (allow: string[], earlier: string[], command: string) => {
+		const h = session({ allow });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		for (const c of earlier) {
+			h.branch.push({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: c } }] },
+			});
+		}
+		expect(await toolCall(h, "bash", { command })).toBeUndefined();
+		return h.calls.length;
+	};
+
+	test("a GIT_* variable set earlier in the session voids a git allow", async () => {
+		expect(await modelCallsAfter(GIT_ALLOW, ["export GIT_EXTERNAL_DIFF=/tmp/x"], "git diff")).toBe(1);
+		expect(await modelCallsAfter(GIT_ALLOW, ["export XDG_CONFIG_HOME=/tmp/c"], "git status")).toBe(1);
+		expect(await modelCallsAfter(GIT_ALLOW, ["export HOME=/tmp/h"], "git log")).toBe(1);
+	});
+	test("a PATH or loader variable set earlier voids every bash allow", async () => {
+		expect(await modelCallsAfter(LS_ALLOW, ["export PATH=/tmp/b:$PATH"], "ls")).toBe(1);
+		for (const earlier of [
+			"export LD_" + "PRELOAD=/tmp/x.so",
+			"LD_LIBRARY_PATH=/tmp/l",
+			"export BASH_ENV=/tmp/e",
+			"declare -x ENV=/tmp/e",
+		]) {
+			expect(await modelCallsAfter(LS_ALLOW, [earlier], "ls")).toBe(1);
+		}
+	});
+	test("a shell function, alias or sourced file earlier voids every bash allow", async () => {
+		for (const earlier of [
+			"ls() { :; }",
+			"function ls { :; }",
+			"alias ls=/tmp/x",
+			"source /tmp/x.sh",
+			"cd /tmp && . ./x.sh",
+			"eval x",
+			"trap /tmp/x DEBUG",
+			"hash -p /tmp/x ls",
+			"shopt -s expand_aliases",
+			"enable -f /tmp/x.so ls",
+		]) {
+			expect(await modelCallsAfter(LS_ALLOW, [earlier], "ls")).toBe(1);
+		}
+	});
+	test("a variable one command reads voids only that command", async () => {
+		expect(await modelCallsAfter(RG_ALLOW, ["export RIPGREP_CONFIG_PATH=x"], "rg foo")).toBe(1);
+		expect(await modelCallsAfter(LS_ALLOW, ["export RIPGREP_CONFIG_PATH=x"], "ls")).toBe(0);
+		const state = shellStateOf("export TAR_OPTIONS=x ZIPOPT=y RSYNC_RSH=z LESSOPEN=w GREP_OPTIONS=v");
+		expect([...state.commands].sort()).toEqual(["bsdtar", "egrep", "fgrep", "grep", "gtar", "less", "rgrep", "rsync", "tar", "zip"]);
+		expect(state.everyAllow).toBe(false);
+	});
+	test("an assignment prefix on the call itself voids the allow, also behind env", async () => {
+		expect(await modelCallsAfter(["git diff"], [], "GIT_EXTERNAL_DIFF=x git diff")).toBe(1);
+		expect(await modelCallsAfter(["git diff"], [], "env GIT_EXTERNAL_DIFF=x git diff")).toBe(1);
+	});
+	test("HOME and IFS void home-relative operands", () => {
+		expect(shellStateOf("export HOME=/tmp/h").homeOperands).toBe(true);
+		expect(shellStateOf("IFS=/ read -r a").homeOperands).toBe(true);
+		expect(shellStateOf("IFS=/ read -r a").everyAllow).toBe(false);
+	});
+	test("unrelated shell state leaves the allows on the fast path", async () => {
+		expect(await modelCallsAfter(GIT_ALLOW, [], "git status")).toBe(0);
+		expect(await modelCallsAfter(LS_ALLOW, ["export FOO=1"], "ls")).toBe(0);
+		expect(await modelCallsAfter(LS_ALLOW, ["export CDPATH=/tmp"], "ls")).toBe(0);
+		expect(await modelCallsAfter(RG_ALLOW, ["export GIT_DIR=x"], "rg foo")).toBe(0);
+	});
+	test("a builtin name inside a quoted search pattern voids nothing", async () => {
+		const earlier = ['rg "function foo"', "rg 'source of truth'", "git config alias.co checkout", "echo $PATH", "ls ./run.sh"];
+		expect(await modelCallsAfter(LS_ALLOW, earlier, "ls")).toBe(0);
+	});
+});
+
 // A user `allow` regex admits a command only when every operand is a path the floor lets a file tool read.
 describe("allow operand grading (ADR-0008 amendment)", () => {
 	const SSH_KEY = "~/.ssh/" + "id_rsa";
@@ -977,8 +1057,15 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	const BRACED_HOME = "$" + "{HOME}";
 	const GIT_ALLOW = ["^git (status|log|diff)\\b"];
 	const CAT_ALLOW = ["^cat\\b"];
-	/** Operand grading for a bash command run in its project root, in a session that never assigned HOME. */
-	const operandContext = (cwd: string) => ({ commandCwd: cwd, sessionCwd: cwd, homeReassigned: () => false, shell: "bash" as const });
+	/** Operand grading for a bash command run in its project root, in a session whose shell state voids nothing. */
+	const operandContext = (cwd: string) => ({
+		commandCwd: cwd,
+		sessionCwd: cwd,
+		shellState: () => shellStateOf(""),
+		shell: "bash" as const,
+	});
+	/** Whether a command text may assign `HOME`, read through the shell-state row that voids home-relative operands. */
+	const assignsHome = (command: string) => shellStateOf(command).homeOperands;
 	/** A command under an allow list must reach the classifier (one stub model call). */
 	const reachesClassifier = async (allow: string[], command: string, cfg: { cwd?: string; builtinDenyFloor?: boolean } = {}) => {
 		const h = session({ allow, builtinDenyFloor: cfg.builtinDenyFloor }, { cwd: cfg.cwd });
@@ -1070,7 +1157,7 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 			expect(assignsHome(command)).toBe(false);
 		}
 	});
-	test("an unreadable session branch refuses home-relative operands (fails closed)", async () => {
+	test("an unreadable session branch refuses every user allow, home-relative or not (fails closed)", async () => {
 		setConfig({ allow: CAT_ALLOW });
 		// No model: the gray call fails closed before the classifier would read the branch itself.
 		const env = {
@@ -1084,8 +1171,9 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 		};
 		const home = await adjudicate(new SessionState(), { toolName: "bash", input: { command: "cat ~/notes.txt" } }, env);
 		expect(home).toMatchObject({ verdict: "deny", source: "fail-closed" });
+		// An earlier call may have redefined `cat` itself, so a project operand no longer vouches for the call.
 		const local = await adjudicate(new SessionState(), { toolName: "bash", input: { command: "cat README.md" } }, env);
-		expect(local).toMatchObject({ verdict: "allow", source: "rule" });
+		expect(local).toMatchObject({ verdict: "deny", source: "fail-closed" });
 	});
 	test("with builtinDenyFloor off, a secret operand still does not rule-allow", async () => {
 		await reachesClassifier(CAT_ALLOW, `cat ${SSH_KEY}`, { builtinDenyFloor: false });

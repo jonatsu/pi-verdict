@@ -3,6 +3,7 @@ import * as os from "node:os";
 import { escapeRegExp } from "./agent-dir.ts";
 import { classifyPath, s0DirectoryBeneath } from "./floor.ts";
 import { gitStaysInProject } from "./git-reach.ts";
+import type { ShellState } from "./shell-state.ts";
 import { shellWords, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
@@ -65,7 +66,7 @@ const MIN_LONG_PREFIX = 5;
 /** An operand after shell expansion: the paths the shell passes for it. */
 interface Expanded {
 	readonly paths: readonly string[];
-	/** The operand names a path through the home directory, which a reassigned `HOME` moves. */
+	/** The operand names a path through the home directory, which a reassigned `HOME` or `IFS` changes. */
 	readonly homeRelative: boolean;
 }
 
@@ -75,8 +76,8 @@ export interface OperandContext {
 	readonly commandCwd: string;
 	/** The session cwd. The gate grades it as the project, which a git call must stay inside. */
 	readonly sessionCwd: string;
-	/** True when the session may have reassigned `HOME`; read only for a home-relative operand. */
-	readonly homeReassigned: () => boolean;
+	/** What the session's shell state voids; read only once the operands themselves admit the command. */
+	readonly shellState: () => ShellState;
 	readonly shell: "bash" | "powershell";
 }
 
@@ -84,15 +85,15 @@ export interface OperandContext {
  * Returns whether every operand of a simple command, read as a path, is one the floor lets a file tool
  * read without asking (ADR-0008). Call it only after `allowAdmits` has accepted the command's shape.
  * Fails closed toward the classifier, never toward a deny: an operand that is a secret or system path,
- * one holding an expansion the gate cannot resolve, a home-relative operand after `HOME` was reassigned,
- * or more than `MAX_GRADED_OPERANDS` graded paths (a glob's matches each count) each refuse the admission,
- * and so do a recursive command over a directory that contains a credential directory and any backslash
- * in a PowerShell command.
+ * one holding an expansion the gate cannot resolve, or more than `MAX_GRADED_OPERANDS` graded paths (a
+ * glob's matches each count) each refuse the admission, and so do a recursive command over a directory that
+ * contains a credential directory, any backslash in a PowerShell command, and a command or home-relative
+ * operand that the session's shell state voids (an unreadable session branch voids every command).
  * The floor grades here even with `builtinDenyFloor` off, because a refused admission only reaches the
  * classifier.
  */
 export function allowOperandsAdmit(command: string, where: OperandContext): boolean {
-	const { commandCwd, sessionCwd, homeReassigned, shell } = where;
+	const { commandCwd, sessionCwd, shellState, shell } = where;
 	// The word view reads a backslash as bash's escape, while PowerShell keeps it as a path separator.
 	if (shell === "powershell" && command.includes("\\")) return false;
 	const words = shellWords(command);
@@ -106,14 +107,20 @@ export function allowOperandsAdmit(command: string, where: OperandContext): bool
 	for (const word of operands) {
 		const expanded = expandOperand(word, commandCwd);
 		if (expanded === null) return false;
-		if (expanded.homeRelative && homeReassigned()) return false;
+		if (expanded.homeRelative && shellState().homeOperands) return false;
 		graded += expanded.paths.length;
 		if (graded > MAX_GRADED_OPERANDS) return false;
 		if (!expanded.paths.every((p) => readsAsAllowed(p, commandCwd))) return false;
 		if (recursive && expanded.paths.some((p) => s0DirectoryBeneath(p, commandCwd))) return false;
 	}
+	if (voidedByShellState(words, shellState())) return false;
 	const operandPaths = (word: string) => expandOperand(word, commandCwd)?.paths ?? null;
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, commandCwd, sessionCwd, operandPaths);
+}
+
+/** True when an earlier command of the session, or this one, may have changed what this command runs. */
+function voidedByShellState(words: readonly string[], state: ShellState): boolean {
+	return state.everyAllow || words.some((word) => state.commands.has(wordBasename(word)));
 }
 
 /**

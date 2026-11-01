@@ -138,9 +138,10 @@ git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the opera
 `$HOME`, expands a one-segment glob to the cwd entries it matches, refuses any other expansion, grades every
 resulting path as a read through `classifyPath` with the floor on, refuses a recursive command (`grep -r`, `rg`,
 `find`, `cp -a` and similar) whose directory operand, or whose cwd, contains a credential directory
-(`s0DirectoryBeneath`, the test the scope tools take), refuses home-relative operands once the session
-may have reassigned `HOME` (`RuleContext.homeReassigned`, read lazily from the session branch by `home-guard.ts`),
-and, through `git-reach.ts`, refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`),
+(`s0DirectoryBeneath`, the test the scope tools take), refuses what the session's persistent shell state voids
+(`RuleContext.shellState`, read lazily from this call and the session branch by `shell-state.ts`: a `PATH` or
+loader variable, a function, an alias or a sourced file voids every command, `HOME` and `IFS` void home-relative
+operands, a `GIT_*` variable voids `git`, and an unreadable branch voids every command), and, through `git-reach.ts`, refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`),
 that injects configuration, or that runs or reads outside the session cwd. A refusal only sends the call on to
 the classifier (ADR-0008 and its amendment).
 
@@ -227,7 +228,7 @@ flowchart BT
     redaction[redaction]
     gitreach[git-reach: whether an allowed git call stays in the project]
     allowops[allow-operands: what a user allow may admit]
-    homeguard[home-guard: whether HOME was reassigned]
+    shellstate[shell-state: which allows the session's shell state voids]
     rules[rules: the step chain]
   end
   subgraph model [model calls]

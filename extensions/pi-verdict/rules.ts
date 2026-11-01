@@ -17,6 +17,7 @@ import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDev
 import type { CallPredicate } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, classifyPyShellLines, pyEvalShellLines, type RuleResult } from "./shell.ts";
+import type { ShellState } from "./shell-state.ts";
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
 export interface RuleContext {
@@ -40,9 +41,9 @@ export interface RuleContext {
 	readonly namesProtectedPath: CallPredicate;
 	/** The host, which decides whether an `xd://` target is a tool device (omp) or a relative path (pi). */
 	readonly host: HostKind;
-	/** True when an earlier command of the session, or this one, may have assigned `HOME`; read only when a
-	 *  user allow would admit a home-relative command operand. */
-	readonly homeReassigned: () => boolean;
+	/** What the commands of the session, this one included, void among the user allows (ADR-0008); read
+	 *  only when a user allow regex matches a command. */
+	readonly shellState: () => ShellState;
 }
 
 /** One tool call as every rule step reads it. */
@@ -257,7 +258,7 @@ function commandAdmitted(toolName: string, command: string, ctx: RuleContext): b
 	const shell = toolName === "powershell" ? "powershell" : "bash";
 	return (
 		allowAdmits(command) &&
-		allowOperandsAdmit(command, { commandCwd: ctx.commandCwd, sessionCwd: ctx.sessionCwd, homeReassigned: ctx.homeReassigned, shell })
+		allowOperandsAdmit(command, { commandCwd: ctx.commandCwd, sessionCwd: ctx.sessionCwd, shellState: ctx.shellState, shell })
 	);
 }
 

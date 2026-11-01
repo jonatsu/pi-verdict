@@ -14,11 +14,11 @@ import {
 import type { CompletionFn } from "./completion.ts";
 import type { UserRules } from "./config.ts";
 import type { HostKind } from "./floor.ts";
-import { lazyHomeReassigned } from "./home-guard.ts";
 import type { ModelChoice, PipelineHost } from "./model-call.ts";
 import { HOST_REDACTION_PLATFORM, type RedactorFn, redactedOr, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
 import type { RuleResult } from "./shell.ts";
+import { lazyShellState } from "./shell-state.ts";
 import type { SessionState } from "./state.ts";
 
 // ============================================================================
@@ -513,7 +513,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		policyDegraded: state.policyDegraded,
 		namesProtectedPath: redactorFor(commandCwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
 		host: env.hostKind,
-		homeReassigned: lazyHomeReassigned(env.host, call.input),
+		shellState: lazyShellState(env.host, call.input),
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	// The action under review is never elided: the rule layer already asked about an over-cap action.

@@ -185,3 +185,49 @@ counts as recursive); a false match only costs a classifier call. `grep x ~/note
 
 One residual remains. A short option with an attached relative value and no `/`
 (`git config -f.netrc --list`) is not graded, because its value cannot be told from its letters.
+
+## Amendment 2026-11-02: the session's shell state
+
+omp runs every bash call of a session in one persistent shell (omp 18.13.0: a module-level `shellSessions` map
+in `exec/bash-executor.ts`, keyed by the session id that `tools/bash.ts` passes). An earlier call, approved by
+the classifier, can therefore change what a later allowed command does. Under the deployed allow
+`^git (status|log|diff|show|branch|remote -v)(\s|$)`, `export GIT_EXTERNAL_DIFF=/tmp/x.sh` makes a later
+`git diff` run that script as a silent rule allow, and `PATH`, `LD_PRELOAD`, a shell function or an alias can
+redirect any allowed command the same way. The `HOME` guard above covered one variable; it is now one case of a
+general rule.
+
+**Decision.** Before a user allow admits a command, the gate scans this call's command and the command of every
+earlier tool call on the session branch (`shell-state.ts`, once per call and only after an allow regex
+matched). Each construct it finds voids part of the user allows:
+
+| Construct a command may run | What it voids |
+| --- | --- |
+| An assignment or export of `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `BASH_ENV` or `ENV`; a function definition (`name() {`, `function name`); `alias`; `enable`; `hash -p`; `shopt … expand_aliases`; `source`, `.`, `eval` or `trap` | Every user allow of a command |
+| `HOME` | Home-relative operands, and `git` |
+| `IFS` | Home-relative operands |
+| `XDG_CONFIG_HOME` (a moved global gitconfig can set `core.fsmonitor`), any `GIT_*` variable | `git` |
+| `RIPGREP_CONFIG_PATH` | `rg` |
+| `TAR_OPTIONS` | `tar`, `gtar`, `bsdtar` |
+| `ZIPOPT`, `ZIP` | `zip` |
+| `RSYNC_RSH` | `rsync` |
+| `LESSOPEN`, `LESSCLOSE` | `less` |
+| `GREP_OPTIONS` | `grep`, `egrep`, `fgrep`, `rgrep` |
+
+A voided command matches the basename of any word of the command, so `env git diff` counts. `CDPATH` voids
+nothing, since every operand the gate grades resolves from the call's own cwd. A variable counts in every
+spelling the `HOME` guard reads (a plain or `+=` assignment, `${X:=…}` and `${X=…}`, `export`, `declare`,
+`typeset`, `readonly`, `local`, `read`, `mapfile`, `readarray`, `unset`, `for X`, `printf -v X`), including an
+assignment prefix on the call itself (`GIT_EXTERNAL_DIFF=x git diff`). The builtins count only in command
+position (at the start of a line, after an operator, or after a keyword or prefix builtin that runs a command),
+so `rg "function foo"` or `git config alias.co checkout` voids nothing.
+
+**Fail direction.** A session branch the host cannot hand over voids every user allow, home-relative or not:
+the gate cannot tell which command an earlier call redefined. This replaces the `HOME` guard's narrower
+fail-closed rule, and the test `an unreadable session branch refuses every user allow, home-relative or not
+(fails closed)` pins it.
+
+**Consequences.** The scan is textual and over-matches on purpose: a false match sends later allowed commands
+of that session to the classifier, which costs one model call each and denies nothing. A session that never
+runs such a construct keeps every allow on the fast path. A variable whose name the text does not spell out
+(`export "$V=…"`, a `declare -n` reference) is a residual; the OS sandbox is the backstop (ADR-0009). Pinned by the
+`session shell-state guard (ADR-0008 amendment)` tests.
