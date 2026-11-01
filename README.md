@@ -256,6 +256,17 @@ bun test          # offline stub tests: deny floor, user rules, denyPaths, bypas
 
 Issue tracker and decision records live in the GitHub issues ("map" issue #1 indexes them).
 
+## Credits
+
+pi-verdict is a fork of [jesset/pi-verdict](https://github.com/jesset/pi-verdict) by Jesset (MIT), which created the
+gate, its three-state verdicts and the classifier design.
+
+[cc-safety-net](https://github.com/kenryu42/cc-safety-net) by kenryu42 (MIT), a command guard for Claude Code, Codex,
+pi and other agents, inspired parts of the shell-reading design: pinning every accepted residual with a test case,
+and the planned word model with quoting and expansion facts, read once per call. No code was copied; the ideas and
+their sources are recorded in [`research/2026-11-02-cc-safety-net.md`](research/2026-11-02-cc-safety-net.md) and
+[ADR-0012](docs/adr/0012-shared-shell-reading.md).
+
 ## License
 
 [MIT](LICENSE)

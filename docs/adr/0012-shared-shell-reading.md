@@ -26,7 +26,8 @@ unsound, and brace expansion (`git {push,} origin +main`), `git push$NOPE` and a
 harmless words. Each of them sends a force push to the classifier instead of the floor deny; none reaches an allow,
 because the user-allow path refuses every such spelling (`allow-operands.ts`).
 
-cc-safety-net 2.7.1 (MIT) parses each command once into words that keep their raw spelling, a quoted flag and their
+[cc-safety-net](https://github.com/kenryu42/cc-safety-net) 2.7.1 by kenryu42 (MIT), the source of this record's
+ideas, parses each command once into words that keep their raw spelling, a quoted flag and their
 provenance, gives the whole program one parse status, caches the parse for every check, and holds every analysis cap
 in one table (`research/2026-11-02-cc-safety-net.md`). A first draft of this record adopted all of that as one
 shared reader with a six-step migration. Two independent architecture reviews rejected that draft as written
