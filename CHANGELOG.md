@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-02
+
+Floor and path fixes: force-push spellings the shell expands, a command-line git alias, and omp SQLite query selectors on a protected database.
+
 ### Changed
 
 - The floor's word view now reads a `NAME+=value` word before a command as a prefix assignment, as bash does and as the user-allow and shell-state readers already did, because the three modules now share one `ASSIGNMENT` pattern and one `MIN_LONG_PREFIX` from `shell-words.ts`: `X+=1 echo '<a force push>'` treats the echoed text as inert and reaches the classifier instead of a floor deny, and a pipe into `X+=1 cat` counts as a pipe into a text filter; a command run after the prefix (`X+=1 git push --force …`) is still a floor deny, and no other probe verdict moved ([ADR-0007](docs/adr/0007-monotone-floor.md), [ADR-0012](docs/adr/0012-shared-shell-reading.md)).
@@ -524,7 +528,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/jonatsu/pi-verdict/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/jonatsu/pi-verdict/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/jonatsu/pi-verdict/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/jonatsu/pi-verdict/compare/v0.21.0...v0.22.0
