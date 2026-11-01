@@ -141,6 +141,7 @@ Keep docs in sync with functional changes:
 | Terminology | `CONTEXT.md` (terms only — no implementation detail or decisions) |
 | Architectural decision | new `docs/adr/NNNN-title.md` (next number; `status:` and `date:` block, then Context) |
 | A security principle changes | `docs/security-principles.md` |
+| An idea or code adopted from another project | `README.md` "Credits" (project, author, licence, what was adopted) and the ADR or research note that cites it; copied code also keeps its licence notice |
 
 `CHANGELOG.md` and `docs/adr/` may cite plan item and finding ids that a tracked plan defines; code may not (`pv-comments.md`).
 
