@@ -33,7 +33,7 @@ The `git-push-force` rule is now two layers:
 2. **The tokenised word view may only clear a hit, never be the sole path to one.** It runs only
    after a tripwire hit. It returns true when it finds a `git push` with a force flag (confirm), and
    true whenever its parse is **unsound** — a sentinel marks a construct the scanner cannot resolve
-   (`$(` inside double quotes, backticks, a here-document, a process substitution, `eval`, `env -S`
+   (`$(` inside double quotes, backticks, a here-document, `eval`, `env -S`
    forms, an unterminated quote, a `-c` template with a positional reference, an unmodelled shell
    option, an unmodelled `git` global option, an expansion or glob before git's subcommand,
    recursion past the depth cap). It returns false
