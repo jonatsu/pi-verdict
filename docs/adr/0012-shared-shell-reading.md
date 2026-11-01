@@ -1,4 +1,4 @@
-# 0012 - One shared reading of each shell command
+# 0012 - Shell reading: close the gaps locally, defer a shared reader
 
 ---
 status: proposed
@@ -19,141 +19,60 @@ A bash call reaches seven readers of its command text, and each reads it its own
 | Session shell state | `shell-state.ts` | `shellWords` once per command, here-document bodies stripped first (ADR-0008) |
 | Transcript redaction | `redaction.ts` | `bashPathTokens` over past calls |
 
-The cost is not the problem: the whole rule layer takes 0.1 to 0.2 ms for a typical call and about 1 ms at the
-8,192-character cap (measured 2026-11-02 on v0.23.0). The problem is divergence. Review rounds keep finding a
-spelling that one reader understands and another does not, and each fix lands in one reader at a time.
+The rule layer takes 0.1 to 0.2 ms for a typical call and about 1 ms at the 8,192-character cap (measured
+2026-11-02 on v0.23.0), so cost is not the problem. `shellWords` returns plain strings, and the open gaps in
+`TODO.md` item 3 come from that: an unquoted `$(…)` splits a command, process substitution `<(…)` is not marked
+unsound, and brace expansion (`git {push,} origin +main`), `git push$NOPE` and a `-c alias.x=push` alias read as
+harmless words. Each of them sends a force push to the classifier instead of the floor deny; none reaches an allow,
+because the user-allow path refuses every such spelling (`allow-operands.ts`).
 
-The readers also lose facts they need. `shellWords` returns plain strings, so a later check cannot tell a literal
-word from one that the shell will expand. That loss is behind the open gaps in `TODO.md` item 3: an unquoted `$(…)`
-splits a command, process substitution `<(…)` is not marked unsound, brace expansion (`git {push,} origin +main`)
-and `git push$NOPE` read as harmless words. Every allow and floor decision that depends on a word's meaning has to
-guess.
+cc-safety-net 2.7.1 (MIT) parses each command once into words that keep their raw spelling, a quoted flag and their
+provenance, gives the whole program one parse status, caches the parse for every check, and holds every analysis cap
+in one table (`research/2026-11-02-cc-safety-net.md`). A first draft of this record adopted all of that as one
+shared reader with a six-step migration. Two independent architecture reviews rejected that draft as written
+(`research/2026-11-02-adr-0012-review-soundness.md`, `research/2026-11-02-adr-0012-review-necessity.md`):
 
-cc-safety-net 2.7.1 (MIT) solves the static half of the same problem for about a dozen agent hosts
-(`research/2026-11-02-cc-safety-net.md`). It parses each command once into words that keep their raw spelling, a
-quoted flag and their provenance, gives the whole program one parse status, caches the parse for every check, and
-holds every analysis cap in one table. It has no model, so its static rules must decide everything; pi-verdict keeps
-static rules small and sound and sends the rest to the classifier (AGENTS.md "Goals").
+- Treating here-document bodies as data would have widened what counts as sound, so `python3 - <<'EOF'`,
+  `bash <<< '…'` and `ssh host <<'EOF'` with a destructive body would move from a floor deny to the classifier.
+- One breach path for every cap would have turned the `sh -c` depth cap's deny into an ask, and the operand cap's
+  classifier call into a needless ask.
+- Nothing in the migration proved verdict equivalence: the planned probe check missed a gray call becoming a rule
+  allow. The replay tool in `TODO.md` item 4 is that proof, and the TODO orders it before this work.
+- The gaps the draft cited close with four local edits, and by commit subject only about four of forty recent shell
+  and rule fixes concerned expansion. The divergence the reviewers found in shell-word handling is one assignment
+  pattern defined three times with two meanings, and one constant defined twice.
 
 ## Decision
 
-### 1. One reader, one structure
+1. Close the item 3 gaps in place, one floor commit each, with failing-before tests and a probe case: mark an
+   unquoted `$(` unsound in `shellWords` while still emitting its operator; mark an unquoted `<(` or `>(` unsound;
+   let the push rule find `push` as a substring of a later word; and treat a `-c alias.…` value as making git's
+   subcommand unreadable.
+2. Define the assignment pattern (accepting `+=`) and `MIN_LONG_PREFIX` once in `shell-words.ts`, and delete their
+   copies. The probe shows that no verdict moves, except toward deny.
+3. Pin every accepted residual in ADR-0007, ADR-0008 and ADR-0009 with a probe case that asserts today's route (deny,
+   ask or classifier), so a silent regression to allow fails the probe.
+4. Keep here-documents unsound for the floor and the allow path. Keep each cap's own outcome: the depth cap denies,
+   the operand cap sends the call to the classifier, the length cap asks.
+5. Defer the shared reader. Word provenance (raw spelling, quoted, expansion kinds) and a parse status are built
+   when a consumer needs them, first the read-only fast path in `TODO.md` item 6, and only after the replay tool in
+   item 4 can show that a migration moves no verdict toward allow. That change also moves `allow-operands.ts` off its
+   own expansion patterns and adds a seeded fuzz test with invariants: no word holding an unquoted `$`, backtick,
+   glob, brace or tilde is literal, and every floor rule is reached.
 
-A new module `shell-reading.ts` reads a command into a `ShellReading`, in one linear pass:
-
-```ts
-interface ShellReading {
-	readonly status: "sound" | "partial" | "unreadable";
-	readonly commands: readonly SimpleCommand[]; // in order, with the operator that ends each
-}
-interface SimpleCommand {
-	readonly assignments: readonly Word[]; // leading NAME=value words
-	readonly name: Word | null;
-	readonly args: readonly Word[];
-	readonly redirects: readonly Redirect[]; // operator, target word, and a here-document body as data
-	readonly end: ";" | "&&" | "||" | "|" | "|&" | "&" | "\n" | null;
-	readonly grouped: boolean; // inside ( … ) or { … }
-}
-interface Word {
-	readonly text: string; // quotes removed
-	readonly raw: string; // as written
-	readonly quoted: boolean;
-	readonly literal: boolean; // no expansion of any kind
-	readonly expansions: ReadonlySet<"variable" | "command" | "process" | "arithmetic" | "glob" | "brace" | "tilde" | "ansi-c">;
-}
-```
-
-The reader models what `shellWords` models today (quotes, escapes, comments, line continuations, operators,
-newlines, redirections) and adds provenance per word and here-document bodies kept as data. It does not evaluate
-any expansion, build an abstract syntax tree of compound commands, or read PowerShell. `status` is `sound` when every
-construct was read faithfully, `partial` when a construct was marked but not read (a command substitution, an
-`eval`, a here-document fed to a shell), and `unreadable` when the reader stopped early (an unterminated quote, an
-unsupported construct). `partial` and `unreadable` map to today's unsound sentinel: no check may clear a tripwire
-hit or admit an allow on them.
-
-### 2. Read once per call
-
-`classifyByRules` builds the reading lazily on the call record it already builds (`readCall` in `rules.ts`), so a
-call that never reaches a shell check never reads one. Every consumer takes the reading from there. A shell script
-inside the command (`sh -c '…'`) is read through the same memo, keyed by its text.
-
-### 3. The monotone rule covers every reader
-
-ADR-0007 lets a sound word view clear a raw-text hit but never be the only path to one. This decision extends that
-rule to every reader: the shared reading may add targets and hits to a layer, and may clear a raw-text hit only when
-`status` is `sound`. The raw-text checks stay as nets: the floor's tripwires, the `.omp` regex, the self-protection
-signatures and `bashPathTokens`. Where a layer takes targets from both, it takes their union, so no layer can grade
-less than it does today.
-
-### 4. Questions about words replace guesses
-
-A layer asks a word what it is instead of re-deriving it: `literal` before admitting an operand, `expansions` before
-reading a subcommand name, `quoted` before treating a word as an inert argument. A non-literal word in a position
-whose meaning matters (a command name, a git subcommand, an operand under an allow) sends the call to the classifier.
-This closes the expansion gaps in `TODO.md` item 3 in one place.
-
-### 5. One table of limits
-
-Every analysis cap moves into one frozen `LIMITS` table: the command length (`BASH_MAX_MATCH_LEN`), the operand cap
-(`MAX_GRADED_OPERANDS`), the `sh -c` recursion depth, and the per-command cap of the shell-state record. A breach on
-the current call raises one typed result that leads to the over-cap ask; a breach while recording history takes the
-shell-state substring fallback.
-
-### 6. Tests that prove the shape
-
-The reader counts its work units, and a test asserts the count stays within a constant factor of the input length;
-no test asserts on wall-clock time (`pv-tests.md`). A seeded generator builds commands from fragments (quotes,
-substitutions, here-documents, wrappers) and checks invariants: no word holding an unquoted `$`, backtick, glob, brace
-or tilde is `literal`, and every floor rule is reached at least once. Each accepted residual in ADR-0007, ADR-0008 and
-ADR-0009 gets a probe case that pins today's route (ask, deny or classifier), so a silent regression to allow fails
-the probe.
-
-```mermaid
-flowchart LR
-  Call["bash tool call"] --> Raw["raw text"]
-  Call --> Reader["shell-reading.ts: one ShellReading, memoized per text"]
-  Raw --> Nets["raw-text nets: tripwires, .omp regex, self-protection signatures, bashPathTokens"]
-  Reader --> Floor["floor: clear a tripwire hit only on a sound reading"]
-  Nets --> Floor
-  Reader --> SP["self-protection: cd targets (union)"]
-  Nets --> SP
-  Reader --> DP["denyPaths and code-loading: targets (union)"]
-  Nets --> DP
-  Reader --> Allow["user allow: name, operands, git reach"]
-  Reader --> State["session shell state"]
-  Limits["LIMITS table"] -.-> Reader
-  Limits -.-> Allow
-```
-
-## Migration
-
-Each step keeps every probe case's layer and verdict, unless the step names a change, and adds a probe check that
-fails when any verdict moves from deny or ask toward allow.
-
-1. Add `shell-reading.ts` and its unit, fuzz and work-count tests, with no consumer.
-2. The floor's word view, `allowAdmits`, the allow operands and the session shell state read from the shared reading;
-   their own calls to `shellWords` go. No behaviour change.
-3. Move the caps into `LIMITS`. No behaviour change.
-4. Close the item 3 expansion gaps through word provenance. Visible: some calls that cleared a tripwire now deny, and
-   some allows now reach the classifier; disclosed in the CHANGELOG.
-5. `denyPaths`, code-loading and self-protection take the reading's targets as a union with their raw-text
-   extraction. Visible: more spellings reach the `denyPaths` ask; disclosed in the CHANGELOG.
-6. Add the residual probe cases.
-
-`shellWords` stays exported until step 2 has moved every caller, then becomes a thin view over the reading for the
-exported API.
+The path half of item 5 (one resolver for every path spelling) is not decided here.
 
 ## Consequences
 
-The readers stop disagreeing about word boundaries, quoting and command position, so a spelling fix lands once.
-The item 3 expansion gaps close through one mechanism instead of four special cases. The caps become reviewable in
-one place.
+The item 3 gaps close with small, reviewable floor changes, and the residual cases make every accepted gap a tested
+fact. Two readers stop disagreeing about assignments. No new module enters the gate now.
 
-The cost is a medium-sized change to security code, done in six reviewed steps. The raw-text nets stay, so the gate
-carries two readings of every command on purpose: the shared reading for meaning and the nets for safety. A command
-the reader marks `partial` or `unreadable` keeps going to the classifier, as it does today.
+The readers still tokenize a command up to three times and keep their own path extraction, which costs well under a
+millisecond. The structural fix waits for the replay tool, so a later shared reader starts with a proof of
+equivalence instead of a promise.
 
-Rejected: a full bash parser such as tree-sitter-bash or mvdan/sh compiled to WebAssembly, which would add a runtime
-dependency, raise load time and still not know what a variable holds at run time; one combined regex or a
-non-backtracking regex engine, which would keep the guessing or add a dependency; porting cc-safety-net's 1,816-line
-POSIX parser, which serves a model-free design with more static rules than pi-verdict wants.
+Rejected for now: the shared reader with per-call memo and target union (no measured gain, and the strict redactor
+already catches bare names); one breach path for every cap. Rejected outright: a full bash parser such as
+tree-sitter-bash or mvdan/sh as WebAssembly, which would add a runtime dependency and still not know what a variable
+holds at run time; porting cc-safety-net's POSIX parser, which serves a design without a model and with many more
+static rules.
