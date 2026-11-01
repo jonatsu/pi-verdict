@@ -1791,6 +1791,9 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["a git subcommand that only starts with push", "git push-helper origin +main", null],
 		["force push through a git alias set with -c", "git -c alias.x=" + "push x origin +main", "git-push-force"],
 		["a -c value that is not an alias", "git -c user.name=x commit -m 'push +1'", null],
+		// bash reads `X+=1` as an assignment prefix, so the echo's argument is inert text.
+		["a force push echoed after a += prefix assignment", "X+=1 echo 'git " + "push --force origin main'", null],
+		["a force push after a += prefix assignment", "X+=1 git " + "push --force origin main", "git-push-force"],
 		["commit message from a here-document substitution", "git commit -m \"$(cat <<'EOF'\nfix: tidy\nEOF\n)\"", null],
 	];
 	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView, ...expansionGaps]) {

@@ -1,5 +1,13 @@
 import { BASH_MAX_MATCH_LEN } from "./shell.ts";
-import { gitSubcommandIndex, hasUnsoundWord, isShellOperator, shellWords, withoutSubstitutionMarks, wordBasename } from "./shell-words.ts";
+import {
+	ASSIGNMENT,
+	gitSubcommandIndex,
+	hasUnsoundWord,
+	isShellOperator,
+	shellWords,
+	withoutSubstitutionMarks,
+	wordBasename,
+} from "./shell-words.ts";
 
 // ============================================================================
 // Session shell state: which user allows an earlier command may have voided (ADR-0008)
@@ -110,8 +118,6 @@ const DECLARING: ReadonlySet<string> = new Set([
 	"readarray",
 	"unset",
 ]);
-/** Matches an assignment word, capturing the variable name. */
-const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
 /** Matches a declared name, bare or assigned, capturing it. */
 const DECLARED = /^([A-Za-z_][A-Za-z0-9_]*)(?:\+?=|$)/;
 /** Matches the `${X:=…}` and `${X=…}` default expansions, which assign when `X` is unset. */

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The floor's word view now reads a `NAME+=value` word before a command as a prefix assignment, as bash does and as the user-allow and shell-state readers already did, because the three modules now share one `ASSIGNMENT` pattern and one `MIN_LONG_PREFIX` from `shell-words.ts`: `X+=1 echo '<a force push>'` treats the echoed text as inert and reaches the classifier instead of a floor deny, and a pipe into `X+=1 cat` counts as a pipe into a text filter; a command run after the prefix (`X+=1 git push --force …`) is still a floor deny, and no other probe verdict moved ([ADR-0007](docs/adr/0007-monotone-floor.md), [ADR-0012](docs/adr/0012-shared-shell-reading.md)).
+
 ## [0.24.0] - 2026-11-02
 
 ### Fixed

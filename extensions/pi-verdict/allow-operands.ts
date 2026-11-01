@@ -4,7 +4,7 @@ import { escapeRegExp } from "./agent-dir.ts";
 import { classifyPath, s0DirectoryBeneath } from "./floor.ts";
 import { gitStaysInProject } from "./git-reach.ts";
 import type { ShellState } from "./shell-state.ts";
-import { shellWords, wordBasename } from "./shell-words.ts";
+import { ASSIGNMENT, MIN_LONG_PREFIX, shellWords, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
 // Rule layer: the operands a user `allow` rule may admit (ADR-0008)
@@ -13,8 +13,6 @@ import { shellWords, wordBasename } from "./shell-words.ts";
 /** Operands graded per command; a command with more is refused, so the cost of one admission stays bounded. */
 export const MAX_GRADED_OPERANDS = 64;
 
-/** Matches a leading shell variable assignment (`NAME=value`, `NAME+=value`). */
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 /** Matches `$HOME` or `${HOME}`, not the prefix of a longer variable name such as `$HOMEBREW`. */
 const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
 /** Matches a brace expansion: a `{` whose closing `}` follows a `,` or a `..`. */
@@ -59,9 +57,6 @@ const RECURSIVE_OPTIONS: Readonly<Record<string, { readonly short: RegExp; reado
 	rsync: { short: /[ra]/, long: ["--recursive", "--archive"] },
 	scp: { short: /r/, long: [] },
 };
-
-/** The shortest long-option prefix read as an abbreviation, so `--r` alone does not count. */
-const MIN_LONG_PREFIX = 5;
 
 /** An operand after shell expansion: the paths the shell passes for it. */
 interface Expanded {

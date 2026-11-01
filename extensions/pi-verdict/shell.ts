@@ -10,6 +10,7 @@ import {
 	gitRunsIn,
 	hasUnsoundWord,
 	isShellOperator,
+	MIN_LONG_PREFIX,
 	mentionsAny,
 	shellWords,
 	wordBasename,
@@ -295,9 +296,6 @@ const SIDE_EFFECT_OPTIONS: Readonly<Record<string, SideEffectOptions>> = {
 	rsync: { long: ["--rsh", "--rsync-path"], short: /e/ },
 	sort: { long: ["--output", "--compress-program"], short: /o/ },
 };
-
-/** The shortest long-option prefix read as an abbreviation. */
-const MIN_LONG_PREFIX = 5;
 
 /** True when `word` is one of the command's side-effect options. Over-approximates: an option's value
  *  that looks like one also counts, which only sends the call to the classifier. */

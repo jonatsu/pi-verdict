@@ -528,8 +528,11 @@ function firstOperandIndex(seg: readonly string[], from: number, inert: Readonly
 	return -1;
 }
 
-/** A shell variable assignment before the command word (`X=1 cmd`). */
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Matches a shell variable assignment word (`X=1`, `X+=1`), capturing the variable name. */
+export const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
+
+/** The shortest long-option prefix read as an abbreviation of a longer option, so `--r` alone does not count. */
+export const MIN_LONG_PREFIX = 5;
 
 /**
  * Indexes of the words in one simple command that the program only prints, searches for or records,
