@@ -1779,7 +1779,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["stash clear echoed into a shell", "echo 'git " + "stash clear' | sh", "git-stash-clear"],
 		["reset --hard as a grep pattern", "grep -rn 'git " + "reset --hard' docs", null],
 	];
-	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView]) {
+	// Unquoted expansions hide words from the word view, so a force push spelled with one keeps the
+	// floor deny; the controls show that the same constructs without a force push stay gray.
+	const expansionGaps: Array<[string, string, string | null, boolean?]> = [
+		["force push with an unquoted command substitution", "git " + "push origin $(:) +main", "git-push-force"],
+		["command substitution in double quotes without a force push", 'echo "$(date)"', null],
+		["commit message from a here-document substitution", "git commit -m \"$(cat <<'EOF'\nfix: tidy\nEOF\n)\"", null],
+	];
+	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView, ...expansionGaps]) {
 		cases.push({
 			label,
 			family: "bash-danger",

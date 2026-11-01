@@ -1,5 +1,5 @@
 import { BASH_MAX_MATCH_LEN } from "./shell.ts";
-import { gitSubcommandIndex, hasUnsoundWord, isShellOperator, shellWords, wordBasename } from "./shell-words.ts";
+import { gitSubcommandIndex, hasUnsoundWord, isShellOperator, shellWords, withoutSubstitutionMarks, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
 // Session shell state: which user allows an earlier command may have voided (ADR-0008)
@@ -283,7 +283,8 @@ function scan(command: string): Fired {
 		return { persistent: bits, current: bits };
 	}
 	const text = withoutHereDocBodies(command);
-	const words = shellWords(text);
+	// A substitution's commands are read between its `(` and `)` operators, so its mark adds nothing here.
+	const words = withoutSubstitutionMarks(shellWords(text));
 	const fired = scanWords(words);
 	if (words.length > 0 && hasUnsoundWord(words.slice(-1))) {
 		const bits = scanSubstrings(text);

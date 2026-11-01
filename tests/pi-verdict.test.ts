@@ -970,6 +970,41 @@ describe("bash cwd argument", () => {
 	});
 });
 
+// Each spelling below once cleared a force push to the classifier through a word the view read as literal.
+describe("unquoted expansions keep the force-push floor deny (ADR-0007)", () => {
+	const denyRule = async (cmd: string): Promise<void> => {
+		const h = session({});
+		const r = await toolCall(h, "bash", { command: cmd });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("git-push-force");
+		expect(h.calls.length).toBe(0);
+	};
+	/** A control: the call still reaches the classifier, which allows it. */
+	const reachesClassifier = async (cmd: string): Promise<void> => {
+		const h = session({});
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "bash", { command: cmd })).toBeUndefined();
+		expect(h.calls.length).toBe(1);
+	};
+
+	test("an unquoted command substitution in a force push denies", async () => {
+		await denyRule("git " + "push origin $(:) +main");
+	});
+	test("quoted and here-document command substitutions without a force push still reach the classifier", async () => {
+		await reachesClassifier('echo "$(date)"');
+		await reachesClassifier("git commit -m \"$(cat <<'EOF'\nfix: tidy\nEOF\n)\"");
+	});
+	test("an assignment from a command substitution does not void a later allow", async () => {
+		const h = session({ allow: ["^git status$"] });
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "V=$(date)" } }] },
+		});
+		expect(await toolCall(h, "bash", { command: "git status" })).toBeUndefined();
+		expect(h.calls.length).toBe(0);
+	});
+});
+
 // omp runs a session's bash calls in one shell, so an earlier call can change what a later allowed command runs.
 describe("session shell-state guard (ADR-0008 amendment)", () => {
 	const GIT_ALLOW = ["^git (status|log|diff|show|branch|remote -v)(\\s|$)"];

@@ -18,9 +18,22 @@ const SHELL_NAMES: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "
  */
 const UNSOUND = "\u0000unsound\u0000";
 
+/**
+ * Sentinel word for an unquoted command or process substitution. It counts as unsound, but it sits
+ * beside words that keep their usual reading (the `(` operator still follows it), so the shell-state
+ * scan can drop it and read the same commands as before; a plain `UNSOUND` there would read as `eval`.
+ */
+const SUBSTITUTION = "\u0000substitution\u0000";
+
 /** Whether the scanner marked any construct in `words` as one it could not resolve faithfully. */
 export function hasUnsoundWord(words: readonly string[]): boolean {
-	return words.includes(UNSOUND);
+	return words.includes(UNSOUND) || words.includes(SUBSTITUTION);
+}
+
+/** The words without their substitution marks, for a reader that splits commands at the `(` operator
+ *  instead of treating a substitution as unsound. */
+export function withoutSubstitutionMarks(words: readonly string[]): string[] {
+	return words.filter((word) => word !== SUBSTITUTION);
 }
 
 /** Command operators: split words and end a command segment. */
@@ -41,7 +54,8 @@ function continuationLength(command: string, i: number): number {
 
 /**
  * Split a shell command into words at unquoted whitespace and operators, quoting removed
- * (`'a&b'` is one word `a&b`; `$(git …)` yields an operator `(` before the inner words).
+ * (`'a&b'` is one word `a&b`; `$(git …)` yields a substitution mark and an operator `(` before the
+ * inner words).
  * Deliberately not a shell parser: no glob, process-substitution or brace-expansion modelling, and
  * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
  * needed — unlike the danger regexes, it cannot backtrack).
@@ -179,6 +193,16 @@ export function shellWords(command: string): string[] {
 		}
 		if (ch === "&" && command[i + 1] === ">") {
 			redirection(command[i + 2] === ">" ? 3 : 2, false); // `&>`/`&>>`: stdout and stderr, not a background `&`
+			continue;
+		}
+		if (ch === "$" && command[i + 1] === "(") {
+			// The `$` stays in its word and the `(` stays an operator, so segments read as before; the mark
+			// keeps the floor's deny, since the substitution's output becomes words the scanner cannot see.
+			cur += ch;
+			inWord = true;
+			flush();
+			words.push(SUBSTITUTION);
+			i++;
 			continue;
 		}
 		if (ch === " " || ch === "\t" || ch === "\r") {
@@ -582,7 +606,7 @@ const SHELL_RECURSION_DEPTH = 3;
  */
 export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): boolean {
 	const words = shellWords(text);
-	if (words.includes(UNSOUND)) return true;
+	if (hasUnsoundWord(words)) return true;
 	const inertAllowed = !outputMayRun(text, words);
 	for (const seg of commandSegments(words)) {
 		if (reparsesWords(seg)) return true;
