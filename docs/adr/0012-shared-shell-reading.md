@@ -1,7 +1,7 @@
 # 0012 - Shell reading: close the gaps locally, defer a shared reader
 
 ---
-status: proposed
+status: accepted
 date: 2026-11-02
 ---
 
@@ -45,10 +45,12 @@ shared reader with a six-step migration. Two independent architecture reviews re
 
 ## Decision
 
-1. Close the item 3 gaps in place, one floor commit each, with failing-before tests and a probe case: mark an
-   unquoted `$(` unsound in `shellWords` while still emitting its operator; mark an unquoted `<(` or `>(` unsound;
-   let the push rule find `push` as a substring of a later word; and treat a `-c alias.…` value as making git's
-   subcommand unreadable.
+1. Close the item 3 gaps in place, one floor commit each, with failing-before tests and a probe case: let the push
+   rule find `push` as a substring of a later word, and treat a `-c alias.…` value as making git's subcommand
+   unreadable. Marking an unquoted `$(` or `<(` unsound was built and reverted: the floor's tripwires match across
+   commands, so an unsound reading turned common commands such as
+   `cd $(git rev-parse --show-toplevel) && git checkout -b x && git add .` into floor denies with no override,
+   while the spellings it caught only reach the classifier. They stay ADR-0007 residuals.
 2. Define the assignment pattern (accepting `+=`) and `MIN_LONG_PREFIX` once in `shell-words.ts`, and delete their
    copies. The probe shows that no verdict moves, except toward deny.
 3. Pin every accepted residual in ADR-0007, ADR-0008 and ADR-0009 with a probe case that asserts today's route (deny,

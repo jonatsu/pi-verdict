@@ -25,4 +25,4 @@ The status column repeats each record's own status and adds what its amendments 
 | [0009](0009-tool-access-adapter.md) | The tool-access adapter: one model of what a tool call reads and writes | Accepted; amended 2026-10-05 (`eval` grading, session-start coverage report) and 2026-10-06 (glob targets, host path spellings) | 2026-10-05 |
 | [0010](0010-policy-degraded.md) | `policyDegraded`: configuration errors change the fail direction | Accepted; the list of degrading triggers was extended on 2026-10-06 (type-invalid `deny` and `denyPaths`) | 2026-10-05 |
 | [0011](0011-code-loading-ask.md) | Code-loading ask: writes where the host loads code ask the user | Accepted | 2026-10-24 |
-| [0012](0012-shared-shell-reading.md) | Shell reading: close the expansion gaps locally, pin residuals, defer a shared reader until the replay tool exists | Proposed; reduced after two architecture reviews | 2026-11-02 |
+| [0012](0012-shared-shell-reading.md) | Shell reading: close the expansion gaps locally, pin residuals, defer a shared reader until the replay tool exists | Accepted (reduced after two architecture reviews; decisions 1-4 built, 5 deferred) | 2026-11-02 |
