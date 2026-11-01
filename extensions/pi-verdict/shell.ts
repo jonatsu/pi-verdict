@@ -92,15 +92,16 @@ function ghCommand(group: string, actions: readonly string[]): SegmentMatcher {
  * `git --git-dir=X push …` and `-c/-C` gaps need no special handling), terminated by a bare `--force`,
  * another `--force-*` form (only `--force-with-lease` is exempt), a bundled short `f` flag (`-f`,
  * `-fu`, `-uf`, `-4f`, and `-f>/dev/null`) or a `+` refspec word. Quoted content does not break it:
- * `git push origin 'a&b' --force` names a legal refname. An unreadable global option hides a later
- * word only when it is exactly `push`.
+ * `git push origin 'a&b' --force` names a legal refname. After an unreadable global option or
+ * subcommand, any later word containing `push` keeps the deny, since `{push,}` or `push$X` may expand
+ * to it.
  */
 const GIT_PUSH_FORCE_RULE: BashDangerRule = {
 	kind: "words",
 	id: "git-push-force",
 	reason: "git push --force",
 	tripwire: inOrder(/\bpush\b/i, /--force(?![-\w])|--force-(?!with-lease)|\s-[a-zA-Z0-9]*f[a-zA-Z0-9]*\b|\s\+/i),
-	runs: (seg) => gitRunsIn(seg, { subcommand: "push", argsHit: pushArgsForce, mayBeSubcommand: (word) => word.toLowerCase() === "push" }),
+	runs: gitCommand("push", pushArgsForce),
 };
 
 const BASH_DANGER_RULES: readonly BashDangerRule[] = [

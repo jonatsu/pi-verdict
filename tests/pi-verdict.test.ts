@@ -1001,6 +1001,14 @@ describe("unquoted expansions keep the force-push floor deny (ADR-0007)", () => 
 	test("a process substitution without a force push still reaches the classifier", async () => {
 		await reachesClassifier("diff <(ls a) <(ls b)");
 	});
+	test("a push word changed by brace expansion or a variable denies", async () => {
+		await denyRule("git " + "{push,} origin +main");
+		await denyRule("git " + "push$NOPE origin +main");
+	});
+	test("a git subcommand that only starts with push still reaches the classifier", async () => {
+		await reachesClassifier("git push-helper origin +main");
+		await reachesClassifier("git pushd origin +main");
+	});
 	test("an assignment from a command substitution does not void a later allow", async () => {
 		const h = session({ allow: ["^git status$"] });
 		h.branch.push({

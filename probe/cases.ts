@@ -1786,6 +1786,9 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["command substitution in double quotes without a force push", 'echo "$(date)"', null],
 		["force push with a process substitution", "git " + "push origin <(:) +main", "git-push-force"],
 		["process substitutions without a force push", "diff <(ls a) <(ls b)", null],
+		["force push with a brace-expanded push word", "git " + "{push,} origin +main", "git-push-force"],
+		["force push with a variable appended to the push word", "git " + "push$NOPE origin +main", "git-push-force"],
+		["a git subcommand that only starts with push", "git push-helper origin +main", null],
 		["commit message from a here-document substitution", "git commit -m \"$(cat <<'EOF'\nfix: tidy\nEOF\n)\"", null],
 	];
 	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView, ...expansionGaps]) {
