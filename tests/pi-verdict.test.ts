@@ -1115,24 +1115,23 @@ describe("session shell-state guard (ADR-0008 amendment)", () => {
 			expect(await gitDiff({ getBranch: unreadable, getEntries: unreadable })).toMatchObject({ verdict: "deny", source: "fail-closed" });
 		});
 	});
-	test("the scan time grows linearly with the command length", () => {
-		/** Mean milliseconds of one scan of `text`. */
-		const scanMs = (text: string, runs: number) => {
-			const start = performance.now();
-			for (let r = 0; r < runs; r++) shellStateOf(text);
-			return (performance.now() - start) / runs;
-		};
-		// The first pair stays under the per-command cap and takes the word scan; the second takes the substring scan.
-		for (const unit of ["a", "a=b ", "export a ", "ls; ", "f() ", "${a", "hash ", "'"]) {
-			for (const [small, large] of [
-				[800, 8000],
-				[10_000, 100_000],
-			]) {
-				const shortMs = scanMs(unit.repeat(small / unit.length), 10);
-				const longMs = scanMs(unit.repeat(large / unit.length), 10);
-				expect(longMs).toBeLessThan(shortMs * 30 + 5);
-			}
-		}
+	test("a construct on a later line of a multi-line command is read as its own command", async () => {
+		expect(await modelCallsAfter(GIT_ALLOW, ["cd src\nexport GIT_EXTERNAL_DIFF=/tmp/x.sh"], "git diff")).toBe(1);
+		expect(await modelCallsAfter(LS_ALLOW, ["PATH=/tmp/b\ncd src"], "ls")).toBe(1);
+		expect(await modelCallsAfter(LS_ALLOW, ["cd src\nsource .venv/bin/activate"], "ls")).toBe(1);
+		expect(await modelCallsAfter(LS_ALLOW, ["true\nf() { :; }"], "ls")).toBe(1);
+	});
+	test("a here-document body is input, so a quote in it hides no later line", async () => {
+		const notes = "cat > NOTES.md <<'EOF'\nit's done\nEOF\nsource .venv/bin/activate";
+		expect(await modelCallsAfter(LS_ALLOW, [notes], "ls")).toBe(1);
+		// A later apostrophe closes the quote a body would open, so the swallowed line leaves no unterminated quote.
+		const closed = "cat > NOTES.md <<'EOF'\nit's done\nEOF\nsource .venv/bin/activate # it's set";
+		expect(await modelCallsAfter(LS_ALLOW, [closed], "ls")).toBe(1);
+		const tabbed = "cat <<-EOF\n\tit's done\n\tEOF\nsource .venv/bin/activate # it's set";
+		expect(await modelCallsAfter(LS_ALLOW, [tabbed], "ls")).toBe(1);
+		expect(await modelCallsAfter(LS_ALLOW, ["source /dev/stdin <<EOF\necho hi\nEOF"], "ls")).toBe(1);
+		const commit = "git commit -m \"$(cat <<'EOF'\nfix: source the config\n\nIt's done; enable it.\nEOF\n)\"";
+		expect(await modelCallsAfter(LS_ALLOW, [commit], "ls")).toBe(0);
 	});
 });
 

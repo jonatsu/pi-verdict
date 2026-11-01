@@ -201,7 +201,8 @@ function scanWords(words: readonly string[]): Fired {
 	let start = 0;
 	for (let i = 0; i <= words.length; i++) {
 		const word = words[i];
-		if (word !== undefined && !isShellOperator(word)) {
+		// The tokenizer emits a line break as its own word, which ends a simple command like an operator.
+		if (word !== undefined && word !== "\n" && !isShellOperator(word)) {
 			if (word.includes("${")) for (const m of word.matchAll(DEFAULTED)) fired.persistent |= variableBit(m[1]);
 			continue;
 		}
@@ -224,6 +225,56 @@ function scanSubstrings(text: string): number {
 	return bits;
 }
 
+/** Matches a here-document operator (`<<` or `<<-`, not a `<<<` here-string), capturing the dash and the
+ *  delimiter word, bare, backslashed or quoted. Bounded, so it cannot backtrack across a long line. */
+const HERE_DOC = /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]{1,64})'|"([^"\n]{1,64})"|\\?([^\s;&|<>()'"]{1,64}))/g;
+
+/**
+ * Returns a command with the bodies of its here-documents removed, for the shell-state scan only: a body
+ * is the input of one command and cannot change the session's shell, while a lone quote in it would mislead
+ * the tokenizer. A body ends at its delimiter line, with leading tabs allowed after `<<-`. A body whose
+ * delimiter line never comes is kept, so a quoted `<<X` cannot hide the lines after it.
+ */
+function withoutHereDocBodies(command: string): string {
+	if (!command.includes("<<")) return command;
+	const lines = command.split("\n").map((line) => line.replace(/\r$/, ""));
+	// Line numbers of each possible delimiter line, so finding a body's end needs no scan ahead.
+	const exact = new Map<string, number[]>();
+	const tabbed = new Map<string, number[]>();
+	lines.forEach((line, i) => {
+		for (const [index, key] of [
+			[exact, line],
+			[tabbed, line.replace(/^\t+/, "")],
+		] as const) {
+			const at = index.get(key);
+			if (at === undefined) index.set(key, [i]);
+			else at.push(i);
+		}
+	});
+	// Lookups only move forward through the lines, so a cursor per list keeps the pass linear.
+	const cursors = new Map<number[], number>();
+	const firstFrom = (index: Map<string, number[]>, key: string, from: number): number => {
+		const at = index.get(key);
+		if (at === undefined) return -1;
+		let c = cursors.get(at) ?? 0;
+		while (c < at.length && at[c] < from) c++;
+		cursors.set(at, c);
+		return c < at.length ? at[c] : -1;
+	};
+	const kept: string[] = [];
+	for (let i = 0; i < lines.length; ) {
+		kept.push(lines[i]);
+		let next = i + 1;
+		for (const m of lines[i].matchAll(HERE_DOC)) {
+			const end = firstFrom(m[1] === "-" ? tabbed : exact, m[2] ?? m[3] ?? m[4] ?? "", next);
+			if (end === -1) break;
+			next = end + 1;
+		}
+		i = next;
+	}
+	return kept.join("\n");
+}
+
 /** Returns the rows a command fires. A command over `BASH_MAX_MATCH_LEN`, or one the tokenizer stopped
  *  reading early (`$'…'`, an unterminated quote), takes the substring scan, which over-matches. */
 function scan(command: string): Fired {
@@ -231,10 +282,11 @@ function scan(command: string): Fired {
 		const bits = scanSubstrings(command);
 		return { persistent: bits, current: bits };
 	}
-	const words = shellWords(command);
+	const text = withoutHereDocBodies(command);
+	const words = shellWords(text);
 	const fired = scanWords(words);
 	if (words.length > 0 && hasUnsoundWord(words.slice(-1))) {
-		const bits = scanSubstrings(command);
+		const bits = scanSubstrings(text);
 		fired.persistent |= bits;
 		fired.current |= bits;
 	}

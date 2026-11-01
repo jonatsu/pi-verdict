@@ -218,7 +218,10 @@ leaves out what the record voids:
 | `GREP_OPTIONS` | `grep`, `egrep`, `fgrep`, `rgrep` |
 
 The record holds which of these 15 rows fired, as flags, not command text. Each command is read once through
-the `shellWords` tokenizer (ADR-0007), which removes quoting and redirections, and split into simple commands.
+the `shellWords` tokenizer (ADR-0007), which removes quoting and redirections, and split into simple commands
+at operators and line breaks. Here-document bodies are removed first, since a body is one command's input and a
+lone quote in it would mislead the tokenizer; a body ends at its delimiter line, and one whose delimiter line
+never comes is kept and scanned.
 A variable is set by an assignment word, by a name in the arguments of `export`, `declare`, `typeset`,
 `readonly`, `local`, `read`, `mapfile`, `readarray` or `unset`, by `for X`, by `printf -v X`, and by a word
 holding `${X:=…}` or `${X=…}`. The command name is the first word after the leading assignments and after the
@@ -255,3 +258,9 @@ tests. These spellings and paths are accepted residuals; the OS sandbox is the b
 - An abbreviated long option shorter than five characters (`sort --o=~/.bashrc f`) still passes the
   side-effect option check, which matters only if a user allows `sort`.
 - A `git config` written in an earlier session persists in the repository, beyond the session's record.
+- A quote construction that misleads the tokenizer mid-command, so its unsound mark is not the last word
+  (`echo "$(echo '"')"; export GIT_EXTERNAL_DIFF=/tmp/x; echo \'`), skips the substring scan, which runs only
+  when the tokenizer stopped early so that ordinary commits with a command substitution void nothing.
+- The substring scan does not watch `.` as the sourcing command, since a dot occurs in almost every command.
+- A function definition after a prefix word such as `then`, `do` or `{` is not recognized.
+- A `<<X` inside quotes, followed later by a line that is exactly `X`, hides the lines between from the scan.
