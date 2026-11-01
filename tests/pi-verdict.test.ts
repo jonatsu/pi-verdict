@@ -999,12 +999,13 @@ describe("unquoted expansions keep the force-push floor deny (ADR-0007)", () => 
 		await reachesClassifier('echo "$(date)"');
 		await reachesClassifier("git commit -m \"$(cat <<'EOF'\nfix: tidy\nEOF\n)\"");
 	});
-	test("a process substitution in a force push denies", async () => {
-		await denyRule("git " + "push origin <(:) +main");
-		await denyRule("git " + "push origin >(:) +main");
+	// Process substitution is an accepted residual for the same reason as `$(`.
+	test("a process substitution in a force push reaches the classifier (accepted residual)", async () => {
+		await reachesClassifier("git " + "push origin <(:) +main");
 	});
-	test("a process substitution without a force push still reaches the classifier", async () => {
+	test("a process substitution before git checkout and git add stays gray", async () => {
 		await reachesClassifier("diff <(ls a) <(ls b)");
+		await reachesClassifier("diff <(git show HEAD:a) a && git " + "checkout -b x && git add .");
 	});
 	test("a push word changed by brace expansion or a variable denies", async () => {
 		await denyRule("git " + "{push,} origin +main");

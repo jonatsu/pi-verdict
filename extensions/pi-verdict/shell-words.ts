@@ -18,22 +18,9 @@ const SHELL_NAMES: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "
  */
 const UNSOUND = "\u0000unsound\u0000";
 
-/**
- * Sentinel word for an unquoted process substitution. It counts as unsound, but it sits
- * beside words that keep their usual reading (the `(` operator still follows it), so the shell-state
- * scan can drop it and read the same commands as before; a plain `UNSOUND` there would read as `eval`.
- */
-const SUBSTITUTION = "\u0000substitution\u0000";
-
 /** Whether the scanner marked any construct in `words` as one it could not resolve faithfully. */
 export function hasUnsoundWord(words: readonly string[]): boolean {
-	return words.includes(UNSOUND) || words.includes(SUBSTITUTION);
-}
-
-/** The words without their substitution marks, for a reader that splits commands at the `(` operator
- *  instead of treating a substitution as unsound. */
-export function withoutSubstitutionMarks(words: readonly string[]): string[] {
-	return words.filter((word) => word !== SUBSTITUTION);
+	return words.includes(UNSOUND);
 }
 
 /** Command operators: split words and end a command segment. */
@@ -55,7 +42,7 @@ function continuationLength(command: string, i: number): number {
 /**
  * Split a shell command into words at unquoted whitespace and operators, quoting removed
  * (`'a&b'` is one word `a&b`; `$(git …)` yields an operator `(` before the inner words).
- * Deliberately not a shell parser: no glob or brace-expansion modelling, and
+ * Deliberately not a shell parser: no glob, process-substitution or brace-expansion modelling, and
  * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
  * needed — unlike the danger regexes, it cannot backtrack).
  *
@@ -183,14 +170,6 @@ export function shellWords(command: string): string[] {
 				flush();
 				unsound(); // here-document: body not re-parsed
 				i += 2;
-				continue;
-			}
-			if (next === "(") {
-				// Process substitution: its output path becomes a word the scanner cannot see, so it is
-				// marked unsound, and the `(` still splits commands.
-				flush();
-				words.push(SUBSTITUTION);
-				i++;
 				continue;
 			}
 			// The `&` of `>&`/`<&` and the `|` of `>|` belong to the redirection, not a command operator.

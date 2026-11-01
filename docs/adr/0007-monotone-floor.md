@@ -97,7 +97,9 @@ subcommand; and a `#` inside `${…}` or `((…))`, which bash does not read as 
 (`: ${x:- #} ; git reset --hard`). The text filters a pipe may feed leave out `sort`, `uniq`, `less` and
 `more`, because each can write its input to a file. An unquoted command substitution is not marked unsound
 (`git push origin $(:) +main`), because marking every `$(` would turn common commands such as
-`cd $(git rev-parse --show-toplevel) && git checkout -b x && git add .` into floor denies with no override. A git
+`cd $(git rev-parse --show-toplevel) && git checkout -b x && git add .` into floor denies with no override. A process substitution is not marked unsound for the same reason
+(`git push origin <(:) +main` clears, while `diff <(git show HEAD:a) a && git checkout -b x && git add .` stays
+gray); a command run inside one is still read as its own command. A git
 alias defined through `--config-env alias.x=VAR` takes its body from the environment, and the word view reads the
 alias name as git's subcommand; only a `-c alias.…` value makes the subcommand unreadable. Each residual can
 only clear a floor deny to the classifier: a user allow never admits a command with an operator or an
