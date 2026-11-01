@@ -1782,8 +1782,12 @@ export function buildCases(fx: FixtureTree): Case[] {
 	// Unquoted expansions hide words from the word view, so a force push spelled with one keeps the
 	// floor deny; the controls show that the same constructs without a force push stay gray.
 	const expansionGaps: Array<[string, string, string | null, boolean?]> = [
-		["force push with an unquoted command substitution", "git " + "push origin $(:) +main", "git-push-force"],
 		["command substitution in double quotes without a force push", 'echo "$(date)"', null],
+		[
+			"a cd into a command substitution before git checkout and git add",
+			"cd $(git rev-parse --show-toplevel) && git " + "checkout -b x && git add .",
+			null,
+		],
 		["force push with a process substitution", "git " + "push origin <(:) +main", "git-push-force"],
 		["process substitutions without a force push", "diff <(ls a) <(ls b)", null],
 		["force push with a brace-expanded push word", "git " + "{push,} origin +main", "git-push-force"],
@@ -1822,6 +1826,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			input: { command: `echo '${forcePushText}' >&3` },
 			ref: "ADR-0007",
 			expected: { layer: "classifier", deliberate: "a descriptor redirection is read as harmless output" },
+		},
+		{
+			label: "a force push spelled with an unquoted command substitution reaches the classifier",
+			family: "residual",
+			tool: "bash",
+			input: { command: "git " + "push origin $(:) +main" },
+			ref: "ADR-0007",
+			expected: { layer: "classifier", deliberate: "marking every unquoted $( unsound would deny common commands" },
 		},
 		{
 			label: "a quoted force push passed to a planted ./echo reaches the classifier",

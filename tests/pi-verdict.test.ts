@@ -987,8 +987,13 @@ describe("unquoted expansions keep the force-push floor deny (ADR-0007)", () => 
 		expect(h.calls.length).toBe(1);
 	};
 
-	test("an unquoted command substitution in a force push denies", async () => {
-		await denyRule("git " + "push origin $(:) +main");
+	// Marking every unquoted `$(` unsound would deny common commands with no override, so this
+	// spelling is an accepted residual: it reaches the classifier, never an allow.
+	test("an unquoted command substitution in a force push reaches the classifier (accepted residual)", async () => {
+		await reachesClassifier("git " + "push origin $(:) +main");
+	});
+	test("a cd into a command substitution before git checkout and git add stays gray", async () => {
+		await reachesClassifier("cd $(git rev-parse --show-toplevel) && git " + "checkout -b x && git add .");
 	});
 	test("quoted and here-document command substitutions without a force push still reach the classifier", async () => {
 		await reachesClassifier('echo "$(date)"');

@@ -95,9 +95,11 @@ program that passes the basename check (`./echo`, `/x/grep`); an alias set in th
 (`shopt -s expand_aliases; alias echo=…`); `gh -b`/`-t` values, read as inert for every `gh`
 subcommand; and a `#` inside `${…}` or `((…))`, which bash does not read as a comment
 (`: ${x:- #} ; git reset --hard`). The text filters a pipe may feed leave out `sort`, `uniq`, `less` and
-`more`, because each can write its input to a file. Each residual can only clear a floor deny to the
-classifier: a user allow never admits a command with an operator or an expansion, so none becomes an
-allow.
+`more`, because each can write its input to a file. An unquoted command substitution is not marked unsound
+(`git push origin $(:) +main`), because marking every `$(` would turn common commands such as
+`cd $(git rev-parse --show-toplevel) && git checkout -b x && git add .` into floor denies with no override. Each
+residual can only clear a floor deny to the classifier: a user allow never admits a command with an operator or
+an expansion, so none becomes an allow.
 
 The word view does not join words and re-run the regex, because joining loses the quoting that tells an
 argument from a command. The shell lines of a Python `eval` cell skip the word view and are graded on

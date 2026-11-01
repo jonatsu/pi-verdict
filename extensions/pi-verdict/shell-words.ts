@@ -19,7 +19,7 @@ const SHELL_NAMES: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "
 const UNSOUND = "\u0000unsound\u0000";
 
 /**
- * Sentinel word for an unquoted command or process substitution. It counts as unsound, but it sits
+ * Sentinel word for an unquoted process substitution. It counts as unsound, but it sits
  * beside words that keep their usual reading (the `(` operator still follows it), so the shell-state
  * scan can drop it and read the same commands as before; a plain `UNSOUND` there would read as `eval`.
  */
@@ -54,8 +54,7 @@ function continuationLength(command: string, i: number): number {
 
 /**
  * Split a shell command into words at unquoted whitespace and operators, quoting removed
- * (`'a&b'` is one word `a&b`; `$(git …)` yields a substitution mark and an operator `(` before the
- * inner words).
+ * (`'a&b'` is one word `a&b`; `$(git …)` yields an operator `(` before the inner words).
  * Deliberately not a shell parser: no glob or brace-expansion modelling, and
  * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
  * needed — unlike the danger regexes, it cannot backtrack).
@@ -188,7 +187,7 @@ export function shellWords(command: string): string[] {
 			}
 			if (next === "(") {
 				// Process substitution: its output path becomes a word the scanner cannot see, so it is
-				// marked like a command substitution, and the `(` still splits commands.
+				// marked unsound, and the `(` still splits commands.
 				flush();
 				words.push(SUBSTITUTION);
 				i++;
@@ -201,16 +200,6 @@ export function shellWords(command: string): string[] {
 		}
 		if (ch === "&" && command[i + 1] === ">") {
 			redirection(command[i + 2] === ">" ? 3 : 2, false); // `&>`/`&>>`: stdout and stderr, not a background `&`
-			continue;
-		}
-		if (ch === "$" && command[i + 1] === "(") {
-			// The `$` stays in its word and the `(` stays an operator, so segments read as before; the mark
-			// keeps the floor's deny, since the substitution's output becomes words the scanner cannot see.
-			cur += ch;
-			inWord = true;
-			flush();
-			words.push(SUBSTITUTION);
-			i++;
 			continue;
 		}
 		if (ch === " " || ch === "\t" || ch === "\r") {
