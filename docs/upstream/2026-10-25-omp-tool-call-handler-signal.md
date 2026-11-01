@@ -1,6 +1,6 @@
 # Draft: omp `tool_call` handlers need the handler signal
 
-Status: draft, not posted. Re-checked against omp v18.13.0 on 2026-11-02: unchanged, the issue still open with no maintainer reply. Target: a comment on [can1357/oh-my-pi#15365](https://github.com/can1357/oh-my-pi/issues/15365)
+Status: posted on 2026-11-02 as https://github.com/can1357/oh-my-pi/issues/15365#issuecomment-6565343841, after a re-check against omp v18.13.0. Target: a comment on [can1357/oh-my-pi#15365](https://github.com/can1357/oh-my-pi/issues/15365)
 ("Expose invocation-scoped context purpose and cancellation to extensions", open). Read against omp v18.12.6 and
 upstream `main` at `0b5c27ab24` (2026-10-22); the cited code is the same in both.
 
