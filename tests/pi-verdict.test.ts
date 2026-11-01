@@ -8587,6 +8587,16 @@ describe("host path spelling (ADR-0009)", () => {
 		expect(hostPathForms("a.png:1-5?q=x", { ...ask, peelSelector: true })).toContain("a.png");
 	});
 
+	test("hostPathForms grades an SQLite selector as the database the host opens", () => {
+		const ask = { peelImageQuestion: true };
+		expect(hostPathForms("vault.db?limit=5", ask)).toContain("vault.db");
+		expect(hostPathForms("vault.sqlite3?where=id%3D1", ask)).toContain("vault.sqlite3");
+		expect(hostPathForms("data.db/b.db?limit=5", ask)).toContain("data.db/b.db");
+		expect(hostPathForms("notes.md?limit=5", ask)).toEqual(["notes.md?limit=5"]);
+		expect(hostPathForms("https://h/a.db?limit=5", ask)).toEqual(["https://h/a.db?limit=5"]);
+		expect(hostPathForms("vault.db?limit=5")).toEqual(["vault.db?limit=5"]);
+	});
+
 	test("a read path with an image question is graded as the file the host opens", async () => {
 		const h = session({});
 		for (const p of ["~/.netrc?q=x", ".env?q=x", "key.pem?q=x", ".env:raw?q=x"]) {

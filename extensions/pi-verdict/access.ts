@@ -209,7 +209,8 @@ interface HostPathFormOptions {
 	peelSelector?: boolean;
 	/** Also grade each part of a `;`, `,` or whitespace separated list. */
 	splitList?: boolean;
-	/** Also grade the path with a `?q=` or `?query=` selector removed. */
+	/** Also grade the path with a `?q=` or `?query=` selector removed, and an SQLite database path without
+	 *  its table or query selector. */
 	peelImageQuestion?: boolean;
 	/** Also grade the path with shell escapes (`\ `, `\(`) removed. */
 	unescapeShell?: boolean;
@@ -226,7 +227,8 @@ export function hostPathForms(target: string, how: HostPathFormOptions = {}): st
 	const forms = new Set<string>();
 	for (const entry of entries) {
 		const asked = how.peelImageQuestion ? peelImageQuestion(entry) : null;
-		for (const variant of asked === null ? [entry] : [entry, asked]) {
+		const databases = how.peelImageQuestion ? sqliteDatabasePaths(entry) : [];
+		for (const variant of [entry, ...(asked === null ? [] : [asked]), ...databases]) {
 			forms.add(variant);
 			forms.add(expandHostPath(variant));
 			if (!how.peelSelector) continue;
@@ -275,6 +277,17 @@ function peelImageQuestion(target: string, jsonOnlyQuery = false): string | null
 	const file = target.slice(0, queryIndex);
 	const filter = params.get("query") && (!jsonOnlyQuery || /\.(?:jsonl?|ndjson)$/i.test(file));
 	return params.get("q") || filter ? file : null;
+}
+
+/** A database file name followed by the table or query selector of omp's SQLite reader. */
+const SQLITE_SELECTOR = /\.(?:sqlite3?|db3?)(?=[:?])/gi;
+
+/** The database files a path may open through omp's SQLite reader: `vault.db:users` and `vault.db?limit=5`
+ *  both read `vault.db`. The host tries every database name in the path, so each one counts; mirrors omp's
+ *  `parseSqlitePathCandidates` (18.13.0). URLs keep their query. */
+function sqliteDatabasePaths(target: string): string[] {
+	if (target.includes("://")) return [];
+	return [...target.matchAll(SQLITE_SELECTOR)].map((match) => target.slice(0, match.index + match[0].length));
 }
 
 /** A text the host opens as a filesystem path that is relative to the project. */

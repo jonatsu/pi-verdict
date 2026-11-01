@@ -360,8 +360,6 @@ target, `glob` included.
 writes; these are left alone on purpose.
 - The Win32 forward-slash extended-length prefixes (`//?/C:/x`) are not stripped, because an agent does
   not produce them.
-- A sqlite query string (`~/vault.db?limit=5`) is not peeled, so it can miss a `denyPaths` entry for the
-  database file.
 - A literal file named like `x.png?q=a` is graded as `x.png` as well, which can ask or deny where the
   host would have read the literal name.
 - A deliberately obfuscated spelling is left to the classifier and to the future OS-level sandboxing
@@ -424,3 +422,11 @@ changed:
 - *Accepted residual.* The device allow relies on omp wrapping every tool in its canonical tool map; a host
   that dispatched an unwrapped tool would run it with only the outer `write` adjudicated. The research
   record names the host lines to re-check on each upgrade.
+
+## Amendment (2026-11-02): SQLite selectors
+
+- omp's `read` opens an SQLite file through a selector, `vault.db:users` for a table and `vault.db?limit=5`
+  (`?where=`, `?q=SELECT …`) for a query, and its tool prompt teaches both spellings. `hostPathForms` now also
+  grades every database name in the target that a `:` or `?` follows, as omp's `parseSqlitePathCandidates`
+  (18.13.0) tries them, so a selector on a protected database asks like the plain name. A URL keeps its query.
+  This closes the query-string residual of the host path spelling amendment.

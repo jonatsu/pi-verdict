@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A force push whose `push` word the shell expands (`git {push,} origin +main`, `git push$NOPE origin +main`) reached the classifier, because after a git word it cannot read the `git-push-force` word view kept the deny only for a later word that is exactly `push`; it is now a floor deny: any later word containing `push` keeps it, as the other git floor rules already did, and a readable subcommand such as `git push-helper` stays gray ([ADR-0007](docs/adr/0007-monotone-floor.md)).
 - A force push through a git alias defined on the command line (`git -c alias.x=push x origin +main`) reached the classifier, because `gitSubcommandIndex` read the alias name `x` as git's subcommand; a `-c alias.…` value now makes the subcommand unreadable, so the `alias.x=push` word keeps the floor deny (`git-push-force`), while another `-c` value such as `git -c user.name=x commit` reads as before ([ADR-0007](docs/adr/0007-monotone-floor.md)).
+- A `read` of a protected SQLite database through a query selector (`vault.db?limit=5`, `?where=`, `?q=SELECT …`) could miss a `denyPaths` entry for the database file and reach a rule allow, because the selector stayed part of the graded name; `hostPathForms` now also grades every database name before a `:` or `?` selector, as omp's SQLite reader opens it (18.13.0), so the call asks like the plain name; a `:table` selector already asked, and a URL keeps its query ([ADR-0009](docs/adr/0009-tool-access-adapter.md)).
 
 ## [0.24.0] - 2026-11-02
 
