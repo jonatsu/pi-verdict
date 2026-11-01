@@ -1,6 +1,6 @@
 # Draft: omp `tool_call` handlers need the handler signal
 
-Status: draft, not posted. Target: a comment on [can1357/oh-my-pi#15365](https://github.com/can1357/oh-my-pi/issues/15365)
+Status: draft, not posted. Re-checked against omp v18.13.0 on 2026-11-02: unchanged, the issue still open with no maintainer reply. Target: a comment on [can1357/oh-my-pi#15365](https://github.com/can1357/oh-my-pi/issues/15365)
 ("Expose invocation-scoped context purpose and cancellation to extensions", open). Read against omp v18.12.6 and
 upstream `main` at `0b5c27ab24` (2026-10-22); the cited code is the same in both.
 
@@ -22,9 +22,9 @@ Evidence for the case: `research/2026-10-24-subagent-ask-timeout.md` (live repro
 > decision, its `tool_call` handler opens the dialog on the root session's UI, because the subagent's own `ctx.ui` has
 > no UI (`hasUI` is false). `emitToolCall` bounds the handler with `extensionHandlers.toolCallTimeoutMs` (default
 > 30 s), and `createHandlerUIContext` pauses that budget only for dialogs opened through the handler's own `ctx.ui`
-> (`runner.ts:195-262`). So 30 s after the ask, the runner blocks the call with `Extension <path> timed out after
+> (`runner.ts:195-262` in v18.13.0). So 30 s after the ask, the runner blocks the call with `Extension <path> timed out after
 > 30000ms`, and `handlerSignal` aborts. The dialog on the root UI cannot see that signal, because `createHandlerContext`
-> (`runner.ts:274-286`) threads it only into `ctx.ui`. The dialog stays open, and the user answers a call that is
+> (`runner.ts:275-286`) threads it only into `ctx.ui`. The dialog stays open, and the user answers a call that is
 > already blocked. Retries by the subagent stack more such dialogs behind it.
 >
 > pi's `ExtensionContext` already has `signal: AbortSignal | undefined`, and pi-verdict passes `ctx.signal` to the
