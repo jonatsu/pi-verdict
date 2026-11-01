@@ -6,7 +6,7 @@ the end of the record, or as a new record that supersedes the old one. Read the 
 because they correct passages above them.
 
 Name a new record `NNNN-title.md` with the next unused number, and give it a header block with `status:` and
-`date:`. The status is `accepted` or `superseded by ADR-NNNN`. A date is the day the record was written.
+`date:`. The status is `proposed` (written, under review, no code yet), `accepted` or `superseded by ADR-NNNN`. A date is the day the record was written.
 
 ## Index
 
@@ -25,3 +25,4 @@ The status column repeats each record's own status and adds what its amendments 
 | [0009](0009-tool-access-adapter.md) | The tool-access adapter: one model of what a tool call reads and writes | Accepted; amended 2026-10-05 (`eval` grading, session-start coverage report) and 2026-10-06 (glob targets, host path spellings) | 2026-10-05 |
 | [0010](0010-policy-degraded.md) | `policyDegraded`: configuration errors change the fail direction | Accepted; the list of degrading triggers was extended on 2026-10-06 (type-invalid `deny` and `denyPaths`) | 2026-10-05 |
 | [0011](0011-code-loading-ask.md) | Code-loading ask: writes where the host loads code ask the user | Accepted | 2026-10-24 |
+| [0012](0012-shared-shell-reading.md) | One shared reading of each shell command, with word provenance, read once per call | Proposed; under architecture review, no code yet | 2026-11-02 |
