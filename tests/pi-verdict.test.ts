@@ -1009,6 +1009,12 @@ describe("unquoted expansions keep the force-push floor deny (ADR-0007)", () => 
 		await reachesClassifier("git push-helper origin +main");
 		await reachesClassifier("git pushd origin +main");
 	});
+	test("a force push through a git alias set with -c denies", async () => {
+		await denyRule("git -c alias.x=" + "push x origin +main");
+	});
+	test("a -c value that is not an alias still reaches the classifier", async () => {
+		await reachesClassifier("git -c user.name=x commit -m 'push +1'");
+	});
 	test("an assignment from a command substitution does not void a later allow", async () => {
 		const h = session({ allow: ["^git status$"] });
 		h.branch.push({

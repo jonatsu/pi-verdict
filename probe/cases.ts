@@ -1789,6 +1789,8 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["force push with a brace-expanded push word", "git " + "{push,} origin +main", "git-push-force"],
 		["force push with a variable appended to the push word", "git " + "push$NOPE origin +main", "git-push-force"],
 		["a git subcommand that only starts with push", "git push-helper origin +main", null],
+		["force push through a git alias set with -c", "git -c alias.x=" + "push x origin +main", "git-push-force"],
+		["a -c value that is not an alias", "git -c user.name=x commit -m 'push +1'", null],
 		["commit message from a here-document substitution", "git commit -m \"$(cat <<'EOF'\nfix: tidy\nEOF\n)\"", null],
 	];
 	for (const [label, command, ruleId, isOpen] of [...bashDanger, ...wordView, ...expansionGaps]) {
