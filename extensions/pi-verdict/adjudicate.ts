@@ -18,7 +18,6 @@ import type { ModelChoice, PipelineHost } from "./model-call.ts";
 import { HOST_REDACTION_PLATFORM, type RedactorFn, redactedOr, redactorFor } from "./redaction.ts";
 import { classifyByRules } from "./rules.ts";
 import type { RuleResult } from "./shell.ts";
-import { lazyShellState } from "./shell-state.ts";
 import type { SessionState } from "./state.ts";
 
 // ============================================================================
@@ -497,6 +496,9 @@ async function adjudicateGrayZone(
 /** Returns the verdict for one tool call: the rule layer's, else the gray-zone classifier's. Fails closed:
  *  a missing or failing model denies, and an ask with no UI becomes a deny marked `degraded`. */
 export async function adjudicate(state: SessionState, call: ToolCall, env: AdjudicateEnv): Promise<Verdict> {
+	// Recorded before the first await, so sibling calls of one assistant message, which reach the gate
+	// before the host appends any of them to the session, see each other.
+	const shellState = state.shellStates.observe(env.host, call.input);
 	// The call-level check is strict (path-word boundaries): a match there is a hard ask, unlike
 	// the wide transcript redactor below, where over-redaction is harmless.
 	const denyPathBases = state.anchoredDenyPathBases(env.cwd);
@@ -513,7 +515,7 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		policyDegraded: state.policyDegraded,
 		namesProtectedPath: redactorFor(commandCwd, denyPathBases, HOST_REDACTION_PLATFORM, true),
 		host: env.hostKind,
-		shellState: lazyShellState(env.host, call.input),
+		shellState,
 	});
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	// The action under review is never elided: the rule layer already asked about an over-cap action.

@@ -5,6 +5,7 @@ import { type LoadedRules, loadUserRules, type UserRules } from "./config.ts";
 import { anchorDenyPaths } from "./deny-paths.ts";
 import { type RedactorFn, redactorFor } from "./redaction.ts";
 import { buildProtectedSet, type ProtectedSet } from "./self-protection.ts";
+import { ShellStateLedger } from "./shell-state.ts";
 
 // ============================================================================
 // Confidence cascade statistics (#63, #67): kept in memory for the session only
@@ -83,6 +84,8 @@ export class SessionState {
 	hostBudgetWarned = false;
 	/** Keys of the warnings shown this session, so a warning a call would repeat shows once per session. */
 	private readonly warned = new Set<string>();
+	/** What the commands run in each session's persistent shell void among the user allows (ADR-0008). */
+	readonly shellStates = new ShellStateLedger();
 
 	/** Anchors self-protection and the audit log to `agentDir`, and loads the user rules, so a state used before
 	 *  `session_start` already gates. A config that fails to load gives empty rules with the floor on and sets
@@ -119,6 +122,7 @@ export class SessionState {
 		this.counts = { ...NO_VERDICTS };
 		this.hostBudgetWarned = false;
 		this.warned.clear();
+		this.shellStates.clear();
 		return report;
 	}
 

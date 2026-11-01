@@ -1,10 +1,13 @@
+import { BASH_MAX_MATCH_LEN } from "./shell.ts";
+import { gitSubcommandIndex, hasUnsoundWord, isShellOperator, shellWords, wordBasename } from "./shell-words.ts";
+
 // ============================================================================
 // Session shell state: which user allows an earlier command may have voided (ADR-0008)
 //
 // omp runs every bash call of an agent session in one persistent shell, so a variable, function or alias
 // one call sets changes what a later call runs: `export GIT_EXTERNAL_DIFF=…` turns an allowed `git diff`
 // into a program run, and `PATH` or a function can redirect any command. The rule layer cannot see that
-// shell, so it scans the commands of the session branch for the constructs that do this.
+// shell, so it records, per session, which of the constructs below each command may have run.
 // ============================================================================
 
 /** What a construct makes the rule layer unable to vouch for. */
@@ -16,60 +19,227 @@ type Voids =
 	/** The named commands, matched by the basename of any word, so `env git diff` counts. */
 	| { readonly kind: "commands"; readonly names: readonly string[] };
 
-/** Where a word sits in command position: the start of a line, after an operator or a keyword that takes
- *  a command, or after a prefix builtin that runs one. */
-const COMMAND_POSITION = String.raw`(?:^|[;&|(){}\n\x60!]|\b(?:then|do|else|elif|if|while|until|time|exec|command|builtin)\s)\s*`;
-/** The end of a builtin's name: whitespace, an operator or the end of the text. */
-const WORD_END = String.raw`(?=[\s;&|)]|$)`;
-
-/** Returns a regex for the ways a shell command may assign a variable whose name matches `name` (a regex
- *  source): `X=` and `X+=`, the `${X:=…}` and `${X=…}` default expansions, a builtin that declares, reads
- *  into or unsets a name on its line, a `for X` loop and `printf -v X`. Not a read such as `$X=`. */
-function assigns(name: string): RegExp {
-	const n = `(?:${name})`;
-	return new RegExp(
-		[
-			String.raw`(?<![\w$])${n}\s*\+?=`,
-			String.raw`\$\{${n}:?=`,
-			String.raw`\b(?:export|declare|typeset|readonly|local|read|mapfile|readarray|unset)\b[^\n;&|]*(?<![\w\${])${n}\b`,
-			String.raw`\bfor\s+${n}\b`,
-			String.raw`-v\s*${n}\b`,
-		].join("|"),
-	);
-}
-
-/** Returns a regex for a builtin in command position, so a pattern in a quoted search string does not count. */
-function builtin(source: string): RegExp {
-	return new RegExp(COMMAND_POSITION + source);
-}
-
 const EVERY_ALLOW: readonly Voids[] = [{ kind: "every-allow" }];
-const commands = (...names: string[]): readonly Voids[] => [{ kind: "commands", names }];
+const HOME_OPERANDS: Voids = { kind: "home-operands" };
+const commands = (...names: string[]): Voids => ({ kind: "commands", names });
+
+/** A construct a command may run, what it voids, and the substrings that stand for it when the command
+ *  cannot be read word by word. */
+type Row =
+	/** Setting one of these variables, or one starting with `prefix`. */
+	| { readonly kind: "variable"; readonly names: readonly string[]; readonly prefix?: string; readonly voids: readonly Voids[] }
+	/** Running one of these commands, when `applies` (if any) holds for its arguments. */
+	| {
+			readonly kind: "command";
+			readonly names: readonly string[];
+			readonly applies?: (args: readonly string[]) => boolean;
+			readonly voids: readonly Voids[];
+			readonly fallback: readonly string[];
+	  }
+	/** Defining a shell function, which shadows any command of its name. */
+	| { readonly kind: "function"; readonly voids: readonly Voids[]; readonly fallback: readonly string[] };
 
 /**
- * Each construct a command may run and what it voids. The scan is textual and over-matches on purpose: a
- * false match costs one classifier call per later allowed command. `CDPATH` voids nothing, since every
- * operand the gate grades is resolved from the call's own cwd.
+ * Each construct and what it voids. The table over-matches on purpose: a false match sends later allowed
+ * commands of the session to the classifier, one model call each. `CDPATH` voids nothing, since every
+ * operand the gate grades resolves from the call's own cwd.
  */
-const SHELL_STATE_ROWS: readonly { readonly construct: RegExp; readonly voids: readonly Voids[] }[] = [
-	{ construct: assigns("PATH|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|BASH_ENV|ENV"), voids: EVERY_ALLOW },
-	// A function definition, `name() {` or `function name`, which shadows any command of that name.
-	{ construct: /[\w.:@+-]+\s*\(\s*\)\s*(?:[{(]|\[\[|\b(?:if|for|while|until|case|select)\b)/, voids: EVERY_ALLOW },
-	{ construct: builtin(String.raw`function\s+[^\s(){};&|]+`), voids: EVERY_ALLOW },
-	{ construct: builtin(`(?:alias|enable|source|\\.|eval|trap)${WORD_END}`), voids: EVERY_ALLOW },
-	{ construct: builtin(String.raw`hash\s[^\n;&|]*-[a-z]*p`), voids: EVERY_ALLOW },
-	{ construct: builtin(String.raw`shopt\s[^\n;&|]*\bexpand_aliases\b`), voids: EVERY_ALLOW },
-	{ construct: assigns("HOME"), voids: [{ kind: "home-operands" }, ...commands("git")] },
-	{ construct: assigns("IFS"), voids: [{ kind: "home-operands" }] },
+const ROWS: readonly Row[] = [
+	{
+		kind: "variable",
+		names: ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "BASH_ENV", "ENV", "PS4", "PROMPT_COMMAND"],
+		voids: EVERY_ALLOW,
+	},
+	{ kind: "variable", names: ["HOME"], voids: [HOME_OPERANDS, commands("git")] },
+	{ kind: "variable", names: ["IFS"], voids: [HOME_OPERANDS] },
 	// A moved global gitconfig can set `core.fsmonitor`; `GIT_*` covers `GIT_EXTERNAL_DIFF`, `GIT_DIR` and the rest.
-	{ construct: assigns(String.raw`XDG_CONFIG_HOME|GIT_\w*`), voids: commands("git") },
-	{ construct: assigns("RIPGREP_CONFIG_PATH"), voids: commands("rg") },
-	{ construct: assigns("TAR_OPTIONS"), voids: commands("tar", "gtar", "bsdtar") },
-	{ construct: assigns("ZIPOPT|ZIP"), voids: commands("zip") },
-	{ construct: assigns("RSYNC_RSH"), voids: commands("rsync") },
-	{ construct: assigns("LESSOPEN|LESSCLOSE"), voids: commands("less") },
-	{ construct: assigns("GREP_OPTIONS"), voids: commands("grep", "egrep", "fgrep", "rgrep") },
+	{ kind: "variable", names: ["XDG_CONFIG_HOME"], prefix: "GIT_", voids: [commands("git")] },
+	{ kind: "variable", names: ["RIPGREP_CONFIG_PATH"], voids: [commands("rg")] },
+	{ kind: "variable", names: ["TAR_OPTIONS"], voids: [commands("tar", "gtar", "bsdtar")] },
+	{ kind: "variable", names: ["ZIPOPT", "ZIP"], voids: [commands("zip")] },
+	{ kind: "variable", names: ["RSYNC_RSH"], voids: [commands("rsync")] },
+	{ kind: "variable", names: ["LESSOPEN", "LESSCLOSE"], voids: [commands("less")] },
+	{ kind: "variable", names: ["GREP_OPTIONS"], voids: [commands("grep", "egrep", "fgrep", "rgrep")] },
+	{
+		kind: "command",
+		names: ["alias", "enable", "source", ".", "eval", "trap", "function"],
+		voids: EVERY_ALLOW,
+		fallback: ["alias", "enable", "source", "eval", "trap", "function"],
+	},
+	{ kind: "command", names: ["hash"], applies: (args) => args.some((w) => /^-[A-Za-z]*p/.test(w)), voids: EVERY_ALLOW, fallback: ["hash"] },
+	{ kind: "command", names: ["shopt"], applies: (args) => args.includes("expand_aliases"), voids: EVERY_ALLOW, fallback: ["shopt"] },
+	// A repository config can set `core.fsmonitor`, `core.pager`, `diff.external` or a hooks path.
+	{ kind: "command", names: ["git"], applies: gitConfigWrites, voids: [commands("git")], fallback: ["config"] },
+	{ kind: "function", voids: EVERY_ALLOW, fallback: ["()"] },
 ];
+
+/** The `git config` forms that only read. */
+const GIT_CONFIG_READS: ReadonlySet<string> = new Set([
+	"--get",
+	"--get-all",
+	"--get-regexp",
+	"--list",
+	"-l",
+	"--show-origin",
+	"--show-scope",
+]);
+
+/** True when git's arguments run `git config` in a form that may write. Fails closed: when git's global
+ *  options cannot be read, any later `config` word counts. */
+function gitConfigWrites(args: readonly string[]): boolean {
+	const sub = gitSubcommandIndex(args, -1);
+	if (sub === undefined) return args.some((w) => w.toLowerCase() === "config");
+	if (sub === -1 || args[sub].toLowerCase() !== "config") return false;
+	const rest = args.slice(sub + 1);
+	return !(rest[0] === "get" || rest[0] === "list" || rest.some((w) => GIT_CONFIG_READS.has(w)));
+}
+
+/** Words that may precede the command word of a simple command without being it. */
+const PREFIX_WORDS: ReadonlySet<string> = new Set(["{", "}", "!", "if", "then", "elif", "else", "do", "while", "until", "time"]);
+/** Commands that run the next word as the command (`env` and `nice` also take options first). */
+const WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "exec", "env", "nice"]);
+/** Builtins that declare, read into or unset the variables named in their arguments. */
+const DECLARING: ReadonlySet<string> = new Set([
+	"export",
+	"declare",
+	"typeset",
+	"readonly",
+	"local",
+	"read",
+	"mapfile",
+	"readarray",
+	"unset",
+]);
+/** Matches an assignment word, capturing the variable name. */
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
+/** Matches a declared name, bare or assigned, capturing it. */
+const DECLARED = /^([A-Za-z_][A-Za-z0-9_]*)(?:\+?=|$)/;
+/** Matches the `${X:=…}` and `${X=…}` default expansions, which assign when `X` is unset. */
+const DEFAULTED = /\$\{([A-Za-z_][A-Za-z0-9_]*):?=/g;
+
+/** The rows a command fired: `persistent` changes the session's shell, `current` this call alone as well. */
+interface Fired {
+	persistent: number;
+	current: number;
+}
+
+/** Returns the bit of the variable row that names `name`, or 0. */
+function variableBit(name: string): number {
+	for (let i = 0; i < ROWS.length; i++) {
+		const row = ROWS[i];
+		if (row.kind === "variable" && (row.names.includes(name) || (row.prefix !== undefined && name.startsWith(row.prefix)))) return 1 << i;
+	}
+	return 0;
+}
+
+/** Returns the bits of the command rows that a command word and its arguments fire. */
+function commandBits(word: string, args: readonly string[]): number {
+	let bits = 0;
+	for (let i = 0; i < ROWS.length; i++) {
+		const row = ROWS[i];
+		if (row.kind !== "command") continue;
+		const name = row.names.includes(word) ? word : wordBasename(word);
+		if (row.names.includes(name) && (row.applies === undefined || row.applies(args))) bits |= 1 << i;
+	}
+	return bits;
+}
+
+const FUNCTION_BIT = 1 << ROWS.findIndex((row) => row.kind === "function");
+
+/** Records the rows one simple command fires. A leading assignment persists only when no command word
+ *  follows it; with one, it changes that command alone. */
+function scanSimpleCommand(seg: readonly string[], fired: Fired): void {
+	let at = 0;
+	let prefixBits = 0;
+	for (; at < seg.length; at++) {
+		const word = seg[at];
+		const assigned = ASSIGNMENT.exec(word);
+		if (assigned) prefixBits |= variableBit(assigned[1]);
+		else if (!PREFIX_WORDS.has(word)) break;
+	}
+	// A wrapper's options and assignments belong to it, so the wrapped command word follows them.
+	while (at < seg.length && WRAPPERS.has(wordBasename(seg[at]))) {
+		at++;
+		for (; at < seg.length && (seg[at].startsWith("-") || ASSIGNMENT.test(seg[at])); at++) {
+			const assigned = ASSIGNMENT.exec(seg[at]);
+			if (assigned) prefixBits |= variableBit(assigned[1]);
+		}
+	}
+	if (at >= seg.length) {
+		fired.persistent |= prefixBits;
+		return;
+	}
+	fired.current |= prefixBits;
+	const word = seg[at];
+	const args = seg.slice(at + 1);
+	if (word.endsWith("()")) fired.persistent |= FUNCTION_BIT;
+	// The tokenizer puts its unsound mark in place of an `eval` it will not re-read.
+	fired.persistent |= commandBits(hasUnsoundWord([word]) ? "eval" : word, args);
+	fired.persistent |= declaredBits(word, args);
+}
+
+/** Returns the bits of the variables a declaring builtin, `for` or `printf -v` names in its arguments. */
+function declaredBits(word: string, args: readonly string[]): number {
+	let names: readonly string[] = [];
+	if (DECLARING.has(word)) names = args.filter((a) => !a.startsWith("-"));
+	else if (word === "for") names = args.slice(0, 1);
+	else if (word === "printf") {
+		const v = args.findIndex((a) => a.startsWith("-v"));
+		if (v !== -1) names = [args[v] === "-v" ? (args[v + 1] ?? "") : args[v].slice(2)];
+	}
+	let bits = 0;
+	for (const name of names) {
+		const declared = DECLARED.exec(name);
+		if (declared) bits |= variableBit(declared[1]);
+	}
+	return bits;
+}
+
+/** Returns the rows that one command text fires, read word by word. */
+function scanWords(words: readonly string[]): Fired {
+	const fired: Fired = { persistent: 0, current: 0 };
+	let start = 0;
+	for (let i = 0; i <= words.length; i++) {
+		const word = words[i];
+		if (word !== undefined && !isShellOperator(word)) {
+			if (word.includes("${")) for (const m of word.matchAll(DEFAULTED)) fired.persistent |= variableBit(m[1]);
+			continue;
+		}
+		// `name ( )`: the tokenizer reads both parentheses as operators.
+		if (word === "(" && i - start === 1 && words[i + 1] === ")" && !words[start].endsWith("$")) fired.persistent |= FUNCTION_BIT;
+		scanSimpleCommand(words.slice(start, i), fired);
+		start = i + 1;
+	}
+	fired.current |= fired.persistent;
+	return fired;
+}
+
+/** Returns the rows whose names occur anywhere in a text; over-matches, never backtracks. */
+function scanSubstrings(text: string): number {
+	let bits = 0;
+	ROWS.forEach((row, i) => {
+		const watched = row.kind === "variable" ? [...row.names, ...(row.prefix === undefined ? [] : [row.prefix])] : row.fallback;
+		if (watched.some((s) => text.includes(s))) bits |= 1 << i;
+	});
+	return bits;
+}
+
+/** Returns the rows a command fires. A command over `BASH_MAX_MATCH_LEN`, or one the tokenizer stopped
+ *  reading early (`$'…'`, an unterminated quote), takes the substring scan, which over-matches. */
+function scan(command: string): Fired {
+	if (command.length > BASH_MAX_MATCH_LEN) {
+		const bits = scanSubstrings(command);
+		return { persistent: bits, current: bits };
+	}
+	const words = shellWords(command);
+	const fired = scanWords(words);
+	if (words.length > 0 && hasUnsoundWord(words.slice(-1))) {
+		const bits = scanSubstrings(command);
+		fired.persistent |= bits;
+		fired.current |= bits;
+	}
+	return fired;
+}
 
 /** What the session's shell state voids for the user allows of this call. */
 export interface ShellState {
@@ -81,16 +251,16 @@ export interface ShellState {
 	readonly commands: ReadonlySet<string>;
 }
 
-/** The state that voids every allow, for a branch the gate cannot read. */
+/** The state that voids every allow, for a session the gate cannot read. */
 const FAIL_CLOSED: ShellState = { everyAllow: true, homeOperands: true, commands: new Set() };
 
-/** Returns what the constructs in a command text void. */
-export function shellStateOf(text: string): ShellState {
+/** Returns what a set of fired rows voids. */
+function stateOf(bits: number): ShellState {
 	let everyAllow = false;
 	let homeOperands = false;
 	const voided = new Set<string>();
-	for (const row of SHELL_STATE_ROWS) {
-		if (!row.construct.test(text)) continue;
+	ROWS.forEach((row, i) => {
+		if ((bits & (1 << i)) === 0) return;
 		for (const v of row.voids) {
 			switch (v.kind) {
 				case "every-allow":
@@ -108,41 +278,96 @@ export function shellStateOf(text: string): ShellState {
 				}
 			}
 		}
-	}
+	});
 	return { everyAllow, homeOperands, commands: voided };
 }
 
-/** The part of the host session the scan reads: the branch of past entries. */
-export interface BranchSource {
-	getBranch(): readonly unknown[];
+/** Returns what one command, run on its own, voids for its own user allows. */
+export function shellStateOf(command: string): ShellState {
+	return stateOf(scan(command).current);
 }
 
-/** Returns a reader for `RuleContext.shellState` that scans this call's command and the session branch on
- *  its first call only, so a call no user allow matches never reads the branch. */
-export function lazyShellState(host: BranchSource, input: Readonly<Record<string, unknown>>): () => ShellState {
-	let state: ShellState | undefined;
-	return () => {
-		state ??= sessionShellState(host, input);
-		return state;
-	};
+/** The part of the host session the record reads: its id and its past entries. */
+export interface SessionSource {
+	getSessionId(): string;
+	getBranch(): readonly unknown[];
+	/** Every entry of the session, off-branch ones included; pi and omp both provide it. */
+	getEntries?(): readonly unknown[];
+}
+
+/** One session's record: the rows its commands fired, and whether the past entries were read in. */
+interface SessionRecord {
+	bits: number;
+	seeded: boolean;
 }
 
 /**
- * Returns what this call's command and the command of every earlier tool call on the session branch void.
- * Fails closed: a branch the host cannot hand over voids every allow.
+ * The shell state of each session one gate instance serves, kept as the rows its commands fired. The
+ * record only grows: a rewind or a move in the session tree hides an entry, not what it did to the shell.
  */
-function sessionShellState(host: BranchSource, input: Readonly<Record<string, unknown>>): ShellState {
-	let branch: readonly unknown[];
-	try {
-		if (typeof host.getBranch !== "function") return FAIL_CLOSED;
-		branch = host.getBranch();
-	} catch {
-		return FAIL_CLOSED;
+export class ShellStateLedger {
+	private readonly sessions = new Map<string, SessionRecord>();
+
+	clear(): void {
+		this.sessions.clear();
 	}
-	const texts = branch.flatMap(toolCallCommands);
-	if (typeof input.command === "string") texts.push(input.command);
-	// Joined by newlines, which every row reads as a command boundary, so each row tests the text once.
-	return shellStateOf(texts.join("\n"));
+
+	/**
+	 * Records a tool call's command in its session's record, and returns what that call's user allows
+	 * must leave out: the record plus what an assignment prefix changes for this command alone. Call it
+	 * for every tool call, before its verdict and whatever the verdict. The first call of a session reads
+	 * the session's past entries in once. Fails closed: while neither `getEntries` nor `getBranch` can
+	 * be read, every allow is voided.
+	 */
+	observe(host: SessionSource, input: Readonly<Record<string, unknown>>): ShellState {
+		const record = this.recordFor(host);
+		const fired = typeof input.command === "string" ? scan(input.command) : { persistent: 0, current: 0 };
+		record.bits |= fired.persistent;
+		if (!record.seeded) {
+			const seed = seedBits(host);
+			if (seed === null) return FAIL_CLOSED;
+			record.bits |= seed;
+			record.seeded = true;
+		}
+		return stateOf(record.bits | fired.current);
+	}
+
+	private recordFor(host: SessionSource): SessionRecord {
+		const key = sessionKey(host);
+		let record = this.sessions.get(key);
+		if (record === undefined) {
+			record = { bits: 0, seeded: false };
+			this.sessions.set(key, record);
+		}
+		return record;
+	}
+}
+
+/** Returns the host's session id, or one shared key when the host cannot name it. */
+function sessionKey(host: SessionSource): string {
+	try {
+		return typeof host.getSessionId === "function" ? String(host.getSessionId()) : "";
+	} catch {
+		return "";
+	}
+}
+
+/** Returns the rows the commands of the session's past tool calls fired, each command scanned on its own;
+ *  null when the host hands over neither every entry nor the branch. */
+function seedBits(host: SessionSource): number | null {
+	for (const read of [host.getEntries, host.getBranch]) {
+		try {
+			if (typeof read !== "function") continue;
+			const entries: unknown = read.call(host);
+			if (!Array.isArray(entries)) continue;
+			let bits = 0;
+			for (const entry of entries) for (const command of toolCallCommands(entry)) bits |= scan(command).persistent;
+			return bits;
+		} catch {
+			// An unreadable source falls through to the next one, and past the last to the fail-closed null.
+		}
+	}
+	return null;
 }
 
 /** Returns the string `command` argument of every tool call in one assistant message entry. */

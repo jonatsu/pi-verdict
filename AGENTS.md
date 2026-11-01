@@ -61,7 +61,7 @@ Two independent extensions in `extensions/` (no `src/`, no build step; TypeScrip
 
 **Subagents** (omp): a subagent session's ask goes to the root session's UI (`root-ui.ts`); with no root UI, or `subagentGate: "auto"`, it resolves without a human through `resolveAskWithoutHuman`, which consults `classifierFallbackModel` and denies everything else. omp does not pause its per-handler budget for a dialog on the root UI, so a subagent's ask closes before that budget ends (`readHostHandlerBudget`, `subagentAskWindow`; `docs/host-contract.md`).
 
-**State**: `SessionState` (fallback stats, `userRules`, audit log, `policyDegraded`, `denyPathBases`) inside one instance's `GateRuntime`. Module-level: root UI and dialog queue (`root-ui.ts`); caches `completionCache`, `TEMPERATURE_REJECTED_MODELS`, `dialogModules`.
+**State**: `SessionState` (fallback stats, `userRules`, audit log, `policyDegraded`, `denyPathBases`, the per-session shell-state record `shellStates`) inside one instance's `GateRuntime`. Module-level: root UI and dialog queue (`root-ui.ts`); caches `completionCache`, `TEMPERATURE_REJECTED_MODELS`, `dialogModules`.
 
 **Dual host**: real pi and omp. Adapter detects omp by `"logger" in pi && "typebox" in pi`. Model calls go through `ctx.modelRegistry.complete` when present, else the `compatLoader` fallback (omp 18 shape). The omp host source for path and loader behavior is cloned under `.scratch/research/oh-my-pi` (git-ignored); check its version against the installed `omp --version` before citing it.
 

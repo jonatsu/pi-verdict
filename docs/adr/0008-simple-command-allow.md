@@ -196,16 +196,20 @@ the classifier, can therefore change what a later allowed command does. Under th
 redirect any allowed command the same way. The `HOME` guard above covered one variable; it is now one case of a
 general rule.
 
-**Decision.** Before a user allow admits a command, the gate scans this call's command and the command of every
-earlier tool call on the session branch (`shell-state.ts`, once per call and only after an allow regex
-matched). Each construct it finds voids part of the user allows:
+**Decision.** `SessionState` keeps a shell-state record per host session id (`shell-state.ts`). Every tool
+call's `command` goes into its session's record before the call's verdict, whatever the verdict, including a
+call the master switch or `subagentGate: "off"` lets through ungated. The first call of a session also reads in
+the commands of every past entry once, through `getEntries` (off-branch entries included), else `getBranch`.
+The record only grows: a rewind or a tree move hides an entry from the branch, not what it did to the shell, and
+sibling calls of one assistant message reach the gate before the host appends any of them. A user allow then
+leaves out what the record voids:
 
 | Construct a command may run | What it voids |
 | --- | --- |
-| An assignment or export of `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `BASH_ENV` or `ENV`; a function definition (`name() {`, `function name`); `alias`; `enable`; `hash -p`; `shopt … expand_aliases`; `source`, `.`, `eval` or `trap` | Every user allow of a command |
+| Setting `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `BASH_ENV`, `ENV`, `PS4` (expanded before each command under `set -x`) or `PROMPT_COMMAND`; a function definition (`name() {`, `function name`); `alias`; `enable`; `hash -p`; `shopt … expand_aliases`; `source`, `.`, `eval` or `trap` | Every user allow of a command |
 | `HOME` | Home-relative operands, and `git` |
 | `IFS` | Home-relative operands |
-| `XDG_CONFIG_HOME` (a moved global gitconfig can set `core.fsmonitor`), any `GIT_*` variable | `git` |
+| `XDG_CONFIG_HOME` (a moved global gitconfig can set `core.fsmonitor`), any `GIT_*` variable, a `git config` that may write (not `--get`, `--get-all`, `--get-regexp`, `--list`/`-l`, `--show-origin`, `--show-scope`, `get` or `list`) | `git` |
 | `RIPGREP_CONFIG_PATH` | `rg` |
 | `TAR_OPTIONS` | `tar`, `gtar`, `bsdtar` |
 | `ZIPOPT`, `ZIP` | `zip` |
@@ -213,21 +217,41 @@ matched). Each construct it finds voids part of the user allows:
 | `LESSOPEN`, `LESSCLOSE` | `less` |
 | `GREP_OPTIONS` | `grep`, `egrep`, `fgrep`, `rgrep` |
 
-A voided command matches the basename of any word of the command, so `env git diff` counts. `CDPATH` voids
-nothing, since every operand the gate grades resolves from the call's own cwd. A variable counts in every
-spelling the `HOME` guard reads (a plain or `+=` assignment, `${X:=…}` and `${X=…}`, `export`, `declare`,
-`typeset`, `readonly`, `local`, `read`, `mapfile`, `readarray`, `unset`, `for X`, `printf -v X`), including an
-assignment prefix on the call itself (`GIT_EXTERNAL_DIFF=x git diff`). The builtins count only in command
-position (at the start of a line, after an operator, or after a keyword or prefix builtin that runs a command),
-so `rg "function foo"` or `git config alias.co checkout` voids nothing.
+The record holds which of these 15 rows fired, as flags, not command text. Each command is read once through
+the `shellWords` tokenizer (ADR-0007), which removes quoting and redirections, and split into simple commands.
+A variable is set by an assignment word, by a name in the arguments of `export`, `declare`, `typeset`,
+`readonly`, `local`, `read`, `mapfile`, `readarray` or `unset`, by `for X`, by `printf -v X`, and by a word
+holding `${X:=…}` or `${X=…}`. The command name is the first word after the leading assignments and after the
+wrappers `command`, `builtin`, `exec`, `env` and `nice`, so a quoted search pattern such as `rg 'fn main() {'`
+names no construct. A leading assignment followed by a command word (`GIT_PAGER=cat git log`) changes that
+command alone: it voids the call it is on and does not enter the record, while `PATH=x; ls` and
+`export PATH=x` do. A voided command matches the basename of any word of the allowed command, so `env git diff`
+counts. `CDPATH` voids nothing, since every operand the gate grades resolves from the call's own cwd. A command
+over `BASH_MAX_MATCH_LEN`, or one the tokenizer stopped reading early (`$'…'`, an unterminated quote), takes a
+substring scan instead: a row fires when any of its names occurs anywhere in the text. A command substitution
+or a here-document does not trigger that scan: it cannot change the session's shell, and the allow step
+already refuses an unsound command. The cost per call is the current command only, linear in its length.
 
-**Fail direction.** A session branch the host cannot hand over voids every user allow, home-relative or not:
-the gate cannot tell which command an earlier call redefined. This replaces the `HOME` guard's narrower
-fail-closed rule, and the test `an unreadable session branch refuses every user allow, home-relative or not
-(fails closed)` pins it.
+**Fail direction.** While neither `getEntries` nor `getBranch` can be read, every user allow is voided,
+home-relative or not, since the gate cannot tell which command an earlier call redefined. The test
+`an unreadable session branch refuses every user allow, home-relative or not (fails closed)` pins it.
 
-**Consequences.** The scan is textual and over-matches on purpose: a false match sends later allowed commands
-of that session to the classifier, which costs one model call each and denies nothing. A session that never
-runs such a construct keeps every allow on the fast path. A variable whose name the text does not spell out
-(`export "$V=…"`, a `declare -n` reference) is a residual; the OS sandbox is the backstop (ADR-0009). Pinned by the
-`session shell-state guard (ADR-0008 amendment)` tests.
+**Consequences.** The rows over-match on purpose: a false match sends later allowed commands of that session
+to the classifier, which costs one model call each and denies nothing. A session that runs none of these
+constructs keeps every allow on the fast path. Pinned by the `session shell-state guard (ADR-0008 amendment)`
+tests. These spellings and paths are accepted residuals; the OS sandbox is the backstop (ADR-0009):
+
+- `exec >file` redirects the shell's later output, which no row reads.
+- direnv and JavaScript `eval` cells change the environment of a run without command text the gate sees.
+- A nested or bare repository planted in a subdirectory and used as a call's `cwd` brings its own git config.
+- `HOME` also moves the dotfiles of commands other than git, which matters only if a user allows such a command
+  (`ssh`, `curl`).
+- A user's own `!` commands share the shell, and they are the user's.
+- A variable whose name the text does not spell out (`export "$V=…"`, a `declare -n` reference) or that is set
+  through an array subscript (`PATH[0]=…`) is not recognized.
+- `GCONV_PATH`, `LOCPATH`, `NLSPATH` and `DYLD_*` are not rows.
+- A write to the global git config files under `~/.config/git/` (`config`, `attributes`) by a file tool is not
+  an S2 path.
+- An abbreviated long option shorter than five characters (`sort --o=~/.bashrc f`) still passes the
+  side-effect option check, which matters only if a user allows `sort`.
+- A `git config` written in an earlier session persists in the repository, beyond the session's record.

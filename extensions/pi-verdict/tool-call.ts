@@ -134,15 +134,20 @@ async function presentNow(rt: GateRuntime, verdict: Verdict, pc: PresentedCall, 
 /** The gate: adjudicates one tool call and presents the verdict. Returns the block for the host, or undefined to run
  *  the tool. */
 export async function handleToolCall(rt: GateRuntime, event: ToolCallEvent, ctx: ExtensionContext): Promise<GateBlock | undefined> {
-	if (!rt.enabled) return undefined;
+	// Safe: the host passes a tool's arguments as a plain object, and every layer narrows each field it reads.
+	const input = event.input as Record<string, unknown>;
+	// An ungated call still runs in the session's shell, so the shell-state record sees it too.
+	const observeUngated = (): undefined => {
+		rt.state.shellStates.observe(ctx.sessionManager, input);
+		return undefined;
+	};
+	if (!rt.enabled) return observeUngated();
 	const handlerStart = Date.now();
 	const sub = subagentIdentity(ctx);
 	const mode = rt.state.userRules.subagentGate;
-	if (sub && mode === "off") return undefined;
+	if (sub && mode === "off") return observeUngated();
 	// A subagent with its own UI (omp gives it none today) uses it; otherwise the root UI, else none.
 	const ui = !sub || ctx.hasUI ? ctx.ui : currentRootUi();
-	// Safe: the host passes a tool's arguments as a plain object, and every layer narrows each field it reads.
-	const input = event.input as Record<string, unknown>;
 	const adjudicationRedact = rt.state.redactor(ctx.cwd);
 	const env = buildEnv(rt, ctx, sub !== null, adjudicationRedact);
 	const verdict = await withStatusWidget(ctx, sub === null, event.toolName, (onPhase) =>

@@ -1045,8 +1045,94 @@ describe("session shell-state guard (ADR-0008 amendment)", () => {
 		expect(await modelCallsAfter(RG_ALLOW, ["export GIT_DIR=x"], "rg foo")).toBe(0);
 	});
 	test("a builtin name inside a quoted search pattern voids nothing", async () => {
-		const earlier = ['rg "function foo"', "rg 'source of truth'", "git config alias.co checkout", "echo $PATH", "ls ./run.sh"];
+		const earlier = [
+			'rg "function foo"',
+			"rg 'source of truth'",
+			"git config alias.co checkout",
+			"echo $PATH",
+			"ls ./run.sh",
+			"rg 'fn main() {'",
+			'grep -n "constructor() {" src',
+			'node -e "(function(){})()"',
+		];
 		expect(await modelCallsAfter(LS_ALLOW, earlier, "ls")).toBe(0);
+	});
+	test("an assignment prefix changes only its own command, so it does not persist", async () => {
+		expect(await modelCallsAfter(GIT_ALLOW, ["GIT_PAGER=cat git log"], "git status")).toBe(0);
+		expect(await modelCallsAfter(LS_ALLOW, ["LD_LIBRARY_PATH=x ./bin"], "ls")).toBe(0);
+		expect(await modelCallsAfter(LS_ALLOW, ["PATH=/tmp/b; ls"], "ls")).toBe(1);
+		expect(await modelCallsAfter(LS_ALLOW, ["export PATH=/tmp/b"], "ls")).toBe(1);
+	});
+	test("a git config write earlier voids a git allow, and a config read does not", async () => {
+		for (const earlier of [
+			"git config core.fsmonitor ./x.sh",
+			"git config diff.external ./t.sh",
+			"git -C . config core.hooksPath .githooks",
+		]) {
+			expect(await modelCallsAfter(GIT_ALLOW, [earlier], "git status")).toBe(1);
+		}
+		for (const earlier of ["git config --get user.name", "git config --list", "git config get user.email"]) {
+			expect(await modelCallsAfter(GIT_ALLOW, [earlier], "git status")).toBe(0);
+		}
+	});
+	test("PS4 set earlier voids every bash allow, since set -x expands it before each command", async () => {
+		expect(await modelCallsAfter(LS_ALLOW, ["export PS4='+ $(./t.sh) '"], "ls")).toBe(1);
+	});
+	test("sibling calls of one message see each other before the host records them", async () => {
+		const h = session({ allow: GIT_ALLOW });
+		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
+		expect(await toolCall(h, "bash", { command: "export GIT_EXTERNAL_DIFF=/tmp/x" })).toBeUndefined();
+		expect(await toolCall(h, "bash", { command: "git diff" })).toBeUndefined();
+		expect(h.calls.length).toBe(2);
+	});
+	describe("the session entries the record starts from", () => {
+		const exportEntry = {
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", name: "bash", arguments: { command: "export GIT_EXTERNAL_DIFF=/tmp/x" } }],
+			},
+		};
+		/** Adjudicates `git diff` under a git allow with no model, in a session the given host describes. */
+		const gitDiff = async (host: Record<string, unknown>) => {
+			setConfig({ allow: GIT_ALLOW });
+			const env = { ...adjudicateEnv({ hasUI: false, failModel: true }), host: { getSessionId: () => "s1", ...host } };
+			return adjudicate(new SessionState(), { toolName: "bash", input: { command: "git diff" } }, env as never);
+		};
+		test("an export on an entry off the current branch still voids the allow", async () => {
+			expect(await gitDiff({ getBranch: () => [], getEntries: () => [exportEntry] })).toMatchObject({
+				verdict: "deny",
+				source: "fail-closed",
+			});
+			expect(await gitDiff({ getBranch: () => [], getEntries: () => [] })).toMatchObject({ verdict: "allow", source: "rule" });
+		});
+		test("an unreadable entry list falls back to the branch, and neither readable fails closed", async () => {
+			const unreadable = () => {
+				throw new Error("no entries");
+			};
+			expect(await gitDiff({ getBranch: () => [exportEntry], getEntries: unreadable })).toMatchObject({ verdict: "deny" });
+			expect(await gitDiff({ getBranch: () => [], getEntries: unreadable })).toMatchObject({ verdict: "allow", source: "rule" });
+			expect(await gitDiff({ getBranch: unreadable, getEntries: unreadable })).toMatchObject({ verdict: "deny", source: "fail-closed" });
+		});
+	});
+	test("the scan time grows linearly with the command length", () => {
+		/** Mean milliseconds of one scan of `text`. */
+		const scanMs = (text: string, runs: number) => {
+			const start = performance.now();
+			for (let r = 0; r < runs; r++) shellStateOf(text);
+			return (performance.now() - start) / runs;
+		};
+		// The first pair stays under the per-command cap and takes the word scan; the second takes the substring scan.
+		for (const unit of ["a", "a=b ", "export a ", "ls; ", "f() ", "${a", "hash ", "'"]) {
+			for (const [small, large] of [
+				[800, 8000],
+				[10_000, 100_000],
+			]) {
+				const shortMs = scanMs(unit.repeat(small / unit.length), 10);
+				const longMs = scanMs(unit.repeat(large / unit.length), 10);
+				expect(longMs).toBeLessThan(shortMs * 30 + 5);
+			}
+		}
 	});
 });
 
@@ -1061,7 +1147,7 @@ describe("allow operand grading (ADR-0008 amendment)", () => {
 	const operandContext = (cwd: string) => ({
 		commandCwd: cwd,
 		sessionCwd: cwd,
-		shellState: () => shellStateOf(""),
+		shellState: shellStateOf(""),
 		shell: "bash" as const,
 	});
 	/** Whether a command text may assign `HOME`, read through the shell-state row that voids home-relative operands. */

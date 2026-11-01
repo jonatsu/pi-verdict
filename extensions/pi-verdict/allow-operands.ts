@@ -76,8 +76,8 @@ export interface OperandContext {
 	readonly commandCwd: string;
 	/** The session cwd. The gate grades it as the project, which a git call must stay inside. */
 	readonly sessionCwd: string;
-	/** What the session's shell state voids; read only once the operands themselves admit the command. */
-	readonly shellState: () => ShellState;
+	/** What the session's shell state voids. */
+	readonly shellState: ShellState;
 	readonly shell: "bash" | "powershell";
 }
 
@@ -107,13 +107,13 @@ export function allowOperandsAdmit(command: string, where: OperandContext): bool
 	for (const word of operands) {
 		const expanded = expandOperand(word, commandCwd);
 		if (expanded === null) return false;
-		if (expanded.homeRelative && shellState().homeOperands) return false;
+		if (expanded.homeRelative && shellState.homeOperands) return false;
 		graded += expanded.paths.length;
 		if (graded > MAX_GRADED_OPERANDS) return false;
 		if (!expanded.paths.every((p) => readsAsAllowed(p, commandCwd))) return false;
 		if (recursive && expanded.paths.some((p) => s0DirectoryBeneath(p, commandCwd))) return false;
 	}
-	if (voidedByShellState(words, shellState())) return false;
+	if (voidedByShellState(words, shellState)) return false;
 	const operandPaths = (word: string) => expandOperand(word, commandCwd)?.paths ?? null;
 	return at === -1 || wordBasename(words[at]) !== "git" || gitStaysInProject(words, at, commandCwd, sessionCwd, operandPaths);
 }

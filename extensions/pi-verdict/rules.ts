@@ -41,9 +41,8 @@ export interface RuleContext {
 	readonly namesProtectedPath: CallPredicate;
 	/** The host, which decides whether an `xd://` target is a tool device (omp) or a relative path (pi). */
 	readonly host: HostKind;
-	/** What the commands of the session, this one included, void among the user allows (ADR-0008); read
-	 *  only when a user allow regex matches a command. */
-	readonly shellState: () => ShellState;
+	/** What the commands of the session, this one included, void among the user allows (ADR-0008). */
+	readonly shellState: ShellState;
 }
 
 /** One tool call as every rule step reads it. */

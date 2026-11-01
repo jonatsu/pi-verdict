@@ -139,11 +139,18 @@ git write flag. `allowOperandsAdmit` (`allow-operands.ts`) checks what the opera
 resulting path as a read through `classifyPath` with the floor on, refuses a recursive command (`grep -r`, `rg`,
 `find`, `cp -a` and similar) whose directory operand, or whose cwd, contains a credential directory
 (`s0DirectoryBeneath`, the test the scope tools take), refuses what the session's persistent shell state voids
-(`RuleContext.shellState`, read lazily from this call and the session branch by `shell-state.ts`: a `PATH` or
-loader variable, a function, an alias or a sourced file voids every command, `HOME` and `IFS` void home-relative
-operands, a `GIT_*` variable voids `git`, and an unreadable branch voids every command), and, through `git-reach.ts`, refuses a `git` call whose global options it cannot read (`gitSubcommandIndex`),
-that injects configuration, or that runs or reads outside the session cwd. A refusal only sends the call on to
-the classifier (ADR-0008 and its amendment).
+(`RuleContext.shellState`), and, through `git-reach.ts`, refuses a `git` call whose global options it cannot read
+(`gitSubcommandIndex`), that injects configuration, or that runs or reads outside the session cwd. A refusal only
+sends the call on to the classifier (ADR-0008 and its amendment).
+
+omp runs a session's bash calls in one persistent shell, so the shell state is session state.
+`SessionState.shellStates` (a `ShellStateLedger` from `shell-state.ts`) keeps, per host session id, flags for the
+constructs the session's commands ran: a `PATH`, loader or `PS4` variable, a function, an alias or a sourced file
+voids every command, `HOME` and `IFS` void home-relative operands, a `GIT_*` variable or a `git config` write
+voids `git`. `adjudicate` records each call's command before its first await, and `handleToolCall` records an
+ungated call too. The first call of a session reads in its past entries once (`getEntries`, else `getBranch`);
+when neither is readable, every allow is voided. A command is read once through `shellWords`, and an
+assignment prefix voids only its own call.
 
 ### Known structural weakness
 
