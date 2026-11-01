@@ -1848,10 +1848,10 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier", deliberate: "gh -b and -t values are read as text" },
 		},
 		{
-			label: "a # inside ${…} read as a comment hides a later reset --hard from the word view",
+			label: "a # inside a parameter expansion read as a comment hides a later reset --hard from the word view",
 			family: "residual",
 			tool: "bash",
-			input: { command: ": ${x:- #} ; git " + "reset --hard" },
+			input: { command: ": $" + "{x:- #} ; git " + "reset --hard" },
 			ref: "ADR-0007",
 			expected: { layer: "classifier", deliberate: "bash does not read this # as a comment; the tokenizer does" },
 		},

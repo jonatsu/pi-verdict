@@ -313,7 +313,7 @@ Total cases: 314.
 | residual | a quoted force push passed to a planted ./echo reaches the classifier | bash | classifier |  |  | the inert-position check reads the basename only |  | ref=ADR-0007 |
 | residual | a quoted force push behind an alias set in the same command reaches the classifier | bash | classifier |  |  | aliases are not modelled by the word view |  | ref=ADR-0007 |
 | residual | a gh -b value is inert for every gh subcommand | bash | classifier |  |  | gh -b and -t values are read as text |  | ref=ADR-0007 |
-| residual | a # inside ${…} read as a comment hides a later reset --hard from the word view | bash | classifier |  |  | bash does not read this # as a comment; the tokenizer does |  | ref=ADR-0007 |
+| residual | a # inside a parameter expansion read as a comment hides a later reset --hard from the word view | bash | classifier |  |  | bash does not read this # as a comment; the tokenizer does |  | ref=ADR-0007 |
 | residual | an allowed command's redirection target is not graded and reaches the classifier | bash | classifier |  |  | redirect targets are left to the classifier |  | ref=ADR-0008 |
 | residual | an attached relative option value without a slash is not graded by an allow | bash | allow |  |  | -f.netrc cannot be told from bundled option letters |  | ref=ADR-0008 |
 | residual | an abbreviated long option shorter than five characters passes the side-effect option check | bash | allow |  |  | prefixes under five characters are too ambiguous to grade |  | ref=ADR-0008 |
