@@ -14,7 +14,7 @@ Judge every change by these goals, set by the user; work that serves none of the
 - **Fast path in code, slow path through the model.** Decide trivial calls deterministically, and send only calls that need judgement to the classifier. Soundness sets the cutoff: a static rule may allow a call only when it can show the call is harmless. Bash has no built-in allow; user allows grade a command's operands (ADR-0008), and the read-only command fast path built on that grading is TODO item 6.
 - **Fail closed.** No error, timeout, missing UI or degraded policy ever becomes an allow.
 - **Efficient, and maintainable by humans.** Small modules with one concern each, short functions, why-only comments, no needless model calls or repeated work per call. Refactoring serves this goal and the shared reading of each call (TODO item 5); it is not a goal in itself.
-- **Harden 80/20.** Fix plausible spellings of a path or command; record exotic ones as residuals (ADR-0009). The OS sandbox is the backstop.
+- **Harden 80/20.** Fix plausible spellings of a path or command; record exotic ones as residuals (ADR-0009). Weigh each check's coverage against its per-call cost and its code: a scan stays linear in its input and reads each input once, and a rule added only for an exotic spelling is not worth its cost. Triage review findings before acting on them. The OS sandbox is the backstop.
 
 ## Where to Read
 
