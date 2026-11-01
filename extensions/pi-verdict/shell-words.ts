@@ -56,7 +56,7 @@ function continuationLength(command: string, i: number): number {
  * Split a shell command into words at unquoted whitespace and operators, quoting removed
  * (`'a&b'` is one word `a&b`; `$(git …)` yields a substitution mark and an operator `(` before the
  * inner words).
- * Deliberately not a shell parser: no glob, process-substitution or brace-expansion modelling, and
+ * Deliberately not a shell parser: no glob or brace-expansion modelling, and
  * an unterminated quote consumes the rest of the string. Linear, single pass (bounding is not
  * needed — unlike the danger regexes, it cannot backtrack).
  *
@@ -184,6 +184,14 @@ export function shellWords(command: string): string[] {
 				flush();
 				unsound(); // here-document: body not re-parsed
 				i += 2;
+				continue;
+			}
+			if (next === "(") {
+				// Process substitution: its output path becomes a word the scanner cannot see, so it is
+				// marked like a command substitution, and the `(` still splits commands.
+				flush();
+				words.push(SUBSTITUTION);
+				i++;
 				continue;
 			}
 			// The `&` of `>&`/`<&` and the `|` of `>|` belong to the redirection, not a command operator.
