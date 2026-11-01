@@ -42,7 +42,8 @@ export interface Case {
 		| "host-path"
 		| "policy-degraded"
 		| "code-loading"
-		| "bash-danger";
+		| "bash-danger"
+		| "residual";
 	tool: string;
 	input: Record<string, unknown>;
 	/** Additionally asserted under the consumer-policy fixture config (run C). */
@@ -1790,6 +1791,123 @@ export function buildCases(fx: FixtureTree): Case[] {
 			},
 		});
 	}
+
+	// ---- residual ---------------------------------------------------------------------
+	// Accepted residuals of ADR-0007, ADR-0008 and ADR-0009, pinned at the route they take today, so a
+	// silent move toward allow fails the probe. Residuals that need session history, a real host or a
+	// planted file are not expressible as one call and stay prose in their ADR.
+	const forcePushText = "git " + "push --force origin main";
+	cases.push(
+		{
+			label: "a quoted force push echoed to a descriptor an earlier call opened reaches the classifier",
+			family: "residual",
+			tool: "bash",
+			input: { command: `echo '${forcePushText}' >&3` },
+			ref: "ADR-0007",
+			expected: { layer: "classifier", deliberate: "a descriptor redirection is read as harmless output" },
+		},
+		{
+			label: "a quoted force push passed to a planted ./echo reaches the classifier",
+			family: "residual",
+			tool: "bash",
+			input: { command: `./echo '${forcePushText}'` },
+			ref: "ADR-0007",
+			expected: { layer: "classifier", deliberate: "the inert-position check reads the basename only" },
+		},
+		{
+			label: "a quoted force push behind an alias set in the same command reaches the classifier",
+			family: "residual",
+			tool: "bash",
+			input: { command: `shopt -s expand_aliases; alias echo=sh; echo '${forcePushText}'` },
+			ref: "ADR-0007",
+			expected: { layer: "classifier", deliberate: "aliases are not modelled by the word view" },
+		},
+		{
+			label: "a gh -b value is inert for every gh subcommand",
+			family: "residual",
+			tool: "bash",
+			input: { command: "gh pr comment 1 -b 'gh " + "repo delete o/r'" },
+			ref: "ADR-0007",
+			expected: { layer: "classifier", deliberate: "gh -b and -t values are read as text" },
+		},
+		{
+			label: "a # inside ${…} read as a comment hides a later reset --hard from the word view",
+			family: "residual",
+			tool: "bash",
+			input: { command: ": ${x:- #} ; git " + "reset --hard" },
+			ref: "ADR-0007",
+			expected: { layer: "classifier", deliberate: "bash does not read this # as a comment; the tokenizer does" },
+		},
+		{
+			label: "an allowed command's redirection target is not graded and reaches the classifier",
+			family: "residual",
+			tool: "bash",
+			input: { command: "echo hi > notes.txt" },
+			config: { allow: ["^echo\\b"] },
+			ref: "ADR-0008",
+			expected: { layer: "classifier", deliberate: "redirect targets are left to the classifier" },
+		},
+		{
+			label: "an attached relative option value without a slash is not graded by an allow",
+			family: "residual",
+			tool: "bash",
+			input: { command: "git config -f.netrc --list" },
+			config: { allow: ["^git config\\b"] },
+			ref: "ADR-0008",
+			expected: { layer: "allow", deliberate: "-f.netrc cannot be told from bundled option letters" },
+		},
+		{
+			label: "an abbreviated long option shorter than five characters passes the side-effect option check",
+			family: "residual",
+			tool: "bash",
+			input: { command: "sort --o=out.txt f" },
+			config: { allow: ["^sort\\b"] },
+			ref: "ADR-0008",
+			expected: { layer: "allow", deliberate: "prefixes under five characters are too ambiguous to grade" },
+		},
+		{
+			label: "a file-tool write to the global git config under ~/.config/git is not an S2 path",
+			family: "residual",
+			tool: "write",
+			input: { path: "~/.config/git/config", content: "[core]\n" },
+			ref: "ADR-0008",
+			expected: { layer: "classifier", deliberate: "only the shell-state record watches git config writes" },
+		},
+		{
+			label: "a js eval cell gets no shell-line extraction and reaches the classifier",
+			family: "residual",
+			tool: "eval",
+			input: { language: "js", code: `require('child_process').execSync('${forcePushText}')` },
+			ref: "ADR-0009",
+			expected: { layer: "classifier", deliberate: "js cells reach no built-in floor" },
+		},
+		{
+			label: "a sqlite query string on a protected database file is not peeled",
+			family: "residual",
+			tool: "read",
+			input: { path: `${fx.work}/vault.db?limit=5` },
+			config: { denyPaths: [`${fx.work}/vault.db`] },
+			ref: "ADR-0009",
+			expected: { layer: "allow", deliberate: "the query string hides the database file from denyPaths" },
+		},
+		{
+			label: "a literal file named like an image question is also graded as the image",
+			family: "residual",
+			tool: "read",
+			input: { path: `${fx.work}/x.png?q=a` },
+			config: { denyPaths: [`${fx.work}/x.png`] },
+			ref: "ADR-0009",
+			expected: { layer: "protected-path", deliberate: "over-grading asks where the host would read the literal name" },
+		},
+		{
+			label: "a write to a registered internal scheme is graded as its URL text and allowed",
+			family: "residual",
+			tool: "write",
+			input: { path: "local://notes.md", content: "x" },
+			ref: "ADR-0009",
+			expected: { layer: "allow", deliberate: "a denyPaths base over the scheme's backing directory is not matched" },
+		},
+	);
 
 	return cases;
 }
