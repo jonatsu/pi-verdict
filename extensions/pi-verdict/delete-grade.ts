@@ -26,11 +26,11 @@ export interface DeleteContext {
 const GLOB_CHARS = /[*?[]/;
 const DIRECTORY_CHANGE = /\b(?:cd|pushd|popd)\b/g;
 const DIRECTORY_COMMANDS: ReadonlySet<string> = new Set(["cd", "pushd", "popd"]);
-/** Matches a command that is one leading `rm`, alone or followed in sequence by other commands, with nothing
- *  that runs before or beside it: no substitution, pipe, background `&` or redirection. */
 /** Matches a `..` that follows a named component (`build/../x`): the kernel resolves it from wherever that
  *  component leads, which may be a symlink, so the text cannot place the target. */
 const INTERIOR_PARENT = /(?:^|\/)(?!\.\.(?:\/|$))[^/]+\/\.\.(?:\/|$)/;
+/** Matches a command that is one leading `rm`, alone or followed in sequence by other commands, with nothing
+ *  that runs before or beside it: no substitution, pipe, background `&` or redirection. */
 const SOLE_LEADING_RM = /^\s*rm\s[^;&|\n`$<>()]*(?:&&|\|\||;|$)/;
 /** Matches a `cd` target that bash looks up in `CDPATH` first: any not starting with `/`, `~`, or a `.` or `..` component. */
 const CDPATH_SEARCHED = /^(?!\/|~|\.\.?(?:\/|$))/;
@@ -54,6 +54,8 @@ const SEVERITY: readonly DeleteRule[] = ["rm-root", "rm-git", "rm-unreadable-tar
 interface Grading {
 	/** The directory relative operands resolve from; null when it is unknown. */
 	readonly cwd: string | null;
+	/** The real path of `cwd`, where a relative `..` climbs from; null when unknown. */
+	readonly realCwd: string | null;
 	readonly base: string;
 	readonly homes: readonly string[];
 	readonly project: readonly string[];
@@ -90,6 +92,7 @@ function grading(command: string, ctx: DeleteContext, deleteCount: number): Grad
 	const cwd = commandWorkingDirectory(command, ctx);
 	return {
 		cwd,
+		realCwd: cwd === null ? null : realpathOrNull(cwd),
 		base: cwd ?? ctx.commandCwd,
 		homes,
 		project,
@@ -161,13 +164,15 @@ function gradeOperand(word: string, g: Grading): GradedHit[] {
 	if (g.graded > MAX_GRADED_OPERANDS) return [];
 	const hits: GradedHit[] = [];
 	for (const p of expanded.paths) {
-		if ((!path.isAbsolute(p) && g.cwd === null) || INTERIOR_PARENT.test(p)) return [hit("rm-unreadable-target", [])];
+		if (!path.isAbsolute(p) && g.cwd === null) return [hit("rm-unreadable-target", [])];
 		const followsLeaf = /\/\.?$/.test(p);
 		const forms = targetForms(path.isAbsolute(p) ? p : `${g.cwd}/${p}`, followsLeaf);
+		// A relative `..` climbs from the real working directory, which `path.resolve` and `realpath` both skip.
+		if (!path.isAbsolute(p) && g.realCwd !== null) forms.push(path.resolve(g.realCwd, p));
 		const rule = targetRule(forms, g);
 		// A worse grade stands; only a target that would pass or fall outside is held unreadable.
-		const swappable = (rule === null || rule === "rm-outside-project") && g.compound && followsDirectory(p, followsLeaf, g);
-		if (swappable) hits.push(hit("rm-unreadable-target", []));
+		const unplaced = INTERIOR_PARENT.test(p.replace(/\/+/g, "/")) || (g.compound && followsDirectory(p, followsLeaf, g));
+		if ((rule === null || rule === "rm-outside-project") && unplaced) hits.push(hit("rm-unreadable-target", []));
 		else if (rule !== null) hits.push(hit(rule, forms));
 	}
 	return hits;

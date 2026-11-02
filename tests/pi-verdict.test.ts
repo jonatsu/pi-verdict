@@ -9722,7 +9722,16 @@ describe("graded recursive delete (ADR-0013)", () => {
 		await denies(`ln -s ~/src build && ${RM} ${PROJ}/build/../Documents`, "rm-unreadable-target");
 		await denies(`${RM} vendor/../x`, "rm-unreadable-target");
 		await denies(`${RM} ~/src/../Documents`, "rm-unreadable-target");
+		await denies(`ln -s ~/src build && ${RM} build//../Documents`, "rm-unreadable-target");
+		await denies(`ln -s ~/src build && ${RM} build/.//../x`, "rm-unreadable-target");
+		await denies(`${RM} ~/x/..`, "rm-root");
+		await denies(`${RM} build/../.git`, "rm-git");
 		await reachesClassifier(`${RM} ./build`);
+	});
+
+	test("a relative .. climbs from the real working directory", async () => {
+		// vendor links to /usr, so ../x from inside it is /x, not <project>/x.
+		await denies(`${RM} ../x`, "rm-root", { input: { cwd: path.join(PROJ, "vendor") }, omp: true });
 	});
 
 	test("a long here-document that writes code keeps relative deletes readable", async () => {
