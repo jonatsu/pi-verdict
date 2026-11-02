@@ -105,6 +105,7 @@ The first run writes this file from a template that holds every key with its def
 - `denyPaths` are plain paths you declare **protected**: a touch triggers a terminal ask you adjudicate (non-interactive → deny), and the classifier learns only that protected paths exist, never the paths. Scope tools (`grep`, `find`, `ls`, `glob`, `ast_grep`, `ast_edit`) compare their whole **search scope**. A fresh install pre-fills a **starter list** (`~/.ssh/`, `~/.gnupg`, `~/.mc`, shell rc/profile files) as a user declaration, not a built-in floor.
 - `builtinDenyFloor: false` turns off the built-in danger and path floor and the code-loading ask, but not the self-protection layer.
 - `floorOverrides` changes one floor rule instead of the whole floor ([ADR-0013](docs/adr/0013-configurable-rules.md)): `{"S0:pem": {"action": "ask", "paths": ["~/src/project/test-keys"]}}` turns the `.pem` deny into a confirmation, only under that directory. [docs/configuration.md](docs/configuration.md) lists the rule ids.
+- `commandRules` deny or ask on a command by its words, in cc-safety-net's rulebook rule shape ([ADR-0013](docs/adr/0013-configurable-rules.md)): `{"name": "no-bulk-add", "command": "git", "subcommand": "add", "block_args": ["-A", "."], "reason": "Name the paths."}` denies `git add -A` and `timeout 5 git -C x add .`, but not `git commit -m "git add ."`. `"action": "ask"` asks instead. Neither an `allow` regex nor a `tools` entry skips them. `commandRuleFiles` loads whole rulebooks from `<agentDir>/config/pi-verdict-rules/`, and `bun run rules-verify` checks their `tests` fixtures.
 - The **code-loading ask** ([ADR-0011](docs/adr/0011-code-loading-ask.md)) is built in: a write where omp or pi loads code in a later session (an agent directory's `extensions/`, `hooks/`, `tools/`, `commands/`, `npm/`, `git/` or `bin/`; `mcp.json`, `models.yml`, `config.yml` or `settings.json` there; `~/.omp/plugins/` and the profile plugin roots; a project's `.omp/` and `.pi/` code directories and config files; `mcp.json` or an LSP or DAP config file such as `lsp.json` in the working directory, and the LSP and DAP config files in your home directory) asks you, and a headless run denies it. A read does not ask; a shell command that names such a path, or a directory holding one such as `~/.omp/agent`, does. Neither an `allow` regex nor a `tools` entry skips it, and a path you list in `denyPaths` keeps its own protected-path ask.
 - `gateOmpDir` (default `false`) forces a terminal ask for `.omp` directory accesses; it runs after the built-in floor and your `deny` rules and before `denyPaths` and `allow`, so an `allow` regex cannot skip it.
 - `classifierModel` pins the classifier model (default: the session model with thinking off); `"typesafe/jev-latest"` selects the bundled jev decisions adapter described below.
@@ -172,7 +173,8 @@ tool_call
   │     │   graded by target: root, home, .git, unreadable or outside the project → deny,
   │     │   inside the project or /tmp → on to the classifier; a floorOverrides
   │     │   entry (ADR-0013) can switch off or soften one rule, optionally per directory
-  │     ├─ your deny rules: any matching target form denies; deny beats allow
+  │     ├─ your deny rules: any matching target form denies; deny beats allow;
+  │     │   then your deny command rules (ADR-0013), matched on command words
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask
   │     ├─ denyPaths (ADR-0002): protected paths → terminal ask,
   │     │   before user allow; classifier sees an existence hint only; a call the
@@ -183,6 +185,7 @@ tool_call
   │     │   config.yml, the plugin roots, a project's .omp/.pi trees, lsp.json) →
   │     │   terminal ask; reads do not ask; off with builtinDenyFloor:false
   │     ├─ a floor deny that floorOverrides softened → terminal ask, before user allow
+  │     ├─ your ask command rules (ADR-0013) → terminal ask, before user allow
   │     ├─ an action whose counted text exceeds 8192 chars → ask, before user allow
   │     ├─ your allow rules, then the tools exemption → allow; neither applies to
   │     │   a globbed path, a mutating call with no target, a read of a relative

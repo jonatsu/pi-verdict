@@ -11,6 +11,7 @@ import {
 import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
 import { allowOperandsAdmit } from "./allow-operands.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
+import { type CommandRule, type CommandRuleAction, matchingCommandRules } from "./command-rules.ts";
 import type { UserRules } from "./config.ts";
 import { deleteGrader } from "./delete-grade.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
@@ -61,6 +62,8 @@ interface RuleCall {
 	readonly internalUrl: boolean;
 	/** True when a user `allow` rule or `tools` entry may admit the call. */
 	readonly vouchable: boolean;
+	/** The command rules the call's shell text matches, in rule order (ADR-0013). */
+	readonly commandRules: readonly CommandRule[];
 }
 
 /**
@@ -79,11 +82,13 @@ export function classifyByRules(toolName: string, input: Record<string, unknown>
 	const decided =
 		// Deny-side layers: each can only narrow what the call may do.
 		userDeny(call, ctx) ??
+		commandRuleHit(call, "deny") ??
 		forcedOmpGate(call, ctx) ??
 		denyPathsAsk(call, ctx) ??
 		protectedSpellingAsk(call, ctx) ??
 		codeLoadingAsk(call, ctx) ??
 		softenedFloorAsk(baseGrade) ??
+		commandRuleHit(call, "ask") ??
 		overCapAsk(call, ctx) ??
 		// Allow layers, reached only when no deny-side layer decided.
 		userAllow(call, ctx) ??
@@ -116,7 +121,15 @@ function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleCon
 		relocatable,
 		internalUrl,
 		vouchable: ctx.commandCwdExact && !ctx.policyDegraded && !access.globbed && !access.opaque && !relocatable && !internalUrl,
+		commandRules: matchingCommandRules(shellText(toolName, input, access), ctx.userRules.commandRules),
 	};
+}
+
+/** The shell text of a call: a command tool's command, or the shell lines of a Python cell; empty otherwise. */
+function shellText(toolName: string, input: Record<string, unknown>, access: ToolAccess): string {
+	if (isCommandTool(toolName)) return commandText(input);
+	if (access.kind === "code" && access.command !== null && input.language === "py") return pyEvalShellLines(access.command).join("\n");
+	return "";
 }
 
 /** Returns the built-in floor's grade for the call, before any target shape turns its allow gray. */
@@ -144,8 +157,8 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.
-		const shellText = pyEvalShellLines(access.command).join("\n");
-		return shellText ? classifyPyShellLines(shellText, floorOn, shellLift(ctx)) : { verdict: "gray" };
+		const lines = shellText(toolName, input, access);
+		return lines ? classifyPyShellLines(lines, floorOn, shellLift(ctx)) : { verdict: "gray" };
 	}
 	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 }
@@ -209,6 +222,16 @@ function userDeny(call: RuleCall, ctx: RuleContext): RuleResult | null {
 		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}`, rule: "user-deny" };
 	}
 	return null;
+}
+
+/** Decides by the first matching command rule with the given action (ADR-0013): a deny beside the user
+ *  `deny` regexes, an ask after the code-loading ask. Both run before every allow layer. The reason is the
+ *  rule's own, which the user wrote for the agent to read. */
+function commandRuleHit(call: RuleCall, action: CommandRuleAction): RuleResult | null {
+	const rule = call.commandRules.find((r) => r.action === action);
+	if (rule === undefined) return null;
+	const reason = `command rule ${rule.id}: ${rule.reason}`;
+	return action === "deny" ? { verdict: "deny", reason, rule: rule.id } : { verdict: "ask", reason, askSource: "rule", rule: rule.id };
 }
 
 /** Asks on any `.omp` access while `gateOmpDir` is on, an unknown tool's targets included. The path goes

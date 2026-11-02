@@ -45,6 +45,7 @@ export interface Case {
 		| "bash-danger"
 		| "graded-delete"
 		| "floor-overrides"
+		| "command-rules"
 		| "residual";
 	tool: string;
 	input: Record<string, unknown>;
@@ -1967,6 +1968,34 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "rule", ruleId: "sudo" },
 		},
 	);
+
+	// ---- command-rules (ADR-0013) ------------------------------------------------------
+	// A command rule matches on the command words: a deny in layer 2, an ask in layer 4b, both before
+	// every allow.
+	const commandRules = {
+		commandRules: [
+			{ name: "no-bulk-add", command: "git", subcommand: "add", block_args: ["-A", "."], reason: "Name the paths." },
+			{
+				name: "system-restart",
+				command: "systemctl",
+				match: { command_path: ["restart"], exclude_args: ["--user"] },
+				action: "ask",
+				reason: "Ask first.",
+			},
+		],
+		allow: ["^git\\b", "^systemctl\\b"],
+	};
+	const commandRuleRows: Array<[string, string, Expectation]> = [
+		["a deny rule beats a user allow", "git add -A", { layer: "rule", ruleId: "user-command:no-bulk-add" }],
+		["a deny rule reads past git's global options", "git -C sub add .", { layer: "rule", ruleId: "user-command:no-bulk-add" }],
+		["a deny rule looks inside sh -c", "sh -c 'git add -A'", { layer: "rule", ruleId: "user-command:no-bulk-add" }],
+		["a commit message naming the rule's words leaves the allow", "git commit -m 'git add -A'", { layer: "allow" }],
+		["an ask rule beats a user allow", "systemctl restart nginx", { layer: "rule-ask", reasonIncludes: "user-command:system-restart" }],
+		["exclude_args clears an ask rule", "systemctl --user restart pipewire", { layer: "allow" }],
+	];
+	for (const [label, command, expected] of commandRuleRows) {
+		cases.push({ label, family: "command-rules", tool: "bash", input: { command }, config: commandRules, ref: "ADR-0013", expected });
+	}
 
 	// ---- residual ---------------------------------------------------------------------
 	// Accepted residuals of ADR-0007, ADR-0008 and ADR-0009, pinned at the route they take today, so a

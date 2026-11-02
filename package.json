@@ -53,6 +53,7 @@
 		"provenance": "bun run tools/provenance.ts",
 		"release-check": "bun run tools/release-check.ts",
 		"replay": "bun run tools/replay.ts",
+		"rules-verify": "bun run tools/rules-verify.ts",
 		"lint": "mise exec -- biome lint .",
 		"format": "mise exec -- biome format --write ."
 	},

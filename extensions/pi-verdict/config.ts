@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { agentDirPath, findProjectConfig, userConfigPath } from "./agent-dir.ts";
+import { type CommandRuleSet, loadCommandRules, NO_COMMAND_RULES } from "./command-rules.ts";
 import { type FloorOverrides, NO_OVERRIDES, parseFloorOverrides } from "./floor-overrides.ts";
 import { projectRootOf, projectTrustState, readTrustStore, rootIn } from "./trust.ts";
 
@@ -77,6 +78,9 @@ export interface UserRules {
 	builtinDenyFloor: boolean;
 	/** Per-rule changes to the built-in floor, by rule id (ADR-0013); user-only. Config key: "floorOverrides". */
 	floorOverrides: FloorOverrides;
+	/** The user's and a trusted project's command rules, indexed by command (ADR-0013). Config keys: "commandRules" and the
+	 *  user-only "commandRuleFiles". */
+	commandRules: CommandRuleSet;
 	/** Forced gate on `.omp` directories: any file-tool path or bash token that resolves into a `.omp` path segment (lexical or realpath form) is a terminal ask (non-interactive → deny). Default false (fork decision: the self-protection layer carries the protection; ADR-0005); checked after the built-in floor and user deny, before denyPaths/user allow. Config key: "gateOmpDir". */
 	gateOmpDir: boolean;
 	/** [pi-verdict local patch: autoDeny] false → auto-review denies become interactive asks (headless still denies). Default true. */
@@ -120,6 +124,7 @@ export const EMPTY_RULES: Readonly<UserRules> = {
 	tools: [],
 	builtinDenyFloor: true,
 	floorOverrides: NO_OVERRIDES,
+	commandRules: NO_COMMAND_RULES,
 	gateOmpDir: false,
 	classifierModel: null,
 	explainGateModel: null,
@@ -188,13 +193,15 @@ export const COVERAGE_SIGNAL_FIELD_TYPE: Record<(typeof COVERAGE_SIGNAL_FIELDS)[
 export const USER_CONFIG_TEMPLATE = `${JSON.stringify(
 	{
 		_hint:
-			'pi-verdict user rules — full reference: https://github.com/jonatsu/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor and the code-loading ask (writes where omp or pi loads code in later sessions ask for your confirmation) at your own risk. floorOverrides switches off ("off") or softens to a confirmation ("ask") one built-in floor rule by its id, optionally only under listed paths, e.g. {"S0:pem": {"action": "ask", "paths": ["~/src/project/test-keys"]}}; the rule ids are listed in the reference, and a project config cannot set it. gateOmpDir (default false; the self-protection layer over the gate\'s own files stays on regardless): true makes any read/write touching a .omp directory ask for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools (the legacy key ignoreTools is accepted as a deprecated alias): exact names of non-path, non-command tools (e.g. todo, ask) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer fails closed or, with the jev classifier, reports a confidence below classifierMinConfidence (0-100; null = off); mode enforce (default) lets the second layer adjudicate, shadow only records its opinion while the human decides. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. "npm install is expected in this repo"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: normal default / off / auto; off makes the gate inert in subagents) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp\'s extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: "full" (Nerd Font powerline blocks, default) | "compact" (plain text) | "off" (no footer status).',
+			'pi-verdict user rules — full reference: https://github.com/jonatsu/pi-verdict/blob/main/docs/configuration.md. deny beats allow. denyPaths: protected paths, any touch asks for your confirmation (non-interactive degrades to deny); the pre-filled starter list is your declaration, edit or empty freely. builtinDenyFloor=false disables the built-in danger floor and the code-loading ask (writes where omp or pi loads code in later sessions ask for your confirmation) at your own risk. floorOverrides switches off ("off") or softens to a confirmation ("ask") one built-in floor rule by its id, optionally only under listed paths, e.g. {"S0:pem": {"action": "ask", "paths": ["~/src/project/test-keys"]}}; the rule ids are listed in the reference, and a project config cannot set it. commandRules: cc-safety-net rulebook rules matched on a command\'s words, with "action" "deny" (default) or "ask", e.g. {"name": "no-bulk-add", "command": "git", "subcommand": "add", "block_args": ["-A", "."], "reason": "Name the paths."}; an allow rule never overrides them. commandRuleFiles names rulebook.json files in <agentDir>/config/pi-verdict-rules/; check their fixtures with bun run rules-verify. gateOmpDir (default false; the self-protection layer over the gate\'s own files stays on regardless): true makes any read/write touching a .omp directory ask for your confirmation (non-interactive degrades to deny); false disables it; also togglable via /verdict. tools (the legacy key ignoreTools is accepted as a deprecated alias): exact names of non-path, non-command tools (e.g. todo, ask) that skip the classifier and are allowed directly; the pre-filled starter list holds only tools without side effects of their own, edit or empty freely. classifierModel pins the classifier (provider/id, e.g. zai/glm-5.3-flash; empty = session model). classifierFallbackModel (optional) adds a second-layer classifier consulted only when the first layer fails closed or, with the jev classifier, reports a confidence below classifierMinConfidence (0-100; null = off); mode enforce (default) lets the second layer adjudicate, shadow only records its opinion while the human decides. toggleShortcut sets the master-switch toggle key (null or empty disables). Changes apply to new sessions. autoDeny=false turns every auto-review deny (danger floor, deny rules, classifier) into a confirmation prompt; non-interactive sessions still deny. rules: free-text rules for the classifier (e.g. "npm install is expected in this repo"); they take precedence over its default criteria. explainGateModel (provider/id[:thinking]; empty = session model) and explainGatePrompt (empty = built-in default) configure the EXPLAIN-GATE role behind the Explain option of the confirmation dialog; it is never offered for protected-path or .omp asks. subagentGate (omp only: normal default / off / auto; off makes the gate inert in subagents) routes asks raised inside subagents to the root UI (normal) or straight to the second model (auto); unanswered within subagentAskTimeoutMs (default 60000) an ask is resolved by classifierFallbackModel, and only its explicit allow permits the call — set omp\'s extensionHandlers.toolCallTimeoutMs to at least subagentAskTimeoutMs + 60000. footer: "full" (Nerd Font powerline blocks, default) | "compact" (plain text) | "off" (no footer status).',
 		allow: ["^ls\\b"],
 		deny: [],
 		tools: DEFAULT_ALLOWED_TOOLS,
 		denyPaths: ["~/.ssh/", "~/.profile", "~/.gnupg", "~/.mc", "~/.zshrc", "~/.bashrc"],
 		builtinDenyFloor: true,
 		floorOverrides: {},
+		commandRules: [],
+		commandRuleFiles: [],
 		gateOmpDir: false,
 		autoDeny: true,
 		classifierModel: null,
@@ -286,6 +293,8 @@ const narrowScalar = (key: string, userVal: unknown, projVal: unknown, accept: u
 const PROJECT_OVERRIDE_DIRECTION: Record<string, ProjectOverrideNarrow> = {
 	deny: (userVal, projVal) => unionKeepingInvalid(userVal, projVal),
 	denyPaths: (userVal, projVal) => unionKeepingInvalid(userVal, projVal),
+	// A project's command rules only add rules; they load apart from the user's, under project ids.
+	commandRules: (userVal) => userVal,
 	allow: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
 	tools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
 	ignoreTools: (userVal, projVal) => stringList(userVal).filter((x) => stringList(projVal).includes(x)),
@@ -315,6 +324,8 @@ const KNOWN_USER_KEYS: Record<string, true> = {
 	ignoreTools: true,
 	builtinDenyFloor: true,
 	floorOverrides: true,
+	commandRules: true,
+	commandRuleFiles: true,
 	gateOmpDir: true,
 	classifierModel: true,
 	explainGateModel: true,
@@ -359,6 +370,8 @@ export function loadUserRules(cwd: string | null = null, sessionTrustedRoot: str
 			ignoreTools?: unknown;
 			builtinDenyFloor?: unknown;
 			floorOverrides?: unknown;
+			commandRules?: unknown;
+			commandRuleFiles?: unknown;
 			gateOmpDir?: unknown;
 			classifierModel?: unknown;
 			explainGateModel?: unknown;
@@ -403,6 +416,7 @@ export function loadUserRules(cwd: string | null = null, sessionTrustedRoot: str
 		// config over the global raw object, narrowing only (ADR-0006/R7)
 		const agentDir = agentDirPath();
 		let project: LoadedRules["project"] = null;
+		let projectCommandRules: unknown;
 		const pp = cwd === null ? null : findProjectConfig(cwd, agentDir);
 		if (pp) {
 			const root = projectRootOf(pp);
@@ -437,6 +451,7 @@ export function loadUserRules(cwd: string | null = null, sessionTrustedRoot: str
 					// PROJECT_OVERRIDE_DIRECTION applies its own narrowing merge; a key absent
 					// from the table is not overridable per project at all (handled below).
 					coerceSingleStringLists(projRaw as Record<string, unknown>, skipped, pp);
+					projectCommandRules = (projRaw as Record<string, unknown>).commandRules;
 					const merged = { ...raw } as Record<string, unknown>;
 					for (const [k, v] of Object.entries(projRaw as Record<string, unknown>)) {
 						const narrow = Object.hasOwn(PROJECT_OVERRIDE_DIRECTION, k) ? PROJECT_OVERRIDE_DIRECTION[k] : undefined;
@@ -540,6 +555,12 @@ export function loadUserRules(cwd: string | null = null, sessionTrustedRoot: str
 		// A broken override entry leaves its rule on, so it is named but never degrades the policy.
 		const overrides = parseFloorOverrides(raw.floorOverrides);
 		skipped.push(...overrides.warnings.map((w) => `${w} (${p})`));
+		// A skipped command rule silently removes a protection, as a skipped deny entry does (ADR-0010).
+		const commands = loadCommandRules({ inline: raw.commandRules, files: raw.commandRuleFiles, project: projectCommandRules, agentDir });
+		if (commands.errors.length > 0) {
+			degraded = true;
+			skipped.push(...commands.errors);
+		}
 		return {
 			rules: {
 				allow: compile("allow", raw.allow),
@@ -550,6 +571,7 @@ export function loadUserRules(cwd: string | null = null, sessionTrustedRoot: str
 				tools,
 				builtinDenyFloor: raw.builtinDenyFloor !== false,
 				floorOverrides: overrides.overrides,
+				commandRules: commands.set,
 				gateOmpDir: raw.gateOmpDir === true,
 				classifierModel: typeof raw.classifierModel === "string" && raw.classifierModel.trim() ? raw.classifierModel.trim() : null,
 				explainGateModel: typeof raw.explainGateModel === "string" && raw.explainGateModel.trim() ? raw.explainGateModel.trim() : null,

@@ -269,12 +269,19 @@ export const BASH_FLOOR_RULE_IDS: readonly string[] = [...BASH_DANGER_RULES.map(
  * has to never miss; the word view clears a false trip (ADR-0007). A backslash-newline may split a
  * word in the raw text, so the tripwire also tests the spelling with unescaped continuations removed
  * (an escaped `\\` pair is left alone: the shell splits there, and both views still hit that input).
+ * The floor reads the first `BASH_MAX_MATCH_LEN` characters; a caller whose tripwire stays linear may
+ * pass a larger `cap`.
  */
-export function tripwireHit(command: string, tripwire: Tripwire): boolean {
-	const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
+export function tripwireHit(command: string, tripwire: Tripwire, cap: number = BASH_MAX_MATCH_LEN): boolean {
+	const capped = command.length > cap ? command.slice(0, cap) : command;
 	if (tripwireMatches(capped, tripwire)) return true;
-	const joined = capped.replace(/(?<!\\)\\\r?\n/g, "");
+	const joined = joinContinuations(capped);
 	return joined !== capped && tripwireMatches(joined, tripwire);
+}
+
+/** The text with every unescaped backslash-newline removed, as the shell joins a continued line. */
+export function joinContinuations(text: string): string {
+	return text.replace(/(?<!\\)\\\r?\n/g, "");
 }
 
 /** How a `words` rule reads text: through the word view, or on its tripwire alone. */

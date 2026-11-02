@@ -14,6 +14,7 @@ import { agentDirPath, OWN_FILE_PATH } from "../extensions/pi-verdict/agent-dir.
 import { allowOperandsAdmit, MAX_GRADED_OPERANDS } from "../extensions/pi-verdict/allow-operands.ts";
 import { buildTranscript } from "../extensions/pi-verdict/classifier.ts";
 import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
+import { newArgBudget, parseRulebook } from "../extensions/pi-verdict/command-rules.ts";
 import { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "../extensions/pi-verdict/floor.ts";
 import autoMode, {
 	type AdjudicateEnv,
@@ -53,6 +54,7 @@ import {
 	subagentAskWindow,
 } from "../extensions/pi-verdict/subagent.ts";
 import { renderReport, replayAudit } from "../tools/replay.ts";
+import { verifyRulebook } from "../tools/rules-verify.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -322,6 +324,8 @@ function setConfig(
 		subagentGate?: unknown;
 		subagentAskTimeoutMs?: unknown;
 		floorOverrides?: unknown;
+		commandRules?: unknown;
+		commandRuleFiles?: unknown;
 	},
 	invalid?: string[],
 ): void {
@@ -346,6 +350,8 @@ function setConfig(
 	if (cfg.subagentGate !== undefined) raw.subagentGate = cfg.subagentGate;
 	if (cfg.subagentAskTimeoutMs !== undefined) raw.subagentAskTimeoutMs = cfg.subagentAskTimeoutMs;
 	if (cfg.floorOverrides !== undefined) raw.floorOverrides = cfg.floorOverrides;
+	if (cfg.commandRules !== undefined) raw.commandRules = cfg.commandRules;
+	if (cfg.commandRuleFiles !== undefined) raw.commandRuleFiles = cfg.commandRuleFiles;
 	// denyPaths (ADR-0002): unknown[] lets negative tests mix in non-string entries
 	if (cfg.denyPaths !== undefined) raw.denyPaths = cfg.denyPaths;
 	// tools / ignoreTools (the deprecated alias): unknown[] lets negative tests mix in non-string entries
@@ -9598,5 +9604,211 @@ describe("graded recursive delete (ADR-0013)", () => {
 		const cfg = { floorOverrides: { "rm-outside-project": { action: "ask", paths: ["/opt/scratch"] } } };
 		expect((await run(`${RM} /opt/scratch/x`, { cfg })).reason).toContain("softened to an ask");
 		expect((await run(`${RM} /opt/other`, { cfg })).reason).toContain("rule rm-outside-project");
+	});
+});
+
+describe("command rules (ADR-0013)", () => {
+	const BASE = plannedTempDir(os.tmpdir(), "pv-command-rules-");
+	const PROJ = path.join(BASE, "proj");
+	const RULES_DIR = () => path.join(TMP_AGENT, "config", "pi-verdict-rules");
+	beforeAll(() => fs.mkdirSync(PROJ, { recursive: true }));
+	afterAll(() => {
+		fs.rmSync(BASE, { recursive: true, force: true });
+		fs.rmSync(RULES_DIR(), { recursive: true, force: true });
+	});
+
+	const BULK_ADD = {
+		name: "no-bulk-add",
+		command: "git",
+		subcommand: "add",
+		block_args: ["-A", "--all", "-u", "."],
+		reason: "Name the paths.",
+	};
+	const RESTART = {
+		name: "system-restart",
+		command: "systemctl",
+		match: { command_path: ["restart"], exclude_args: ["--user"] },
+		action: "ask",
+		reason: "Restarting a system unit changes the host.",
+	};
+	const headless = (cfg: Parameters<typeof setConfig>[0] = {}): Harness => {
+		const h = session({ commandRules: [BULK_ADD, RESTART], ...cfg }, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		return h;
+	};
+	const reason = async (command: string, cfg: Parameters<typeof setConfig>[0] = {}): Promise<string> =>
+		String((await toolCall(headless(cfg), "bash", { command }))?.reason ?? "classifier allow");
+	const notes = async (h: Harness): Promise<string> => {
+		await h.handlers.session_start({}, h.ctx);
+		return h.notifies.map(([m]) => m).join("\n");
+	};
+
+	test("a deny rule blocks its command with the rule's id and reason, without the classifier", async () => {
+		const h = headless();
+		const r = await toolCall(h, "bash", { command: "git add -A" });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("command rule user-command:no-bulk-add: Name the paths.");
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("the rule reads past wrappers, git's global options, chains, sh -c, short bundles and continued lines", async () => {
+		for (const command of [
+			"git -C sub add .",
+			"timeout 5 git add --all",
+			"ls && git add -u",
+			"sh -c 'git add -A'",
+			"git add -vAn",
+			"gi\\\nt add -A",
+			"/usr/bin/git add .",
+		]) {
+			expect(await reason(command)).toContain("user-command:no-bulk-add");
+		}
+	});
+
+	test("text the command never runs does not match", async () => {
+		for (const command of [
+			"echo git add -A",
+			"git commit -m 'git add -A'",
+			"git add -- src/a.ts",
+			"git commit -Am fix",
+			"grep -r 'git add .' docs",
+		]) {
+			expect(await reason(command)).toBe("classifier allow");
+		}
+	});
+
+	test("a heredoc commit message stays clear of a git add rule", async () => {
+		const command = "git commit -m \"$(cat <<'EOF'\nfix: name the paths\nEOF\n)\"";
+		expect(await reason(command)).toBe("classifier allow");
+	});
+
+	test("an option the gate cannot read before the subcommand fails closed", async () => {
+		expect(await reason("git --unknown-flag add -A")).toContain("user-command:no-bulk-add");
+	});
+
+	test("a version 2 ask rule asks, and its exclude_args clears it", async () => {
+		expect(await reason("systemctl restart nginx")).toContain("command rule user-command:system-restart");
+		expect(await reason("systemctl --user restart pipewire")).toBe("classifier allow");
+	});
+
+	test("an ask rule beats a user allow rule and asks a human", async () => {
+		const h = session({ commandRules: [RESTART], allow: [".*"] }, { cwd: PROJ });
+		h.confirmAnswer = false;
+		const r = await toolCall(h, "bash", { command: "systemctl restart nginx" });
+		expect(r?.block).toBe(true);
+		expect(h.confirms).toBe(1);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a deny rule beats a user allow rule", async () => {
+		expect(await reason("git add -A", { allow: [".*"] })).toContain("user-command:no-bulk-add");
+	});
+
+	test("a rule applies past the action-line cap", async () => {
+		const r = await reason(`echo ${"x".repeat(9000)} && git add -A`);
+		expect(r).toContain("user-command:no-bulk-add");
+	});
+
+	test("a rule applies to the shell lines of a Python cell", async () => {
+		const h = headless();
+		const r = await toolCall(h, "eval", { language: "py", code: "!git add -A" });
+		expect(String(r?.reason)).toContain("user-command:no-bulk-add");
+	});
+
+	test("a rulebook file in the rules directory loads, and its hits carry the book name", async () => {
+		fs.mkdirSync(RULES_DIR(), { recursive: true });
+		fs.writeFileSync(
+			path.join(RULES_DIR(), "local.json"),
+			JSON.stringify({ name: "local", rulebook_version: 1, rules: [{ ...BULK_ADD, intent: "keep commits scoped" }] }),
+		);
+		expect(await reason("git add .", { commandRules: [], commandRuleFiles: ["local.json"] })).toContain("user-command:local/no-bulk-add");
+	});
+
+	test("a rule file outside the rules directory is skipped, named, and degrades the policy", async () => {
+		const outside = path.join(BASE, "book.json");
+		fs.writeFileSync(outside, JSON.stringify({ name: "outside", rulebook_version: 1, rules: [BULK_ADD] }));
+		const h = headless({ commandRules: [], commandRuleFiles: [outside] });
+		expect(await notes(h)).toContain("is outside");
+		expect(String((await toolCall(h, "bash", { command: "git add ." }))?.reason)).not.toContain("command rule");
+		expect(String(h.notifies.map(([m]) => m).join("\n"))).toContain("degraded");
+	});
+
+	test("an invalid rule is skipped, named, and degrades the policy", () => {
+		fs.mkdirSync(path.join(TMP_AGENT, "config"), { recursive: true });
+		fs.writeFileSync(
+			path.join(TMP_AGENT, "config", "pi-verdict.json"),
+			JSON.stringify({ commandRules: [{ ...BULK_ADD, extra: 1 }, BULK_ADD] }),
+		);
+		const state = new SessionState(TMP_AGENT);
+		const report = state.reloadRules(PROJ);
+		expect(state.policyDegraded).toBe(true);
+		expect(report.skipped.join("\n")).toContain("unknown field extra");
+		expect(state.userRules.commandRules.rules.map((r) => r.id)).toEqual(["user-command:no-bulk-add"]);
+	});
+
+	test("a trusted project may add inline rules but not name rule files", async () => {
+		await withTempDir("pv-proj-command-rules-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			const project = {
+				commandRules: [{ name: "no-rebase-pull", command: "git", subcommand: "pull", block_args: ["--rebase"], reason: "Merge instead." }],
+			};
+			fs.writeFileSync(path.join(dir, ".pi", "pi-verdict.json"), JSON.stringify({ ...project, commandRuleFiles: ["x.json"] }));
+			const trustFile = path.join(TMP_AGENT, "config", "pi-verdict-trust.json");
+			fs.rmSync(trustFile, { force: true });
+			const h = session({ commandRules: [BULK_ADD] }, { cwd: dir });
+			(h as any).selectIndex = 0; // Trust
+			try {
+				expect(await notes(h)).toContain("commandRuleFiles: not overridable per project");
+				h.ctx.hasUI = false;
+				expect(String((await toolCall(h, "bash", { command: "git pull --rebase" }))?.reason)).toContain("project-command:no-rebase-pull");
+				expect(String((await toolCall(h, "bash", { command: "git add ." }))?.reason)).toContain("user-command:no-bulk-add");
+			} finally {
+				fs.rmSync(trustFile, { force: true });
+			}
+		});
+	});
+
+	test("self-protection denies agent writes to the rules directory", async () => {
+		const h = headless();
+		const write = await toolCall(h, "write", { path: path.join(RULES_DIR(), "local.json"), content: "{}" });
+		expect(write?.block).toBe(true);
+		expect(String(write?.reason)).toContain("self-protection");
+		const shell = await toolCall(h, "bash", { command: `cd ${path.join(TMP_AGENT, "config")} && echo {} > pi-verdict-rules/local.json` });
+		expect(shell?.block).toBe(true);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("the audit records the rule id of a command-rule deny and ask", async () => {
+		clearAudit();
+		const h = session({ commandRules: [BULK_ADD, RESTART], audit: true }, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		await toolCall(h, "bash", { command: "git add -A" });
+		await toolCall(h, "bash", { command: "systemctl restart nginx" });
+		const rules = readAudit().map((r: any) => r.rule);
+		expect(rules).toContain("user-command:no-bulk-add");
+		expect(rules).toContain("user-command:system-restart");
+		clearAudit();
+	});
+
+	test("rules-verify checks a rulebook's fixtures against the matcher", () => {
+		const book = parseRulebook(
+			JSON.stringify({
+				name: "local",
+				rulebook_version: 1,
+				rules: [BULK_ADD],
+				tests: [
+					{ command: "git add -A", expect: "blocked", rule: "no-bulk-add" },
+					{ command: "git add -- a.ts", expect: "allowed" },
+					{ command: "git add a.ts", expect: "blocked", rule: "no-bulk-add" },
+					{ command: "git add .", expect: "blocked" },
+				],
+			}),
+			"user-command",
+			newArgBudget(),
+		);
+		const problems = verifyRulebook(book);
+		expect(problems).toHaveLength(1);
+		expect(problems[0]).toContain("tests[2]");
 	});
 });

@@ -570,8 +570,9 @@ function reparsesWords(seg: readonly string[]): boolean {
 
 /** What a floor rule's word view looks for. */
 export interface CommandMatcher {
-	/** Whether one simple command runs the rule's dangerous command. */
-	readonly runs: (seg: readonly string[]) => boolean;
+	/** Whether one simple command runs the rule's dangerous command. `inert` holds the indexes of the words the
+	 *  command only prints or records, empty when the command's output may run. */
+	readonly runs: (seg: readonly string[], inert: ReadonlySet<number>) => boolean;
 	/** Whether one word holds the rule's dangerous text. */
 	readonly mentions: (word: string) => boolean;
 }
@@ -591,8 +592,9 @@ export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): 
 	const inertAllowed = !outputMayRun(text, words);
 	for (const seg of commandSegments(words)) {
 		if (reparsesWords(seg)) return true;
-		if (matcher.runs(seg)) return true;
-		const judged = new Set(inertAllowed ? inertWordIndexes(seg) : []);
+		const inert = inertAllowed ? inertWordIndexes(seg) : new Set<number>();
+		if (matcher.runs(seg, inert)) return true;
+		const judged = new Set(inert);
 		for (let i = 0; i < seg.length; i++) {
 			if (!SHELL_NAMES.has(wordBasename(seg[i]))) continue;
 			const script = shellScriptAt(seg, i);

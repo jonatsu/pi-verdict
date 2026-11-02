@@ -108,16 +108,18 @@ deny-side step runs before any allow step. The numbers match the layer table in 
 
 ```mermaid
 flowchart TD
-  Read["readCall: toolAccess(tool, input)<br/>targets, direction, glob / opaque / internal-URL flags"] --> Self
+  Read["readCall: toolAccess(tool, input)<br/>targets, direction, glob / opaque / internal-URL flags,<br/>matching command rules"] --> Self
   Self["0 Self-protection (ADR-0005)<br/>hard deny, no config exempts it"] -->|deny| D0[deny]
   Self -->|null| Floor
   Floor["1 Built-in floor: gradeBase<br/>bash danger rules, path sensitivity S0-S5"] -->|deny| D1[deny]
   Floor -->|"any other grade,<br/>kept for step 8"| UDeny
   subgraph denyside [deny-side steps: each can only narrow]
-    UDeny["2 User deny regexes"] --> Omp["3 Forced .omp gate"]
+    UDeny["2 User deny regexes,<br/>then deny command rules (ADR-0013)"] --> Omp["3 Forced .omp gate"]
     Omp --> DP["4 denyPaths ask,<br/>then the strict redactor's ask"]
     DP --> Code["4a Code-loading ask (ADR-0011)"]
-    Code --> Cap["5 Over-cap ask"]
+    Code --> Soft["4a (end) Softened floor ask (floorOverrides)"]
+    Soft --> CRAsk["4b Ask command rules (ADR-0013)"]
+    CRAsk --> Cap["5 Over-cap ask"]
   end
   subgraph allowside [allow steps: only for a vouchable call]
     UAllow["6 User allow regexes<br/>(one simple command, operands graded,<br/>ADR-0008), then the tools exemption"]
@@ -225,6 +227,7 @@ flowchart BT
     paths[paths: canonical forms, containment]
     agentdir[agent-dir: install anchor]
     overrides[floor-overrides: per-rule floor overrides and their scope]
+    commandrules[command-rules: rulebook loader and word matcher]
     config[config + trust: user policy, project trust]
     floor[floor: path sensitivity S0-S5]
     access[access: tool-access adapter, host path spellings]

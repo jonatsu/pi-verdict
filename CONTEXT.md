@@ -68,6 +68,10 @@ Allow/deny regexes configured by the user in `<agentDir>/config/pi-verdict.json`
 
 A user's change to one built-in floor rule, named by its **rule id** (`S0:pem`, `sudo`, `code-loading`): `off` skips the rule, and `ask` turns its deny into a **softened ask** raised before user allow. A **scope** of directories limits it to calls whose every form sits inside one. Config key `floorOverrides` (ADR-0013). _Avoid_: exemption, whitelist entry.
 
+### command rule
+
+A user's or a trusted project's rule that denies or asks on a shell command by its words: a command name, the subcommand or **command path** words after it, and the argument words that trigger it, in cc-safety-net's rulebook rule shape. A **rulebook** is a file of such rules with its own test fixtures. Config keys `commandRules` and `commandRuleFiles` (ADR-0013). _Avoid_: custom rule, policy rule, deny regex (a user `deny` regex matches text, not words).
+
 ### agentDir self-anchoring
 
 Resolution rules for `<agentDir>` (#35, dual-host): the explicit `PI_CODING_AGENT_DIR` override always takes priority; otherwise, infer it from the extension's own install location—when it is under `<home>/<dot-dir>/(agent/)?(plugins/node_modules/<pkg>/)?extensions/`, anchor to `<home>/<dot-dir>/agent` (covering pi's `~/.pi/agent` and omp's `~/.omp/agent`; on omp 18.1+, the plugin directory is alongside `agent/` (`<dot-dir>/plugins/...`), while on versions ≤18.0 it is nested beneath it; both layouts match, and the configuration tree is always at `<dot-dir>/agent/config/`); if it cannot be anchored, fall back to `~/.pi/agent` (dev checkout). **Do not** substitute host-directory-tree existence checks for self-anchoring: on a machine with both hosts, the presence of `~/.omp` must not redirect a run under pi. S0 credential deny rules use the same anchor across both host layouts.

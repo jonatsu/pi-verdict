@@ -51,6 +51,8 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	// The gate's decision inputs: the policy and the project-trust store.
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict.json"))) exact.add(f);
 	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict-trust.json"))) exact.add(f);
+	// The rule files the policy loads command rules from (ADR-0013).
+	for (const f of baseForms(path.join(agentDir, "config", "pi-verdict-rules"))) prefixes.add(f);
 
 	const install = ownFile ? installTargets(agentDir, ownFile) : [];
 	for (const { target, isExact } of install) (isExact ? exact : prefixes).add(target);
@@ -64,7 +66,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 
 	// Every spelling of a gate config path contains its file name; the install, enablement and audit
 	// paths need each spelling.
-	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/, /plugin-overrides\.json/];
+	const bashPatterns: RegExp[] = [/pi-verdict\.json/, /pi-verdict-trust\.json/, /pi-verdict-rules/, /plugin-overrides\.json/];
 	if (installTargetPaths.size > 0) bashPatterns.push(pathAlternation([...installTargetPaths], agentDir));
 	if (enablement.length > 0) bashPatterns.push(pathAlternation(enablement, agentDir));
 
