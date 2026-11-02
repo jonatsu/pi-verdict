@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { escapeRegExp } from "./agent-dir.ts";
 import { isWithin } from "./paths.ts";
-import { inOrder, joinContinuations, type Tripwire, tripwireHit } from "./shell.ts";
+import { BASH_MAX_MATCH_LEN, inOrder, joinContinuations, type Tripwire, tripwireHit } from "./shell.ts";
 import { anyCommandIn, gitSubcommandIndex, mayExpand, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
@@ -376,6 +376,10 @@ function segmentRuns(seg: readonly string[], inert: ReadonlySet<number>, rule: C
 	return seg.some((word, at) => !inert.has(at) && commandName(word) === rule.command && runsAt(seg, at, rule));
 }
 
+/** The longest text the word view reads for command rules; one segment's word scan grows with the square of
+ *  how often it names a ruled command. */
+const WORD_READ_LIMIT = 8 * BASH_MAX_MATCH_LEN;
+
 /** The loaded command rules, indexed by command name. */
 export interface CommandRuleSet {
 	readonly rules: readonly CommandRule[];
@@ -408,6 +412,8 @@ export function matchingCommandRules(text: string, set: CommandRuleSet): Command
 		.flatMap(([, rules]) => rules)
 		.filter((rule) => tripwireHit(text, rule.tripwire, Number.POSITIVE_INFINITY));
 	if (candidates.length === 0) return [];
+	// Fails closed: past the read limit the tripwire hits decide, which keeps the cost linear.
+	if (text.length > WORD_READ_LIMIT) return candidates.sort((a, b) => set.rules.indexOf(a) - set.rules.indexOf(b));
 	const hits = new Set<CommandRule>();
 	const mark = (test: (rule: CommandRule) => boolean): false => {
 		for (const rule of candidates) if (!hits.has(rule) && test(rule)) hits.add(rule);

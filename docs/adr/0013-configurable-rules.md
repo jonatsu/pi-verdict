@@ -156,7 +156,7 @@ A new user-only key, `floorOverrides`, changes one built-in rule by its id:
 
 ### 4. Recursive deletes graded by target
 
-`rm-recursive` becomes a `words` rule. Its tripwire is today's regex, widened to an abbreviated `--rec…` and a quoted
+`rm-recursive` becomes a `words` rule. Its tripwire is today's regex, widened to an abbreviated `--r…` and a quoted
 `'-rf'`. The project is the session cwd. A relative operand resolves from the command cwd, and is unreadable when that
 directory is not exact. A leading `cd X &&` is first moved into the call's working directory, as omp itself does
 (`src/tools/bash.ts:1020-1031`, omp 18.13.0); any other `cd` earlier in the command makes every relative operand

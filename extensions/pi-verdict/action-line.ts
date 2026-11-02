@@ -97,15 +97,15 @@ export function actionCallLine(
 	displayedCwd: string | null,
 ): { line: string; overCap: boolean } {
 	// The cap counts raw lengths, as the floor reads the raw text: zero-width padding cannot shrink an
-	// action below the cap. Only the displayed line is sanitized.
+	// action below the cap. Only the displayed line is sanitized, a private-key block included.
 	if (typeof args.command === "string") {
 		const raw = `${name}: ${withDisplayedCwd(args.command, displayedCwd)}`;
-		return { line: escapeLineBreaks(stripZeroWidth(raw)), overCap: raw.length > ACTION_LINE_MAX_CHARS };
+		return { line: escapeLineBreaks(cleanText(raw)), overCap: raw.length > ACTION_LINE_MAX_CHARS };
 	}
 	const access = toolAccess(name, args);
 	if (access.kind === "code" && access.command !== null) {
 		return {
-			line: `${name}: ${escapeLineBreaks(stripZeroWidth(access.command))}`,
+			line: `${name}: ${escapeLineBreaks(cleanText(access.command))}`,
 			overCap: `${name}: ${access.command}`.length > ACTION_LINE_MAX_CHARS,
 		};
 	}

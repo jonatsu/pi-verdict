@@ -13,7 +13,7 @@ import { allowOperandsAdmit } from "./allow-operands.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import { type CommandRule, type CommandRuleAction, matchingCommandRules } from "./command-rules.ts";
 import type { UserRules } from "./config.ts";
-import { deleteGrader } from "./delete-grade.ts";
+import { commandWorkingDirectory, type DeleteContext, deleteGrader } from "./delete-grade.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
 import { overrideFor } from "./floor-overrides.ts";
@@ -138,13 +138,8 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	const floorOn = ctx.userRules.builtinDenyFloor;
 	const overrides = ctx.userRules.floorOverrides;
 	if (isCommandTool(toolName)) {
-		const deletes = deleteGrader({
-			sessionCwd: ctx.sessionCwd,
-			commandCwd: ctx.commandCwd,
-			commandCwdExact: ctx.commandCwdExact,
-			homeReassigned: ctx.shellState.homeOperands,
-		});
-		return classifyBash(commandText(input), floorOn, shellLift(ctx), deletes);
+		const command = commandText(input);
+		return classifyBash(command, floorOn, shellLift(ctx, command), deleteGrader(directoryContext(ctx)));
 	}
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
@@ -158,18 +153,45 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.
 		const lines = shellText(toolName, input, access);
-		return lines ? classifyPyShellLines(lines, floorOn, shellLift(ctx)) : { verdict: "gray" };
+		return lines ? classifyPyShellLines(lines, floorOn, shellLift(ctx, lines)) : { verdict: "gray" };
 	}
 	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 }
 
+/** The directories a shell command's paths resolve against, and what the session's shell may have moved. */
+function directoryContext(ctx: RuleContext): DeleteContext {
+	return {
+		sessionCwd: ctx.sessionCwd,
+		commandCwd: ctx.commandCwd,
+		commandCwdExact: ctx.commandCwdExact,
+		homeReassigned: ctx.shellState.homeOperands,
+		workingDirectoryUnknown: ctx.shellState.workingDirectory,
+	};
+}
+
+/** Matches an option or variable that moves where a command works (`git -C`, `env -C`, `GIT_DIR=`), which a
+ *  scoped override cannot place; quoted or not. */
+const DIRECTORY_OPTION = /(?:^|\s)['"]?(?:-C|--git-dir|--work-tree|--chdir)(?:['"\s=]|$)|\bGIT_(?:DIR|WORK_TREE)=/;
+
 /** Returns how the overrides lift a shell floor rule. A graded delete is scoped by its target's forms. Any
- *  other rule names no target the floor can see, so a scoped override applies only while both the session
- *  cwd and the command cwd sit inside its scope, in every form; a command cwd the gate cannot resolve keeps
- *  every rule on. */
-function shellLift(ctx: RuleContext): FloorLift {
-	const cwdForms = ctx.commandCwdExact ? [...baseForms(ctx.sessionCwd), ...baseForms(ctx.commandCwd)] : [];
-	return (id, targetForms) => overrideFor(ctx.userRules.floorOverrides, id, targetForms ?? cwdForms)?.action ?? null;
+ *  other rule names no target the floor can see, so a scoped override applies only while the session cwd,
+ *  the command cwd and the directory a leading `cd X &&` moves to all sit inside its scope, in every form.
+ *  Fails closed: any other directory change, an option or variable that moves it, or a directory the gate cannot resolve
+ *  keeps every rule on. */
+function shellLift(ctx: RuleContext, command: string): FloorLift {
+	// Read only when a scoped override needs it, so a call no override touches pays nothing.
+	let cwdForms: readonly string[] | undefined;
+	const directoryForms = (): readonly string[] => {
+		if (cwdForms !== undefined) return cwdForms;
+		const workingDirectory = commandWorkingDirectory(command, directoryContext(ctx));
+		cwdForms =
+			workingDirectory !== null && !DIRECTORY_OPTION.test(command)
+				? [...baseForms(ctx.sessionCwd), ...baseForms(ctx.commandCwd), ...baseForms(workingDirectory)]
+				: [];
+		return cwdForms;
+	};
+	const overrides = ctx.userRules.floorOverrides;
+	return (id, targetForms) => (overrides.has(id) ? (overrideFor(overrides, id, targetForms ?? directoryForms())?.action ?? null) : null);
 }
 
 /** Asks on a floor deny a `floorOverrides` entry softened (ADR-0013). It runs after the protected-path and

@@ -68,13 +68,16 @@ export interface DeleteCommand {
  *  none clears the floor's tripwire. Bound to the call's directories by the rule layer. */
 export type DeleteGrader = (deletes: readonly DeleteCommand[], command: string) => readonly DeleteHit[];
 
+/** The shortest `--recursive` abbreviation: GNU `rm` reads `--r` as unique among its long options. */
+const RM_LONG_PREFIX = 3;
+
 /** True when the words after an `rm` hold a recursive option before `--`: a short bundle with `r` or `R`, or
- *  `--recursive` abbreviated to at least `MIN_LONG_PREFIX` characters. */
+ *  `--recursive` abbreviated to at least `RM_LONG_PREFIX` characters. */
 export function rmIsRecursive(args: readonly string[]): boolean {
 	for (const word of args) {
 		if (word === "--") return false;
 		if (word.startsWith("--")) {
-			if (word.length >= MIN_LONG_PREFIX && "--recursive".startsWith(word)) return true;
+			if (word.length >= RM_LONG_PREFIX && "--recursive".startsWith(word)) return true;
 		} else if (word.startsWith("-") && /[rR]/.test(word.slice(1))) return true;
 	}
 	return false;
@@ -156,8 +159,9 @@ const GIT_PUSH_FORCE_RULE: BashDangerRule = {
 	runs: gitCommand("push", pushArgsForce),
 };
 
-/** Matches an `rm` word, then a short option bundle with `r`, quoted or not, or an abbreviated `--rec…`. */
-const RM_RECURSIVE_TRIPWIRE: Tripwire = inOrder(/\brm\b/i, /\s['"]?-[a-zA-Z]*r|--rec/i);
+/** Matches an `rm` word, then a short option bundle with `r`, quoted or not, or `--recursive` cut anywhere
+ *  after `--r`, as a whole word. */
+const RM_RECURSIVE_TRIPWIRE: Tripwire = inOrder(/\brm\b/i, /\s['"]?-[a-zA-Z]*r|--r(?:e(?:c(?:u(?:r(?:s(?:i(?:ve?)?)?)?)?)?)?)?(?![\w-])/i);
 
 const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	// Graded by target in the word view (ADR-0013); the tripwire alone decides a Python cell's shell lines.

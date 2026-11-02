@@ -9236,6 +9236,18 @@ describe("floorOverrides (ADR-0013)", () => {
 		expect(String(r?.reason)).not.toContain("softened");
 	});
 
+	test("a scoped bash override reads where a leading cd or git -C moves the command", async () => {
+		const sudo = "su" + "do ls";
+		const scoped = { sudo: { action: "ask", paths: [PROJ] }, "git-push-force": { action: "ask", paths: [PROJ] } };
+		const reasonOf = async (command: string) => String((await toolCall(headless(scoped), "bash", { command }))?.reason);
+		expect(await reasonOf(`cd ${KEYS} && ${sudo}`)).toContain("softened to an ask");
+		expect(await reasonOf(`cd ${OUTSIDE} && ${sudo}`)).not.toContain("softened");
+		expect(await reasonOf(`ls; cd ${KEYS}; ${sudo}`)).not.toContain("softened");
+		expect(await reasonOf(`git -C ${OUTSIDE} push --force`)).not.toContain("softened");
+		expect(await reasonOf(`git '-C' ${OUTSIDE} push --force`)).not.toContain("softened");
+		expect(await reasonOf(`GIT_DIR=${OUTSIDE}/.git git push --force`)).not.toContain("softened");
+	});
+
 	test("a rule that cannot be overridden stays on and is named", async () => {
 		const h = headless({ ["rm-" + "root"]: "off" });
 		expect(await reloadNotes(h)).toContain("this rule cannot be overridden");
@@ -9451,6 +9463,20 @@ describe("secret signatures (ADR-0013)", () => {
 		expect(sent).not.toContain(body);
 		expect(sent).toContain("[private key block redacted]");
 	});
+
+	test("a private-key block in the command or cell under review never reaches the classifier", async () => {
+		const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC";
+		const pemText = `-----BEGIN ${"OPENSSH PRIVATE"} KEY-----\n${body}\n-----END ${"OPENSSH PRIVATE"} KEY-----`;
+		for (const [tool, input] of [
+			["bash", { command: `cat > fresh.${"pem"} <<'EOF'\n${pemText}\nEOF` }],
+			["eval", { language: "py", code: `key = """${pemText}"""` }],
+		] as const) {
+			const h = headless();
+			await toolCall(h, tool, input);
+			const sent = JSON.stringify(h.calls[0]?.messages);
+			expect([tool, sent.includes(body), sent.includes("[private key block redacted]")]).toEqual([tool, false, true]);
+		}
+	});
 });
 
 describe("graded recursive delete (ADR-0013)", () => {
@@ -9605,6 +9631,68 @@ describe("graded recursive delete (ADR-0013)", () => {
 		expect((await run(`${RM} /opt/scratch/x`, { cfg })).reason).toContain("softened to an ask");
 		expect((await run(`${RM} /opt/other`, { cfg })).reason).toContain("rule rm-outside-project");
 	});
+
+	/** A headless session whose shell ran `earlier` in a past call. */
+	const afterEarlier = async (earlier: string, command: string, input: Record<string, unknown> = {}) => {
+		const h = session({}, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: earlier } }] },
+		});
+		return String((await toolCall(h, "bash", { command, ...input }))?.reason);
+	};
+
+	test("a relative target is unreadable once the session may have moved where a cd lands", async () => {
+		expect(await afterEarlier("proj() { cd ~; }", `proj; ${RM} .ssh`)).toContain("rule rm-unreadable-target");
+		expect(await afterEarlier("export CDPATH=$HOME", `cd .config && ${RM} nvim`)).toContain("rule rm-unreadable-target");
+		expect(await afterEarlier("shopt -s cdable_vars", `cd HOME && ${RM} x`)).toContain("rule rm-unreadable-target");
+	});
+
+	test("a leading cd that bash would look up in a set CDPATH is unreadable", async () => {
+		const saved = process.env.CDPATH;
+		process.env.CDPATH = os.homedir();
+		try {
+			await denies(`cd .config && ${RM} nvim`, "rm-unreadable-target");
+			await reachesClassifier(`cd ./build && ${RM} x`);
+		} finally {
+			if (saved === undefined) delete process.env.CDPATH;
+			else process.env.CDPATH = saved;
+		}
+	});
+
+	test("a quoted or escaped cd still makes relative targets unreadable", async () => {
+		await denies(`c''d ~; ${RM} .ssh`, "rm-unreadable-target");
+		await denies(`true && c\\d ~ && ${RM} .ssh`, "rm-unreadable-target");
+		await denies(`bash -c 'c\\d ~ && ${RM} .ssh'`, "rm-unreadable-target");
+		await denies(`bash -c "c''d ~ && ${RM} .ssh"`, "rm-unreadable-target");
+	});
+
+	test("a missing followed path is unreadable when another command runs first", async () => {
+		await denies(`l''n -s ~ /tmp/pv-made && ${RM} /tmp/pv-made/`, "rm-unreadable-target");
+		await denies(`cp -s ~ /tmp/pv-made2; ${RM} /tmp/pv-made2/x`, "rm-unreadable-target");
+		await reachesClassifier(`${RM} /tmp/pv-missing-dir/`);
+		await reachesClassifier(`${RM} /tmp/pv-missing-dir/ && true`);
+	});
+
+	test("rm --r and --re are recursive", async () => {
+		await denies("rm " + "--r /opt/x", "rm-outside-project");
+		await denies("rm " + "--re ~/Documents", "rm-outside-project");
+	});
+
+	test("a long here-document that writes code keeps relative deletes readable", async () => {
+		const longFile = `cat > src/x.ts <<'EOF'\n${"export function f() { return source(); }\n".repeat(300)}EOF`;
+		expect(await afterEarlier(longFile, `${RM} build`)).toBe("undefined");
+	});
+
+	test("a long option that is no rm --recursive prefix does not trip a Python cell", async () => {
+		const h = session({}, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		const r = await toolCall(h, "eval", { language: "py", code: "!rm -f out.o && cargo build --release" });
+		expect(String(r?.reason)).not.toContain("rm-recursive");
+	});
 });
 
 describe("command rules (ADR-0013)", () => {
@@ -9708,6 +9796,12 @@ describe("command rules (ADR-0013)", () => {
 	test("a rule applies past the action-line cap", async () => {
 		const r = await reason(`echo ${"x".repeat(9000)} && git add -A`);
 		expect(r).toContain("user-command:no-bulk-add");
+	});
+
+	test("past the word read limit every tripwire hit decides", async () => {
+		const padded = `git add -A ${"git ".repeat(30000)}`;
+		expect(await reason(padded)).toContain("user-command:no-bulk-add");
+		expect(await reason(`git commit -m 'git add -A' ${"x".repeat(70000)}`)).toContain("user-command:no-bulk-add");
 	});
 
 	test("a rule applies to the shell lines of a Python cell", async () => {

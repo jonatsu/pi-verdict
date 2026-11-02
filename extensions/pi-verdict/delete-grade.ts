@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { expandOperand, MAX_GRADED_OPERANDS } from "./allow-operands.ts";
 import { baseForms, fold, isWithin } from "./paths.ts";
 import type { DeleteCommand, DeleteGrader, DeleteHit } from "./shell.ts";
-import { shellWords } from "./shell-words.ts";
+import { anyCommandIn, shellWords } from "./shell-words.ts";
 
 // ============================================================================
 // Rule layer: recursive deletes graded by target (ADR-0013)
@@ -19,12 +19,20 @@ export interface DeleteContext {
 	readonly commandCwdExact: boolean;
 	/** True when a command of the session may have reassigned `HOME`, so `~` and `$HOME` name an unknown directory. */
 	readonly homeReassigned: boolean;
+	/** True when a command of the session may have moved where a `cd` lands (`CDPATH`, a function or alias). */
+	readonly workingDirectoryUnknown: boolean;
 }
 
 const GLOB_CHARS = /[*?[]/;
 const DIRECTORY_CHANGE = /\b(?:cd|pushd|popd)\b/g;
-/** Matches an `ln` word, which may create, before the delete runs, a symlink the gate cannot see yet. */
-const CREATES_LINKS = /\bln\b/;
+const DIRECTORY_COMMANDS: ReadonlySet<string> = new Set(["cd", "pushd", "popd"]);
+/** Matches what joins two commands, raw, so one inside an `sh -c` script counts. */
+const COMMAND_JOIN = /[;&|\n]/;
+/** Matches a command or process substitution, which runs before the command it sits in. */
+const SUBSTITUTION = /`|\$\(|[<>]\(/;
+const RM_WORD = /\brm\b/g;
+/** Matches a `cd` target that bash looks up in `CDPATH` first: any not starting with `/`, `~`, or a `.` or `..` component. */
+const CDPATH_SEARCHED = /^(?!\/|~|\.\.?(?:\/|$))/;
 const SYSTEM_DIRECTORIES = ["/System", "/Library"];
 
 const REASONS = {
@@ -51,7 +59,8 @@ interface Grading {
 	readonly projectGit: boolean;
 	/** The bases a target must sit strictly inside: the project, unless it is root-class, and the temp directories. */
 	readonly inside: readonly string[];
-	readonly createsLinks: boolean;
+	/** True when the command runs more than one command, so a missing path may exist by the time `rm` runs. */
+	readonly compound: boolean;
 	readonly homeReassigned: boolean;
 	/** Paths graded so far; past `MAX_GRADED_OPERANDS` the command is unreadable, so its cost stays bounded. */
 	graded: number;
@@ -77,7 +86,7 @@ function grading(command: string, ctx: DeleteContext): Grading {
 	const temps = ["/tmp", "/var/tmp", os.tmpdir()]
 		.flatMap((t) => baseForms(path.resolve(t)))
 		.filter((b) => !homes.some((home) => isWithin(home, b)));
-	const cwd = workingDirectory(command, ctx);
+	const cwd = commandWorkingDirectory(command, ctx);
 	return {
 		cwd,
 		base: cwd ?? ctx.commandCwd,
@@ -85,28 +94,54 @@ function grading(command: string, ctx: DeleteContext): Grading {
 		project,
 		projectGit: fs.existsSync(path.join(ctx.sessionCwd, ".git")),
 		inside: [...(project.some((p) => rootClass(p, homes)) ? [] : project), ...temps],
-		createsLinks: CREATES_LINKS.test(command),
+		compound: runsBeforeDelete(command),
 		homeReassigned: ctx.homeReassigned,
 		graded: 0,
 	};
 }
 
 /** Returns the directory relative operands resolve from, or null when it is unknown: an inexact command cwd,
- *  `cd -`, or a directory change other than one leading `cd X &&`, which is moved into the working directory
- *  as omp does (`src/tools/bash.ts`, 18.13.0). The change is found on the raw text, so one inside an `sh -c`
- *  script counts, and a word merely holding `cd` only makes the operands unreadable. */
-function workingDirectory(command: string, ctx: DeleteContext): string | null {
-	if (!ctx.commandCwdExact) return null;
+ *  a session whose shell may have moved where a `cd` lands, `cd -`, a `cd` target bash would look up in a
+ *  set `CDPATH`, or a directory change other than one leading `cd X &&`, which is moved into the working
+ *  directory as omp does (`src/tools/bash.ts`, 18.13.0). A change counts on the raw text, so one inside an
+ *  `sh -c` script counts, and by word value there too, so a quoted or escaped `c''d` counts; a word holding `cd`
+ *  only makes the operands unreadable. */
+export function commandWorkingDirectory(command: string, ctx: DeleteContext): string | null {
+	if (!ctx.commandCwdExact || ctx.workingDirectoryUnknown) return null;
 	const words = shellWords(command);
 	let cwd = ctx.commandCwd;
 	let allowedChanges = 0;
 	if (words[0] === "cd" && words[1] !== undefined && words[2] === "&&") {
-		const target = words[1] === "-" ? null : expandOperand(words[1], cwd);
+		if (words[1] === "-" || (process.env.CDPATH && CDPATH_SEARCHED.test(words[1]))) return null;
+		const target = expandOperand(words[1], cwd);
 		if (target === null || target.paths.length !== 1 || (target.homeRelative && ctx.homeReassigned)) return null;
 		cwd = path.resolve(cwd, target.paths[0]);
 		allowedChanges = 1;
 	}
-	return (command.match(DIRECTORY_CHANGE) ?? []).length > allowedChanges ? null : cwd;
+	const rawChanges = (command.match(DIRECTORY_CHANGE) ?? []).length;
+	return Math.max(rawChanges, wordChanges(command)) > allowedChanges ? null : cwd;
+}
+
+/** Counts the `cd`, `pushd` and `popd` words a command runs, in every segment and inside every `sh -c` script,
+ *  so a quoted or escaped `c''d` counts; an unsound reading counts as unbounded. */
+function wordChanges(command: string): number {
+	let changes = 0;
+	const unsound = anyCommandIn(command, {
+		runs: (seg) => {
+			changes += seg.filter((w) => DIRECTORY_COMMANDS.has(w)).length;
+			return false; // read on: every segment counts
+		},
+		mentions: () => false,
+	});
+	return unsound ? Number.POSITIVE_INFINITY : changes;
+}
+
+/** True when the delete may follow a path that another command creates first: one joined before the last
+ *  `rm`, or a substitution anywhere, which runs before the command it sits in. */
+function runsBeforeDelete(command: string): boolean {
+	let last = -1;
+	for (const m of command.matchAll(RM_WORD)) last = m.index;
+	return SUBSTITUTION.test(command) || (last > 0 && COMMAND_JOIN.test(command.slice(0, last)));
 }
 
 /** The operand words of one `rm`: every word after it that is not an option, and every word after `--`. */
@@ -131,7 +166,7 @@ function gradeOperand(word: string, g: Grading): GradedHit[] {
 	const hits: GradedHit[] = [];
 	for (const p of expanded.paths) {
 		if (!path.isAbsolute(p) && g.cwd === null) return [hit("rm-unreadable-target", [])];
-		const forms = targetForms(path.isAbsolute(p) ? p : `${g.cwd}/${p}`, /\/\.?$/.test(p), g.createsLinks);
+		const forms = targetForms(path.isAbsolute(p) ? p : `${g.cwd}/${p}`, /\/\.?$/.test(p), g.compound);
 		const rule = forms === null ? "rm-unreadable-target" : targetRule(forms, g);
 		if (rule !== null) hits.push(hit(rule, forms ?? []));
 	}
@@ -157,16 +192,16 @@ function globRoot(word: string, g: Grading): string | null {
 /** The forms one delete target is graded in: its lexical path, its name under the real path of its parent
  *  directory, and, for an operand ending in `/` or `/.` (which rm follows into a symlinked directory), its own
  *  real path. The leaf itself is not resolved: deleting a symlink removes only the link. Null when the command
- *  may create a symlink first (`ln`) and a path the delete follows does not exist yet. */
-function targetForms(joined: string, followsLeaf: boolean, createsLinks: boolean): string[] | null {
+ *  runs another command first, which may create it as a symlink, and a path the delete follows does not exist yet. */
+function targetForms(joined: string, followsLeaf: boolean, compound: boolean): string[] | null {
 	const forms = [path.resolve(joined)];
 	const parentReal = realpathOrNull(path.dirname(joined));
 	if (parentReal !== null) forms.push(path.resolve(parentReal, path.basename(joined)));
-	else if (createsLinks) return null;
+	else if (compound) return null;
 	if (followsLeaf) {
 		const own = realpathOrNull(joined);
 		if (own !== null) forms.push(own);
-		else if (createsLinks) return null;
+		else if (compound) return null;
 	}
 	return [...new Set(forms)];
 }

@@ -16,11 +16,14 @@ type Voids =
 	| { readonly kind: "every-allow" }
 	/** Every operand spelled through the home directory or split by the shell. */
 	| { readonly kind: "home-operands" }
+	/** The directory a relative path or a `cd` lands in: a `CDPATH`, `cdable_vars` or a function can move it. */
+	| { readonly kind: "working-directory" }
 	/** The named commands, matched by the basename of any word, so `env git diff` counts. */
 	| { readonly kind: "commands"; readonly names: readonly string[] };
 
 const EVERY_ALLOW: readonly Voids[] = [{ kind: "every-allow" }];
 const HOME_OPERANDS: Voids = { kind: "home-operands" };
+const WORKING_DIRECTORY: Voids = { kind: "working-directory" };
 const commands = (...names: string[]): Voids => ({ kind: "commands", names });
 
 /** A construct a command may run, what it voids, and the substrings that stand for it when the command
@@ -41,8 +44,9 @@ type Row =
 
 /**
  * Each construct and what it voids. The table over-matches on purpose: a false match sends later allowed
- * commands of the session to the classifier, one model call each. `CDPATH` voids nothing, since every
- * operand the gate grades resolves from the call's own cwd.
+ * commands of the session to the classifier, one model call each, and makes a relative recursive delete
+ * deny. Every construct that voids every allow also voids the working directory, since a function or alias
+ * can change it.
  */
 const ROWS: readonly Row[] = [
 	{
@@ -52,6 +56,7 @@ const ROWS: readonly Row[] = [
 	},
 	{ kind: "variable", names: ["HOME"], voids: [HOME_OPERANDS, commands("git")] },
 	{ kind: "variable", names: ["IFS"], voids: [HOME_OPERANDS] },
+	{ kind: "variable", names: ["CDPATH"], voids: [WORKING_DIRECTORY] },
 	// A moved global gitconfig can set `core.fsmonitor`; `GIT_*` covers `GIT_EXTERNAL_DIFF`, `GIT_DIR` and the rest.
 	{ kind: "variable", names: ["XDG_CONFIG_HOME"], prefix: "GIT_", voids: [commands("git")] },
 	{ kind: "variable", names: ["RIPGREP_CONFIG_PATH"], voids: [commands("rg")] },
@@ -68,6 +73,13 @@ const ROWS: readonly Row[] = [
 	},
 	{ kind: "command", names: ["hash"], applies: (args) => args.some((w) => /^-[A-Za-z]*p/.test(w)), voids: EVERY_ALLOW, fallback: ["hash"] },
 	{ kind: "command", names: ["shopt"], applies: (args) => args.includes("expand_aliases"), voids: EVERY_ALLOW, fallback: ["shopt"] },
+	{
+		kind: "command",
+		names: ["shopt"],
+		applies: (args) => args.includes("cdable_vars"),
+		voids: [WORKING_DIRECTORY],
+		fallback: ["cdable_vars"],
+	},
 	// A repository config can set `core.fsmonitor`, `core.pager`, `diff.external` or a hooks path.
 	{ kind: "command", names: ["git"], applies: gitConfigWrites, voids: [commands("git")], fallback: ["config"] },
 	{ kind: "function", voids: EVERY_ALLOW, fallback: ["()"] },
@@ -274,10 +286,11 @@ function withoutHereDocBodies(command: string): string {
 }
 
 /** Returns the rows a command fires. A command over `BASH_MAX_MATCH_LEN`, or one the tokenizer stopped
- *  reading early (`$'…'`, an unterminated quote), takes the substring scan, which over-matches. */
+ *  reading early (`$'…'`, an unterminated quote), takes the substring scan, which over-matches; a
+ *  here-document body is left out of it, since file content written that way cannot change the shell. */
 function scan(command: string): Fired {
 	if (command.length > BASH_MAX_MATCH_LEN) {
-		const bits = scanSubstrings(command);
+		const bits = scanSubstrings(withoutHereDocBodies(command));
 		return { persistent: bits, current: bits };
 	}
 	const text = withoutHereDocBodies(command);
@@ -299,15 +312,19 @@ export interface ShellState {
 	readonly homeOperands: boolean;
 	/** No user allow may admit a command with a word of one of these basenames. */
 	readonly commands: ReadonlySet<string>;
+	/** The gate cannot tell where a relative path or a `cd` of a command lands, so a graded delete cannot
+	 *  place a relative target. */
+	readonly workingDirectory: boolean;
 }
 
 /** The state that voids every allow, for a session the gate cannot read. */
-const FAIL_CLOSED: ShellState = { everyAllow: true, homeOperands: true, commands: new Set() };
+const FAIL_CLOSED: ShellState = { everyAllow: true, homeOperands: true, commands: new Set(), workingDirectory: true };
 
 /** Returns what a set of fired rows voids. */
 function stateOf(bits: number): ShellState {
 	let everyAllow = false;
 	let homeOperands = false;
+	let workingDirectory = false;
 	const voided = new Set<string>();
 	ROWS.forEach((row, i) => {
 		if ((bits & (1 << i)) === 0) return;
@@ -319,6 +336,9 @@ function stateOf(bits: number): ShellState {
 				case "home-operands":
 					homeOperands = true;
 					break;
+				case "working-directory":
+					workingDirectory = true;
+					break;
 				case "commands":
 					for (const name of v.names) voided.add(name);
 					break;
@@ -329,7 +349,7 @@ function stateOf(bits: number): ShellState {
 			}
 		}
 	});
-	return { everyAllow, homeOperands, commands: voided };
+	return { everyAllow, homeOperands, commands: voided, workingDirectory: workingDirectory || everyAllow };
 }
 
 /** Returns what one command, run on its own, voids for its own user allows. */
