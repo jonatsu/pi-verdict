@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-02
+
+Measurement release: compact audit records for every rule-layer decision, and a replay tool for audit logs.
+
 ### Added
 
 - With `audit: true`, every rule-layer allow and deny now appends a compact record to the session's `verdicts/<sessionId>.jsonl` beside the full gray-zone and protected-path records: `kind: "rule"`, `ts`, `sessionId`, `tool`, `verdict` and `rule`, the id of the deciding rule (a floor rule id such as `rm-recursive`, or `S0`, `S1`, `S3`, `self-protection`, `user-allow`, `user-deny`, `user-tools`, `path-read`, `path-write`, `device`, `empty-command`). It holds no input, path or reason, so the log can show which share of calls each layer decides; a reader of the audit files tells the two record shapes apart by `kind`, and the audit directory now appears on the first rule decision instead of the first gray-zone call. `RuleResult` gains the optional `rule` field, and `RuleVerdictRecord` is exported.
@@ -533,7 +537,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/jonatsu/pi-verdict/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/jonatsu/pi-verdict/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/jonatsu/pi-verdict/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/jonatsu/pi-verdict/compare/v0.22.0...v0.23.0
