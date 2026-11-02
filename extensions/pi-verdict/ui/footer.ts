@@ -22,6 +22,8 @@ export interface FooterInfo {
 	subagentGate: "off" | "normal" | "auto";
 	/** item 6c (Phase 6): the user's own policy failed to load — shown as a risk badge (ADR-0010). */
 	policyDegraded: boolean;
+	/** How many built-in floor rules a `floorOverrides` entry switches off or softens (ADR-0013). */
+	floorOverrides: number;
 }
 
 type ThemeBg = Parameters<Theme["bg"]>[0];
@@ -56,6 +58,7 @@ export function renderFooter(info: FooterInfo, theme: FooterTheme, style: "full"
 	if (info.subagentGate === "off") risks.push({ text: "subagent off", color: "warning" });
 	// item 6c (Phase 6): the user's own rules failed to load — model allows are withheld (ADR-0010)
 	if (info.policyDegraded) risks.push({ text: "policy degraded", color: "error" });
+	if (info.floorOverrides > 0) risks.push({ text: `floor overrides ${info.floorOverrides}`, color: "warning" });
 
 	const bgFn = theme.bg;
 	const bgAnsi = theme.getBgAnsi;

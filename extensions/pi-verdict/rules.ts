@@ -14,9 +14,11 @@ import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
+import { overrideFor } from "./floor-overrides.ts";
+import { baseForms } from "./paths.ts";
 import type { CallPredicate } from "./redaction.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
-import { allowAdmits, classifyBash, classifyPyShellLines, pyEvalShellLines, type RuleResult } from "./shell.ts";
+import { allowAdmits, classifyBash, classifyPyShellLines, type FloorLift, pyEvalShellLines, type RuleResult } from "./shell.ts";
 import type { ShellState } from "./shell-state.ts";
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
@@ -69,24 +71,26 @@ export function classifyByRules(toolName: string, input: Record<string, unknown>
 	const selfProtected = selfProtectCheck(toolName, input, call.access, ctx.commandCwd, ctx.protectedSet);
 	if (selfProtected) return selfProtected;
 
-	const floorGrade = withholdFloorAllow(gradeBase(call, ctx), call, ctx);
+	const baseGrade = gradeBase(call, ctx);
+	const floorGrade = withholdFloorAllow(baseGrade, call, ctx);
 	if (floorGrade.verdict === "deny") return floorGrade; // the floor's deny beats every user rule
 
-	return (
+	const decided =
 		// Deny-side layers: each can only narrow what the call may do.
 		userDeny(call, ctx) ??
 		forcedOmpGate(call, ctx) ??
 		denyPathsAsk(call, ctx) ??
 		protectedSpellingAsk(call, ctx) ??
 		codeLoadingAsk(call, ctx) ??
+		softenedFloorAsk(baseGrade) ??
 		overCapAsk(call, ctx) ??
 		// Allow layers, reached only when no deny-side layer decided.
 		userAllow(call, ctx) ??
 		toolsExemption(call, ctx) ??
 		// What no rule decided: the opaque ask, then the floor's grade.
 		opaqueAsk(call, ctx) ??
-		floorGrade
-	);
+		floorGrade;
+	return baseGrade.overridden && !decided.overridden ? { ...decided, overridden: baseGrade.overridden } : decided;
 }
 
 const DEVICE_TRANSPORTS: ReadonlySet<string> = new Set(["read", "write"]);
@@ -118,20 +122,40 @@ function readCall(toolName: string, input: Record<string, unknown>, ctx: RuleCon
 function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	const { toolName, input, access } = call;
 	const floorOn = ctx.userRules.builtinDenyFloor;
-	if (isCommandTool(toolName)) return classifyBash(commandText(input), floorOn);
+	const overrides = ctx.userRules.floorOverrides;
+	if (isCommandTool(toolName)) return classifyBash(commandText(input), floorOn, shellLift(ctx));
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
-		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.commandCwd, floorOn, ctx.host);
+		return access.opaque ? { verdict: "gray" } : classifyWrites(access.gradedWrites, ctx.commandCwd, floorOn, ctx.host, overrides);
 	}
-	if (access.direction === "observing") return classifyReads(observedTargets(access, ctx.commandCwd), ctx.commandCwd, floorOn, ctx.host);
+	if (access.direction === "observing") {
+		return classifyReads(observedTargets(access, ctx.commandCwd), ctx.commandCwd, floorOn, ctx.host, overrides);
+	}
 	if (access.kind === "code" && access.command !== null && input.language === "py") {
 		// The bash floor grades only the shell lines of a Python cell: its rules are written for
 		// commands, so the code text itself never reaches them.
 		const shellText = pyEvalShellLines(access.command).join("\n");
-		return shellText ? classifyPyShellLines(shellText, floorOn) : { verdict: "gray" };
+		return shellText ? classifyPyShellLines(shellText, floorOn, shellLift(ctx)) : { verdict: "gray" };
 	}
 	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
+}
+
+/** Returns how the overrides lift a shell floor rule. A command names no target the floor can see, so a
+ *  scoped override applies only while both the session cwd and the command cwd sit inside its scope, in
+ *  every form; a command cwd the gate cannot resolve keeps every rule on. */
+function shellLift(ctx: RuleContext): FloorLift {
+	const forms = ctx.commandCwdExact ? [...baseForms(ctx.sessionCwd), ...baseForms(ctx.commandCwd)] : [];
+	return (id) => overrideFor(ctx.userRules.floorOverrides, id, forms)?.action ?? null;
+}
+
+/** Asks on a floor deny a `floorOverrides` entry softened (ADR-0013). It runs after the protected-path and
+ *  code-loading asks, so a user deny or a declared protected path still decides first. It reads the
+ *  floor's grade before any target shape turned it gray, so the softened ask survives that. */
+function softenedFloorAsk(baseGrade: RuleResult): RuleResult | null {
+	const softened = baseGrade.carriedAsk;
+	if (softened === undefined) return null;
+	return { verdict: "ask", reason: `${softened.reason} (softened to an ask by floorOverrides)`, askSource: "rule", rule: softened.rule };
 }
 
 /** Returns an observing call's read targets; a pathless one reads the cwd. */
@@ -224,7 +248,9 @@ function protectedSpellingAsk(call: RuleCall, ctx: RuleContext): RuleResult | nu
  *  path, so it runs after both protected-path asks, which withhold theirs. */
 function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (!ctx.userRules.builtinDenyFloor) return null;
-	const code = hitCodeLoadPath(call.toolName, call.input, ctx.commandCwd, ctx.protectedSet.agentDir);
+	const overrides = ctx.userRules.floorOverrides;
+	const lifted = (hitPath: string): boolean => overrideFor(overrides, "code-loading", baseForms(hitPath))?.action === "off";
+	const code = hitCodeLoadPath(call.toolName, call.input, ctx.commandCwd, ctx.protectedSet.agentDir, lifted);
 	if (!code) return null;
 	return {
 		verdict: "ask",

@@ -99,6 +99,8 @@ interface Adjudication {
 	readonly call: ToolCall;
 	/** The uncapped action line the audit record keeps; models see `ModelCall.actionLine` instead. */
 	readonly actionLine: string;
+	/** The floor rules a `floorOverrides` entry lifted for this call, which its audit record names. */
+	readonly overridden?: readonly string[];
 }
 
 /** A decision before presentation: what to do, why, and the source the presentation keys on. */
@@ -180,7 +182,13 @@ function buildRecord(
 		rawResponse: raw?.rawResponse ?? null,
 		...v,
 		...extra,
+		...overridesOf(a.overridden),
 	};
+}
+
+/** The audit field naming the floor rules an override lifted, as `override:<id>` (ADR-0013); empty when none was. */
+function overridesOf(overridden: readonly string[] | undefined): Pick<AuditRecord, "overrides"> {
+	return overridden && overridden.length > 0 ? { overrides: overridden.map((id) => `override:${id}`) } : {};
 }
 
 /** Who triggered a fallback consult, as its audit entry records it. */
@@ -419,6 +427,7 @@ function auditRuleVerdict(state: SessionState, env: AdjudicateEnv, tool: string,
 		tool,
 		verdict,
 		rule: rule.rule ?? "unlabeled",
+		...overridesOf(rule.overridden),
 	});
 }
 
@@ -541,7 +550,13 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	}
 	// The action under review is never elided: the rule layer already asked about an over-cap action.
-	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input, displayedCwd).line };
+	const a: Adjudication = {
+		state,
+		env,
+		call,
+		actionLine: actionCallLine(call.toolName, call.input, displayedCwd).line,
+		overridden: rule.overridden,
+	};
 	switch (rule.verdict) {
 		case "deny":
 			auditRuleVerdict(state, env, call.toolName, "deny", rule);

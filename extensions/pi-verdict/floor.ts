@@ -2,8 +2,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { agentDirPath, escapeRegExp } from "./agent-dir.ts";
+import { type FloorOverrides, NO_OVERRIDES, overrideFor } from "./floor-overrides.ts";
 import { baseForms, fold, kernelWalk, rebuiltForms } from "./paths.ts";
-import type { RuleResult } from "./shell.ts";
+import { BASH_FLOOR_RULE_IDS, LiftedRules, type RuleResult } from "./shell.ts";
 
 // ============================================================================
 // Rule layer: file-path sensitivity (from research report §4.4)
@@ -111,15 +112,15 @@ export function setXdgConfigRootsForTests(roots: string[] | null): void {
 // normalization covers existing targets, /i covers the lexical forms of
 // nonexistent ones; on linux the uppercase spelling usually does not exist and
 // the occasional false positive fails toward deny (safe direction).
-/** The S0 entries that name a credential inside a directory, each with the home-relative directories it
- *  guards there, so a recursive search of a parent (`s0DirectoryBeneath`) reads the same set the path
- *  grade does. */
 /** One S0 entry: its id, which `floorOverrides` and the audit name as `S0:<id>` (ADR-0013), and its pattern. */
 interface S0Entry {
 	readonly id: string;
 	readonly rule: RegExp;
 }
 
+/** The S0 entries that name a credential inside a directory, each with the home-relative directories it
+ *  guards there, so a recursive search of a parent (`s0DirectoryBeneath`) reads the same set the path
+ *  grade does. */
 const S0_DIRECTORY_RULES: readonly (S0Entry & { readonly homeDirs: readonly string[] })[] = [
 	{ id: "ssh", rule: /\.ssh(\/|$)/i, homeDirs: [".ssh"] },
 	{ id: "aws", rule: /\.aws(\/|$)/i, homeDirs: [".aws"] },
@@ -264,15 +265,30 @@ function classifyDeviceUrl(rawPath: string, isWrite: boolean): RuleResult {
 /** Grades one target: an `xd://` URL on omp by its device, everything else by its path. Off omp an `xd://`
  *  target is a relative path to pi, so its path grade stands, but its allow turns gray: a missed omp
  *  detection must not turn a device write into a silent in-project allow. */
-function gradeTarget(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean, host: HostKind): RuleResult {
-	if (!isDeviceUrl(rawPath)) return classifyPath(rawPath, cwd, isWrite, floorOn);
+function gradeTarget(
+	rawPath: string,
+	cwd: string,
+	isWrite: boolean,
+	floorOn: boolean,
+	host: HostKind,
+	overrides: FloorOverrides,
+): RuleResult {
+	if (!isDeviceUrl(rawPath)) return classifyPath(rawPath, cwd, isWrite, floorOn, overrides);
 	if (host === "omp") return classifyDeviceUrl(rawPath, isWrite);
-	const grade = classifyPath(rawPath, cwd, isWrite, floorOn);
+	const grade = classifyPath(rawPath, cwd, isWrite, floorOn, overrides);
 	return grade.verdict === "allow" ? { verdict: "gray", reason: "xd:// target outside omp, not graded as a project path" } : grade;
 }
 
-/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification. */
-export function classifyPath(rawPath: string, cwd: string, isWrite: boolean, floorOn: boolean): RuleResult {
+/** Read-class tools: reading S0 is high risk (deny); allow other reads. isWrite: write/edit use full classification.
+ *  A `floorOverrides` entry that applies to every form of the target lifts its rule (ADR-0013): `off` skips it, and
+ *  `ask` carries an ask that the rule layer raises after the protected-path asks. */
+export function classifyPath(
+	rawPath: string,
+	cwd: string,
+	isWrite: boolean,
+	floorOn: boolean,
+	overrides: FloorOverrides = NO_OVERRIDES,
+): RuleResult {
 	// Dual-form matching (#20): rules test every canonical form of the target —
 	// a project-local symlink aliasing ~/.ssh or a .git/hooks dir must not pass
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
@@ -280,33 +296,54 @@ export function classifyPath(rawPath: string, cwd: string, isWrite: boolean, flo
 	// itself (path-layer review items 4, 7–8); one walk feeds this and the check below.
 	const { forms, ruleForms, walk } = canonicalPathForms(rawPath, cwd);
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
+	const lifted = new LiftedRules();
 	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
-	const D = floorOn
-		? (rule: string, reason: string): RuleResult => ({ verdict: "deny", reason, rule })
-		: (_rule: string, reason: string): RuleResult => ({ verdict: "gray", reason });
+	// When an override lifts the rule for this target, grading goes on (null).
+	const D = (rule: string, reason: string): RuleResult | null => {
+		if (!floorOn) return { verdict: "gray", reason };
+		const override = overrideFor(overrides, rule, forms);
+		if (override === null) return { verdict: "deny", reason, rule };
+		lifted.add(rule, reason, override.action);
+		return null;
+	};
 
-	const s0 = s0Hits(ruleForms);
-	if (s0.length > 0) return D(`S0:${s0[0]}`, `S0 secrets/credential path: ${rawPath}`);
+	for (const id of s0Hits(ruleForms)) {
+		const denied = D(`S0:${id}`, `S0 secrets/credential path: ${rawPath}`);
+		if (denied) return denied;
+	}
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
-		if (hit(s1Rules)) return { verdict: "gray", reason: `read system config path: ${rawPath}` };
-		return { verdict: "allow", rule: "path-read" };
+		if (hit(s1Rules)) return lifted.onto({ verdict: "gray", reason: `read system config path: ${rawPath}` });
+		return lifted.onto({ verdict: "allow", rule: "path-read" });
 	}
-	if (hit(s1Rules)) return D("S1", `write to system directory: ${rawPath}`);
-	if (hit(S3_GIT_META)) return D("S3", `write to .git metadata (executable code entry point): ${rawPath}`);
-	if (hit(S2_USER_RC)) return { verdict: "gray", reason: `write to user config/persistence entry point: ${rawPath}` };
+	const system = hit(s1Rules) ? D("S1", `write to system directory: ${rawPath}`) : null;
+	if (system) return system;
+	const gitMeta = hit(S3_GIT_META) ? D("S3", `write to .git metadata (executable code entry point): ${rawPath}`) : null;
+	if (gitMeta) return gitMeta;
+	if (hit(S2_USER_RC)) return lifted.onto({ verdict: "gray", reason: `write to user config/persistence entry point: ${rawPath}` });
 	// Item 8 (plan-review F20): a write whose kernel target is unknowable (symlink loop,
 	// unreadable link target) fails closed — the lexical spelling must not grade as a plain
 	// in-cwd write whose destination the floor never saw. Reads stay alone: the open fails
 	// ELOOP and exposes nothing. Through D(...): with builtinDenyFloor:false this degrades
-	// to gray like every other floor branch.
-	if (isWrite && walk.unresolved) return D("unresolved-symlink", "unresolved symlink (write fail-closed)");
+	// to gray like every other floor branch; no override lifts it (NOT_OVERRIDABLE).
+	if (isWrite && walk.unresolved) {
+		const unresolved = D("unresolved-symlink", "unresolved symlink (write fail-closed)");
+		if (unresolved) return unresolved;
+	}
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
 	// (in either its lexical or real form) — a lexical prefix hit whose real
 	// form escapes the project (symlink alias) grades as an outside-cwd write.
-	if (formsInCwd(forms, cwd)) return { verdict: "allow", rule: "path-write" };
-	return { verdict: "gray", reason: `write outside project directory (CWD): ${rawPath}` };
+	if (formsInCwd(forms, cwd)) return lifted.onto({ verdict: "allow", rule: "path-write" });
+	return lifted.onto({ verdict: "gray", reason: `write outside project directory (CWD): ${rawPath}` });
+}
+
+/** Returns a combined grade that keeps the first carried ask and every lifted id of the per-target grades. */
+function withLifted(grade: RuleResult, parts: readonly RuleResult[]): RuleResult {
+	const overridden = parts.flatMap((p) => p.overridden ?? []);
+	if (overridden.length === 0) return grade;
+	const carriedAsk = parts.find((p) => p.carriedAsk !== undefined)?.carriedAsk;
+	return { ...grade, overridden, ...(carriedAsk ? { carriedAsk } : {}) };
 }
 
 /** Every canonical form of a target the path rules test: lexical and realpath-rebuilt, plus the
@@ -345,13 +382,20 @@ export function globStaysInProject(targets: string[], cwd: string): boolean {
  *  target sits in-cwd; any remaining S2/outside-cwd target grades gray.
  *  Single-target inputs behave bit-for-bit as today — classifyPath itself is
  *  unchanged and does all the grading; this only combines N results. */
-export function classifyWrites(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
-	const results = targets.map((t) => gradeTarget(t, cwd, true, floorOn, host));
+export function classifyWrites(
+	targets: string[],
+	cwd: string,
+	floorOn: boolean,
+	host: HostKind,
+	overrides: FloorOverrides = NO_OVERRIDES,
+): RuleResult {
+	const results = targets.map((t) => gradeTarget(t, cwd, true, floorOn, host, overrides));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
-	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow", rule: sharedRule(results, "path-write") };
+	if (results.every((r) => r.verdict === "allow"))
+		return withLifted({ verdict: "allow", rule: sharedRule(results, "path-write") }, results);
 	const gray = results.find((r) => r.verdict === "gray");
-	return gray ?? { verdict: "gray", reason: `write outside project directory (CWD): ${targets.join(", ")}` };
+	return withLifted(gray ?? { verdict: "gray", reason: `write outside project directory (CWD): ${targets.join(", ")}` }, results);
 }
 
 /** The directories that hold what the S0 entries guard, as absolute paths: the home-relative ones of
@@ -389,13 +433,19 @@ export function s0DirectoryBeneath(target: string, cwd: string): boolean {
 /** Read-side analog of classifyWrites: the worst outcome wins (deny beats gray
  *  beats allow) so a list-split part cannot silently evade the floor either
  *  (Claude-review F6 — over-extraction is the safe direction on both sides). */
-export function classifyReads(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
+export function classifyReads(
+	targets: string[],
+	cwd: string,
+	floorOn: boolean,
+	host: HostKind,
+	overrides: FloorOverrides = NO_OVERRIDES,
+): RuleResult {
 	if (targets.length === 0) return { verdict: "allow", rule: "path-read" };
-	const results = targets.map((t) => gradeTarget(t, cwd, false, floorOn, host));
+	const results = targets.map((t) => gradeTarget(t, cwd, false, floorOn, host, overrides));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	const gray = results.find((r) => r.verdict === "gray");
-	return gray ?? { verdict: "allow", rule: sharedRule(results, "path-read") };
+	return withLifted(gray ?? { verdict: "allow", rule: sharedRule(results, "path-read") }, results);
 }
 
 /** The rule id every target's allow shares, such as `device` for an omp device URL, else `fallback`. */
@@ -403,3 +453,13 @@ function sharedRule(results: readonly RuleResult[], fallback: string): string {
 	const first = results[0]?.rule;
 	return first !== undefined && results.every((r) => r.rule === first) ? first : fallback;
 }
+
+/** The id of every built-in rule a `floorOverrides` entry may name (ADR-0013): each S0 entry as `S0:<id>`,
+ *  the S1 and S3 write tiers, every bash floor rule, and the code-loading ask. */
+export const FLOOR_RULE_IDS: ReadonlySet<string> = new Set([
+	...[...S0_SECRET.map((e) => e.id), "config-homes", "agent-db"].map((id) => `S0:${id}`),
+	"S1",
+	"S3",
+	...BASH_FLOOR_RULE_IDS,
+	"code-loading",
+]);

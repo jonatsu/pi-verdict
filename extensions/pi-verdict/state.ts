@@ -3,6 +3,8 @@ import { agentDirPath, OWN_FILE_PATH } from "./agent-dir.ts";
 import { AuditLog } from "./audit.ts";
 import { type LoadedRules, loadUserRules, type UserRules } from "./config.ts";
 import { anchorDenyPaths } from "./deny-paths.ts";
+import { FLOOR_RULE_IDS } from "./floor.ts";
+import { knownOverrides } from "./floor-overrides.ts";
 import { type RedactorFn, redactorFor } from "./redaction.ts";
 import { buildProtectedSet, type ProtectedSet } from "./self-protection.ts";
 import { ShellStateLedger } from "./shell-state.ts";
@@ -62,6 +64,15 @@ export const POLICY_DEGRADED = {
 		"pi-verdict: policy degraded — your own rules could not be fully loaded, so model-originated allows are withheld (each becomes a confirm) until the config is fixed (ADR-0010)",
 } as const;
 
+/** Drops the `floorOverrides` entries that name no floor rule, with a skipped note each. The config loader
+ *  cannot check the ids, because the rule tables sit in modules it does not import. An unknown id changes
+ *  nothing, so it does not degrade the policy. */
+function withKnownOverrides(loaded: LoadedRules): LoadedRules {
+	const known = knownOverrides(loaded.rules.floorOverrides, FLOOR_RULE_IDS);
+	if (known.warnings.length === 0) return loaded;
+	return { ...loaded, rules: { ...loaded.rules, floorOverrides: known.overrides }, skipped: [...loaded.skipped, ...known.warnings] };
+}
+
 /** What a rules load reported besides the rules, for the presentation layer to notify on. */
 export type RulesLoadReport = Omit<LoadedRules, "rules">;
 
@@ -94,7 +105,7 @@ export class SessionState {
 		this.agentDir = agentDir;
 		this.protectedSet = buildProtectedSet(agentDir, OWN_FILE_PATH);
 		// `loadUserRules` resolves its own path, so the config comes from the global `agentDirPath()`, not `agentDir`.
-		const loaded = loadUserRules();
+		const loaded = withKnownOverrides(loadUserRules());
 		this.userRules = loaded.rules;
 		this.policyDegraded = loaded.degraded;
 		this.audit = this.makeAudit(this.userRules);
@@ -107,7 +118,7 @@ export class SessionState {
 	/** Reloads the user and trusted project rules and anchors `denyPaths` to `cwd` (ADR-0002); `/verdict` calls it after
 	 *  a config edit. Keeps the cascade statistics and verdict counts. */
 	reloadRules(cwd: string, sessionTrustedRoot: string | null = null): RulesLoadReport {
-		const { rules, ...report } = loadUserRules(cwd, sessionTrustedRoot);
+		const { rules, ...report } = withKnownOverrides(loadUserRules(cwd, sessionTrustedRoot));
 		this.userRules = rules;
 		this.policyDegraded = report.degraded;
 		this.denyPathBases = anchorDenyPaths(rules.denyPaths, cwd);

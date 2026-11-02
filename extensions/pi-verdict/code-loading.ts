@@ -288,12 +288,15 @@ function expandCommandVariables(command: string, cwd: string, agentDir: string):
  *  inside the subtree it edits. Each target is compared in every form the host can resolve it
  *  to, including the form rebuilt from its nearest existing ancestor, so a new file under a
  *  symlinked directory is matched by where it lands. `$PI_CODING_AGENT_DIR` in a command expands
- *  to `agentDir`, the session's agent directory. */
+ *  to `agentDir`, the session's agent directory. A hit whose path `lifted` accepts (a `floorOverrides`
+ *  scope, ADR-0013) is skipped and the scan goes on, so every form of every target must be lifted for
+ *  the call to pass. */
 export function hitCodeLoadPath(
 	toolName: string,
 	input: Record<string, unknown>,
 	cwd: string,
 	agentDir: string = agentDirPath(),
+	lifted: (hitPath: string) => boolean = () => false,
 ): CodeLoadHit | null {
 	const roots = rootsFor(cwd, agentDir);
 	const access = toolAccess(toolName, input);
@@ -309,13 +312,14 @@ export function hitCodeLoadPath(
 		for (const form of forms) {
 			// A scope tool names the entry it would edit, which says more than the directory holding it.
 			const covered = subtree ? coveredEntry(comparable(form), roots) : null;
-			if (covered) return covered;
+			if (covered && !lifted(covered.path)) return covered;
 			const kind = classifyForm(comparable(form), roots);
-			if (kind) return { path: form, kind };
+			if (kind && !lifted(form)) return { path: form, kind };
 		}
 	}
 	const text = command ?? (access.kind === "code" ? access.command : null);
 	const word = text === null ? null : CWD_LAUNCHER_WORD.exec(fold(text));
-	if (word) return { path: path.join(cwd, word[0]), kind: "working-directory launcher file" };
+	const launcher = word === null ? null : path.join(cwd, word[0]);
+	if (launcher !== null && !lifted(launcher)) return { path: launcher, kind: "working-directory launcher file" };
 	return null;
 }

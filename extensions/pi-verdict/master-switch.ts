@@ -35,7 +35,14 @@ function statusText(rt: GateRuntime, toggleHint: string): string {
 	const policy = state.policyDegraded ? `\n${POLICY_DEGRADED.status}` : "";
 	const denyPaths = state.userRules.denyPaths.length > 0 ? `\ndenyPaths: ${state.userRules.denyPaths.length} active` : "";
 	const audit = state.audit ? `\naudit: on → ${state.audit.dir}` : "";
-	return `${rt.enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${policy}${denyPaths}${audit}${fallbackHint(rt)}\nUsage: /automode on|off${toggleHint}`;
+	return `${rt.enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}${policy}${overridesLine(state.userRules)}${denyPaths}${audit}${fallbackHint(rt)}\nUsage: /automode on|off${toggleHint}`;
+}
+
+/** The floor rules the user switched off or softened, each with its action and whether a path scope limits it (ADR-0013). */
+function overridesLine(rules: UserRules): string {
+	if (rules.floorOverrides.size === 0) return "";
+	const entries = [...rules.floorOverrides].map(([id, o]) => `${id} ${o.action}${o.scope === null ? "" : " (scoped)"}`);
+	return `\nfloor overrides: ${entries.join(", ")}`;
 }
 
 /** Registers the toggle shortcut and the `/automode` command. The key comes from the rules loaded when the extension

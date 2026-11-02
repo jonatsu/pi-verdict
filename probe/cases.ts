@@ -43,6 +43,7 @@ export interface Case {
 		| "policy-degraded"
 		| "code-loading"
 		| "bash-danger"
+		| "floor-overrides"
 		| "residual";
 	tool: string;
 	input: Record<string, unknown>;
@@ -1813,6 +1814,97 @@ export function buildCases(fx: FixtureTree): Case[] {
 			},
 		});
 	}
+
+	// ---- floor-overrides (ADR-0013) ----------------------------------------------------
+	// A scoped override lifts one floor rule only where every form of the call sits in its scope, and
+	// never lifts a later layer.
+	const pem = "k." + "pem";
+	const softenPem = { floorOverrides: { "S0:pem": { action: "ask", paths: [fx.work] } } };
+	const softened: Expectation = { layer: "rule-ask", reasonIncludes: "softened to an ask by floorOverrides" };
+	cases.push(
+		{
+			label: "a softened S0 rule asks inside its scope",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.work}/${pem}` },
+			config: softenPem,
+			ref: "ADR-0013",
+			expected: softened,
+		},
+		{
+			label: "a scoped override keeps the S0 deny outside its scope",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.root}/${pem}` },
+			config: softenPem,
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "a symlink out of an override's scope keeps the S0 deny",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.escapeLink}/${pem}` },
+			config: { floorOverrides: { "S0:pem": { action: "off", paths: [fx.root] } } },
+			skipOn: "win32",
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "a target that hits two S0 rules keeps the deny of the one not lifted",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.work}/.env.${"pem"}` },
+			config: { floorOverrides: { "S0:pem": "off" } },
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "an S0 rule switched off leaves the floor's read allow",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.work}/${pem}` },
+			config: { floorOverrides: { "S0:pem": "off" } },
+			ref: "ADR-0013",
+			expected: { layer: "allow" },
+		},
+		{
+			label: "a user deny decides before a softened floor ask",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.work}/${pem}` },
+			config: { ...softenPem, deny: ["k\\.pem$"] },
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "user deny rule" },
+		},
+		{
+			label: "a denyPaths hit asks before a softened floor ask",
+			family: "floor-overrides",
+			tool: "read",
+			input: { path: `${fx.work}/${pem}` },
+			config: { ...softenPem, denyPaths: [fx.work] },
+			ref: "ADR-0013",
+			expected: { layer: "protected-path" },
+		},
+		{
+			label: "a softened bash rule asks while the cwd is in scope",
+			family: "floor-overrides",
+			tool: "bash",
+			input: { command: "su" + "do ls" },
+			config: { floorOverrides: { sudo: { action: "ask", paths: [fx.work] } } },
+			ref: "ADR-0013",
+			expected: softened,
+		},
+		{
+			label: "a softened bash rule stays a deny when the command runs outside its scope",
+			family: "floor-overrides",
+			tool: "bash",
+			input: { command: "su" + "do ls", cwd: fx.root },
+			config: { floorOverrides: { sudo: { action: "ask", paths: [fx.work] } } },
+			ref: "ADR-0013",
+			expected: { layer: "rule", ruleId: "sudo" },
+		},
+	);
 
 	// ---- residual ---------------------------------------------------------------------
 	// Accepted residuals of ADR-0007, ADR-0008 and ADR-0009, pinned at the route they take today, so a

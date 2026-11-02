@@ -321,6 +321,7 @@ function setConfig(
 		autoDeny?: boolean;
 		subagentGate?: unknown;
 		subagentAskTimeoutMs?: unknown;
+		floorOverrides?: unknown;
 	},
 	invalid?: string[],
 ): void {
@@ -344,6 +345,7 @@ function setConfig(
 	if (cfg.footer !== undefined) raw.footer = cfg.footer;
 	if (cfg.subagentGate !== undefined) raw.subagentGate = cfg.subagentGate;
 	if (cfg.subagentAskTimeoutMs !== undefined) raw.subagentAskTimeoutMs = cfg.subagentAskTimeoutMs;
+	if (cfg.floorOverrides !== undefined) raw.floorOverrides = cfg.floorOverrides;
 	// denyPaths (ADR-0002): unknown[] lets negative tests mix in non-string entries
 	if (cfg.denyPaths !== undefined) raw.denyPaths = cfg.denyPaths;
 	// tools / ignoreTools (the deprecated alias): unknown[] lets negative tests mix in non-string entries
@@ -9140,6 +9142,186 @@ describe("audit replay tool", () => {
 			setConfig({ autoDeny: false });
 			const report = await replayAudit(gate, [{ name: "s1.jsonl", text: record(proj, "rm " + "-rf /tmp/x") }]);
 			expect(report.nowDeniedOrAsked).toEqual({ "deny:rm-recursive": 1 });
+		});
+	});
+});
+
+describe("floorOverrides (ADR-0013)", () => {
+	const BASE = plannedTempDir(os.tmpdir(), "pv-floor-overrides-");
+	const PROJ = path.join(BASE, "proj");
+	const KEYS = path.join(PROJ, "test-keys");
+	const OUTSIDE = path.join(BASE, "outside");
+	const PEM = "key." + "pem";
+	beforeAll(() => {
+		fs.mkdirSync(KEYS, { recursive: true });
+		fs.mkdirSync(OUTSIDE, { recursive: true });
+		fs.writeFileSync(path.join(KEYS, PEM), "test key");
+		fs.writeFileSync(path.join(OUTSIDE, PEM), "test key");
+		fs.symlinkSync(OUTSIDE, path.join(KEYS, "escape"));
+	});
+	afterAll(() => fs.rmSync(BASE, { recursive: true, force: true }));
+
+	const headless = (floorOverrides: unknown, cfg: Parameters<typeof setConfig>[0] = {}, cwd: string = PROJ): Harness => {
+		const h = session({ ...cfg, floorOverrides }, { cwd });
+		h.ctx.hasUI = false;
+		return h;
+	};
+	const reloadNotes = async (h: Harness): Promise<string> => {
+		await h.handlers.session_start({}, h.ctx);
+		return h.notifies.map(([m]) => m).join("\n");
+	};
+
+	test("without an override a .pem read is an S0 deny", async () => {
+		const h = headless(undefined);
+		const r = await toolCall(h, "read", { path: path.join(KEYS, PEM) });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("S0");
+	});
+
+	test("off lifts the rule inside its scope, so the read is the floor's allow", async () => {
+		const h = headless({ "S0:pem": { action: "off", paths: [KEYS] } });
+		expect(await toolCall(h, "read", { path: path.join(KEYS, PEM) })).toBeUndefined();
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a scoped override keeps the rule on outside its scope", async () => {
+		const h = headless({ "S0:pem": { action: "off", paths: [KEYS] } });
+		expect((await toolCall(h, "read", { path: path.join(OUTSIDE, PEM) }))?.block).toBe(true);
+	});
+
+	test("a symlink inside the scope whose target leaves it keeps the rule on", async () => {
+		const h = headless({ "S0:pem": { action: "off", paths: [KEYS] } });
+		const r = await toolCall(h, "read", { path: path.join(KEYS, "escape", PEM) });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("S0");
+	});
+
+	test("ask turns the deny into a rule ask that never reaches the classifier", async () => {
+		const h = headless({ "S0:pem": "ask" });
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		const r = await toolCall(h, "read", { path: path.join(KEYS, PEM) });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).toContain("softened to an ask by floorOverrides");
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a softened ask beats a user allow rule", async () => {
+		const h = headless({ "S0:pem": "ask" }, { allow: [".*"] });
+		expect(String((await toolCall(h, "read", { path: path.join(KEYS, PEM) }))?.reason)).toContain("softened to an ask");
+	});
+
+	test("a user deny still decides over an overridden rule", async () => {
+		const h = headless({ "S0:pem": "off" }, { deny: ["test-keys"] });
+		expect(String((await toolCall(h, "read", { path: path.join(KEYS, PEM) }))?.reason)).toContain("user deny rule");
+	});
+
+	test("a denyPaths hit still asks before a softened floor ask", async () => {
+		const h = headless({ "S0:pem": "ask" }, { denyPaths: [KEYS] });
+		expect(String((await toolCall(h, "read", { path: path.join(KEYS, PEM) }))?.reason)).toContain("denyPaths");
+	});
+
+	test("a bash floor rule softened to ask asks while the session cwd is in scope", async () => {
+		const sudo = "su" + "do ls";
+		const inScope = headless({ sudo: { action: "ask", paths: [PROJ] } });
+		expect(String((await toolCall(inScope, "bash", { command: sudo }))?.reason)).toContain("softened to an ask");
+		const outOfScope = headless({ sudo: { action: "ask", paths: [PROJ] } }, {}, OUTSIDE);
+		const r = await toolCall(outOfScope, "bash", { command: sudo });
+		expect(r?.block).toBe(true);
+		expect(String(r?.reason)).not.toContain("softened");
+	});
+
+	test("a rule that cannot be overridden stays on and is named", async () => {
+		const h = headless({ ["rm-" + "root"]: "off" });
+		expect(await reloadNotes(h)).toContain("this rule cannot be overridden");
+		expect((await toolCall(h, "bash", { command: "rm " + "-rf /" }))?.block).toBe(true);
+	});
+
+	test("an unknown rule id is ignored and named, without degrading the policy", async () => {
+		const notes = await reloadNotes(headless({ "S0:nope": "off" }));
+		expect(notes).toContain("floorOverrides.S0:nope: unknown rule id");
+		expect(notes).not.toContain("policy degraded");
+	});
+
+	test("a scope path that covers the home directory is refused", async () => {
+		const notes = await reloadNotes(headless({ "S0:pem": { action: "off", paths: ["~"] } }));
+		expect(notes).toContain("covers the home directory");
+	});
+
+	test("a scope path that is a symlink to the home directory is refused", async () => {
+		const link = path.join(BASE, "home-link");
+		fs.symlinkSync(os.homedir(), link);
+		try {
+			const h = headless({ "S0:pem": { action: "off", paths: [link] } });
+			expect(await reloadNotes(h)).toContain("covers the home directory");
+			expect((await toolCall(h, "read", { path: path.join(KEYS, PEM) }))?.block).toBe(true);
+		} finally {
+			fs.rmSync(link, { force: true });
+		}
+	});
+
+	test("an entry with a key other than action and paths is refused, not widened to everywhere", async () => {
+		const h = headless({ "S0:pem": { action: "off", path: [KEYS] } });
+		expect(await reloadNotes(h)).toContain("floorOverrides.S0:pem");
+		expect((await toolCall(h, "read", { path: path.join(OUTSIDE, PEM) }))?.block).toBe(true);
+	});
+
+	test("rm-recursive cannot be overridden until deletes are graded by target", async () => {
+		const h = headless({ ["rm-" + "recursive"]: "off" });
+		expect(await reloadNotes(h)).toContain("this rule cannot be overridden");
+		expect((await toolCall(h, "bash", { command: "rm " + "-rf ~/" }))?.block).toBe(true);
+	});
+
+	test("a scoped code-loading off lifts an in-scope write and asks where a form leaves the scope", async () => {
+		const ompDir = path.join(PROJ, ".omp");
+		const agentExt = path.join(BASE, "home", ".omp", "agent", "extensions");
+		fs.mkdirSync(path.join(ompDir, "tools"), { recursive: true });
+		fs.mkdirSync(agentExt, { recursive: true });
+		fs.symlinkSync(agentExt, path.join(ompDir, "extensions"));
+		try {
+			const h = headless({ "code-loading": { action: "off", paths: [ompDir] } });
+			h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+			const inScope = await toolCall(h, "write", { path: path.join(ompDir, "tools", "x.ts"), content: "x" });
+			expect(String(inScope?.reason ?? "")).not.toContain("host code-loading location");
+			const escaped = await toolCall(h, "write", { path: path.join(ompDir, "extensions", "new.ts"), content: "x" });
+			expect(String(escaped?.reason)).toContain("host code-loading location");
+		} finally {
+			fs.rmSync(ompDir, { recursive: true, force: true });
+		}
+	});
+
+	test("the audit names the lifted rule", async () => {
+		clearAudit();
+		const h = headless({ "S0:pem": "off" }, { audit: true });
+		await toolCall(h, "read", { path: path.join(KEYS, PEM) });
+		const record = readAudit().find((r: any) => r.kind === "rule");
+		expect(record).toMatchObject({ verdict: "allow", rule: "path-read", overrides: ["override:S0:pem"] });
+		clearAudit();
+	});
+
+	test("/automode and the footer name active overrides", async () => {
+		const h = session({ floorOverrides: { "S0:pem": { action: "ask", paths: [KEYS] } } }, { cwd: PROJ });
+		await h.commands.automode.handler("", h.ctx);
+		expect(h.notifies.at(-1)?.[0]).toContain("floor overrides: S0:pem ask (scoped)");
+		await h.handlers.session_start({}, h.ctx);
+		expect(h.statusSets.some(([, t]) => t.includes("floor overrides 1"))).toBe(true);
+	});
+
+	test("a trusted project config cannot set floorOverrides", async () => {
+		await withTempDir("pv-proj-overrides-", async (dir) => {
+			fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+			fs.writeFileSync(path.join(dir, ".pi", "pi-verdict.json"), JSON.stringify({ floorOverrides: { "S0:pem": "off" } }));
+			fs.writeFileSync(path.join(dir, PEM), "test key");
+			const trustFile = path.join(TMP_AGENT, "config", "pi-verdict-trust.json");
+			fs.rmSync(trustFile, { force: true });
+			const h = session({}, { cwd: dir });
+			(h as any).selectIndex = 0; // Trust
+			try {
+				await h.handlers.session_start({}, h.ctx);
+				expect(h.notifies.map(([m]) => m).join("\n")).toContain("floorOverrides: not overridable per project");
+				expect((await toolCall(h, "read", { path: path.join(dir, PEM) }))?.block).toBe(true);
+			} finally {
+				fs.rmSync(trustFile, { force: true });
+			}
 		});
 	});
 });

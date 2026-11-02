@@ -39,6 +39,7 @@ function footerInfo(rt: GateRuntime, ctx: ExtensionContext): FooterInfo {
 		autoDenyOff: !rules.autoDeny,
 		subagentGate: rules.subagentGate,
 		policyDegraded: rt.state.policyDegraded,
+		floorOverrides: rules.floorOverrides.size,
 	};
 }
 

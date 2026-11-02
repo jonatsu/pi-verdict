@@ -59,6 +59,8 @@ export interface AuditRecord {
 	answeredAt?: string;
 	/** Rule-layer asks only: the id of the rule that asked (`RuleResult.rule`). */
 	rule?: string;
+	/** The floor rules a `floorOverrides` entry lifted for this call, each as `override:<id>` (ADR-0013). */
+	overrides?: string[];
 	/** #62: protected-path records only — the matched path. */
 	detail?: string;
 	/** #67: the confidence floor fired — the first-layer verdict was demoted. */
@@ -79,6 +81,8 @@ export interface RuleVerdictRecord {
 	verdict: "allow" | "deny";
 	/** The deciding rule's `RuleResult.rule`, or "unlabeled" when its producer names none. */
 	rule: string;
+	/** As on `AuditRecord`: the floor rules an override lifted, each as `override:<id>`. */
+	overrides?: string[];
 }
 
 /** Audit sink (#54): append-only and fail-soft (the first write failure surfaces

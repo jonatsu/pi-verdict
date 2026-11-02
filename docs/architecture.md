@@ -224,6 +224,7 @@ flowchart BT
     shell[shell: danger rules, allow shape]
     paths[paths: canonical forms, containment]
     agentdir[agent-dir: install anchor]
+    overrides[floor-overrides: per-rule floor overrides and their scope]
     config[config + trust: user policy, project trust]
     floor[floor: path sensitivity S0-S5]
     access[access: tool-access adapter, host path spellings]

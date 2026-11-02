@@ -208,6 +208,9 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	{ kind: "raw", id: "fork-bomb", pattern: /:\(\)\s*\{/, reason: "fork bomb" },
 ];
 
+/** The id of every bash floor rule, as `floorOverrides` and the audit name it. */
+export const BASH_FLOOR_RULE_IDS: readonly string[] = BASH_DANGER_RULES.map((rule) => rule.id);
+
 /**
  * Whether a raw-text tripwire matches the command. A tripwire over-approximates its rule and only
  * has to never miss; the word view clears a false trip (ADR-0007). A backslash-newline may split a
@@ -372,6 +375,10 @@ export interface RuleResult {
 	/** A short id of the rule that decided, kept in the audit: the rule-verdict record of an allow or deny,
 	 *  the full record of an ask. It never holds a path or other text from the call. */
 	rule?: string;
+	/** The floor rules a `floorOverrides` entry lifted for this call (ADR-0013), for the audit. */
+	overridden?: readonly string[];
+	/** A floor deny an override softened to an ask; the rule layer raises it after the protected-path asks. */
+	carriedAsk?: { readonly rule: string; readonly reason: string };
 }
 
 /** Cap the danger-regex matching input: the prefix-consuming character
@@ -380,27 +387,56 @@ export interface RuleResult {
  *  falls to the classifier (fail-closed direction). */
 export const BASH_MAX_MATCH_LEN = 8192;
 
+/** Returns what a `floorOverrides` entry does to a floor rule for the call being graded, or null when no
+ *  entry applies and the rule stays on (ADR-0013). */
+export type FloorLift = (id: string) => "off" | "ask" | null;
+
+const NO_LIFT: FloorLift = () => null;
+
+/** The floor rules an override lifted while one call was graded: the first softened to an ask, and the ids
+ *  of all of them for the audit. */
+export class LiftedRules {
+	private ask: RuleResult["carriedAsk"];
+	private readonly ids: string[] = [];
+
+	add(rule: string, reason: string, action: "off" | "ask"): void {
+		this.ids.push(rule);
+		if (action === "ask" && this.ask === undefined) this.ask = { rule, reason };
+	}
+
+	/** Returns the grade with the lifted rules attached; a grade with none passes unchanged. */
+	onto(grade: RuleResult): RuleResult {
+		if (this.ids.length === 0) return grade;
+		return { ...grade, overridden: this.ids, ...(this.ask ? { carriedAsk: this.ask } : {}) };
+	}
+}
+
 /** Grades a bash command: a floor deny, or gray for the user rules and the classifier. */
-export function classifyBash(command: string, floorOn: boolean): RuleResult {
-	return classifyShellText(command, floorOn, "words");
+export function classifyBash(command: string, floorOn: boolean, lift: FloorLift = NO_LIFT): RuleResult {
+	return classifyShellText(command, floorOn, "words", lift);
 }
 
 /** Grades the shell lines of a Python cell on raw text only: Python decides how their strings are
  *  quoted and joined, so the shell-word view cannot show that a tripwire hit is harmless (ADR-0007). */
-export function classifyPyShellLines(lines: string, floorOn: boolean): RuleResult {
-	return classifyShellText(lines, floorOn, "raw-text");
+export function classifyPyShellLines(lines: string, floorOn: boolean, lift: FloorLift = NO_LIFT): RuleResult {
+	return classifyShellText(lines, floorOn, "raw-text", lift);
 }
 
-function classifyShellText(command: string, floorOn: boolean, view: FloorView): RuleResult {
+function classifyShellText(command: string, floorOn: boolean, view: FloorView, lift: FloorLift): RuleResult {
+	const lifted = new LiftedRules();
 	if (floorOn) {
 		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			if (ruleHits(rule, capped, view)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}`, rule: rule.id };
+			if (!ruleHits(rule, capped, view)) continue;
+			const reason = `rule ${rule.id}: ${rule.reason}`;
+			const action = lift(rule.id);
+			if (action === null) return { verdict: "deny", reason, rule: rule.id };
+			lifted.add(rule.id, reason, action);
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command", rule: "empty-command" };
 	// No built-in allowlist: every command the floor passes goes to user rules and the classifier.
-	return { verdict: "gray", reason: "no built-in allowlist" };
+	return lifted.onto({ verdict: "gray", reason: "no built-in allowlist" });
 }
 
 /** Direct shell APIs in py cell text: omp injects `__omp_shell` into the cell
