@@ -369,6 +369,9 @@ export interface RuleResult {
 	/** Named only on verdict:"ask": which rule-layer ask this is. Every producer names its own
 	 *  source; an unset value maps to "protected-path". */
 	askSource?: "protected-path" | "rule";
+	/** A short id of the rule behind an allow or deny, kept in the audit's rule-verdict record; it never
+	 *  holds a path or other text from the call. */
+	rule?: string;
 }
 
 /** Cap the danger-regex matching input: the prefix-consuming character
@@ -392,10 +395,10 @@ function classifyShellText(command: string, floorOn: boolean, view: FloorView): 
 	if (floorOn) {
 		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			if (ruleHits(rule, capped, view)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
+			if (ruleHits(rule, capped, view)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}`, rule: rule.id };
 		}
 	}
-	if (!command.trim()) return { verdict: "allow", reason: "empty command" };
+	if (!command.trim()) return { verdict: "allow", reason: "empty command", rule: "empty-command" };
 	// No built-in allowlist: every command the floor passes goes to user rules and the classifier.
 	return { verdict: "gray", reason: "no built-in allowlist" };
 }

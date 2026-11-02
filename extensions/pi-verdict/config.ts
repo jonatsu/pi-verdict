@@ -88,7 +88,7 @@ export interface UserRules {
 	explainGatePrompt: string | null;
 	/** Master toggle shortcut key (#15); null = disabled; defaults to DEFAULT_TOGGLE_SHORTCUT. */
 	toggleShortcut: string | null;
-	/** Opt-in gray-zone adjudication audit (#54): per-session JSONL under <agentDir>/verdicts/ */
+	/** Opt-in adjudication audit (#54): per-session JSONL under <agentDir>/verdicts/ */
 	audit: boolean;
 	/** Allow visibility (#60): info notification on classifier allows; mechanical passes stay silent. Default off. */
 	notifyAllows: boolean;

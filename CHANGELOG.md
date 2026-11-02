@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- With `audit: true`, every rule-layer allow and deny now appends a compact record to the session's `verdicts/<sessionId>.jsonl` beside the full gray-zone and protected-path records: `kind: "rule"`, `ts`, `sessionId`, `tool`, `verdict` and `rule`, the id of the deciding rule (a floor rule id such as `rm-recursive`, or `S0`, `S1`, `S3`, `self-protection`, `user-allow`, `user-deny`, `user-tools`, `path-read`, `path-write`, `device`, `empty-command`). It holds no input, path or reason, so the log can show which share of calls each layer decides; a reader of the audit files tells the two record shapes apart by `kind`, and the audit directory now appears on the first rule decision instead of the first gray-zone call. `RuleResult` gains the optional `rule` field, and `RuleVerdictRecord` is exported.
+
 ## [0.25.0] - 2026-11-02
 
 Floor and path fixes: force-push spellings the shell expands, a command-line git alias, and omp SQLite query selectors on a protected database.

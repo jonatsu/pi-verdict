@@ -46,7 +46,7 @@ export interface AuditRecord {
 	verdict: "allow" | "ask" | "deny";
 	reason: string;
 	/** #62: protected-path asks are recorded too — their user answers grade the
-	 *  denyPaths rules; rule allow/deny verdicts remain unaudited. "rule" covers a
+	 *  denyPaths rules; rule allows and denies get a `RuleVerdictRecord`. "rule" covers a
 	 *  rule-layer ask whose askSource is not "protected-path" (ask-source seam).
 	 *  "degraded-policy" is a model-originated allow converted to an ask while the
 	 *  user's own policy failed to load (item 6c, Phase 6; ADR-0010). */
@@ -67,15 +67,27 @@ export interface AuditRecord {
 	subagent?: { id: string; name: string; resolution: "human" | "timeout" | "auto" };
 }
 
+/** One rule-layer allow or deny, so the audit counts every call the gate decides. Compact on purpose: it
+ *  carries no input, no path and no reason, only the id of the rule that decided. */
+export interface RuleVerdictRecord {
+	kind: "rule";
+	ts: string;
+	sessionId: string;
+	tool: string;
+	verdict: "allow" | "deny";
+	/** The deciding rule's `RuleResult.rule`, or "unlabeled" when its producer names none. */
+	rule: string;
+}
+
 /** Audit sink (#54): append-only and fail-soft (the first write failure surfaces
  *  once via drainWarning; verdicts are never affected). The dir is created
- *  lazily — audit on with no gray-zone call all session leaves zero filesystem trace. */
+ *  lazily, on the first record. */
 export class AuditLog {
 	private warning: string | null = null;
 	private warned = false;
 	constructor(readonly dir: string) {}
 
-	append(record: AuditRecord): void {
+	append(record: AuditRecord | RuleVerdictRecord): void {
 		// sessionId comes from the host with no shape guarantee: narrow to a safe filename charset
 		const file = path.join(this.dir, `${record.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.jsonl`);
 		try {

@@ -16,7 +16,7 @@ import { refreshStatus } from "./ui/status.ts";
 export { expandHostPath, hostPathForms, hostReadPath } from "./access.ts";
 export { type AdjudicateEnv, adjudicate, resolveAskWithoutHuman, type Verdict, type VerdictSource } from "./adjudicate.ts";
 export { resolveAgentDir } from "./agent-dir.ts";
-export { AuditLog, type AuditRecord, type FallbackAudit } from "./audit.ts";
+export { AuditLog, type AuditRecord, type FallbackAudit, type RuleVerdictRecord } from "./audit.ts";
 export { budgetedTimeoutMs } from "./classifier.ts";
 export { bindCompletion, type CompatLoader, type CompletionFn } from "./completion.ts";
 export { BASH_PATH_TOKENS, bashPathTokens } from "./deny-paths.ts";

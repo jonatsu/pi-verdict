@@ -246,7 +246,7 @@ function classifyDeviceUrl(rawPath: string, isWrite: boolean): RuleResult {
 	if (target === null) return gray;
 	const [, name, topic] = target;
 	if (isWrite && (topic !== undefined || !PLAIN_DEVICE_NAME.test(name) || UNDISPATCHED_DEVICES.has(name.toLowerCase()))) return gray;
-	return { verdict: "allow" };
+	return { verdict: "allow", rule: "device" };
 }
 
 /** Grades one target: an `xd://` URL on omp by its device, everything else by its path. Off omp an `xd://`
@@ -270,29 +270,29 @@ export function classifyPath(rawPath: string, cwd: string, isWrite: boolean, flo
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
 	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
 	const D = floorOn
-		? (reason: string): RuleResult => ({ verdict: "deny", reason })
-		: (reason: string): RuleResult => ({ verdict: "gray", reason });
+		? (rule: string, reason: string): RuleResult => ({ verdict: "deny", reason, rule })
+		: (_rule: string, reason: string): RuleResult => ({ verdict: "gray", reason });
 
-	if (hitsS0(ruleForms)) return D(`S0 secrets/credential path: ${rawPath}`);
+	if (hitsS0(ruleForms)) return D("S0", `S0 secrets/credential path: ${rawPath}`);
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
 		if (hit(s1Rules)) return { verdict: "gray", reason: `read system config path: ${rawPath}` };
-		return { verdict: "allow" };
+		return { verdict: "allow", rule: "path-read" };
 	}
-	if (hit(s1Rules)) return D(`write to system directory: ${rawPath}`);
-	if (hit(S3_GIT_META)) return D(`write to .git metadata (executable code entry point): ${rawPath}`);
+	if (hit(s1Rules)) return D("S1", `write to system directory: ${rawPath}`);
+	if (hit(S3_GIT_META)) return D("S3", `write to .git metadata (executable code entry point): ${rawPath}`);
 	if (hit(S2_USER_RC)) return { verdict: "gray", reason: `write to user config/persistence entry point: ${rawPath}` };
 	// Item 8 (plan-review F20): a write whose kernel target is unknowable (symlink loop,
 	// unreadable link target) fails closed — the lexical spelling must not grade as a plain
 	// in-cwd write whose destination the floor never saw. Reads stay alone: the open fails
 	// ELOOP and exposes nothing. Through D(...): with builtinDenyFloor:false this degrades
 	// to gray like every other floor branch.
-	if (isWrite && walk.unresolved) return D("unresolved symlink (write fail-closed)");
+	if (isWrite && walk.unresolved) return D("unresolved-symlink", "unresolved symlink (write fail-closed)");
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
 	// (in either its lexical or real form) — a lexical prefix hit whose real
 	// form escapes the project (symlink alias) grades as an outside-cwd write.
-	if (formsInCwd(forms, cwd)) return { verdict: "allow" };
+	if (formsInCwd(forms, cwd)) return { verdict: "allow", rule: "path-write" };
 	return { verdict: "gray", reason: `write outside project directory (CWD): ${rawPath}` };
 }
 
@@ -336,7 +336,7 @@ export function classifyWrites(targets: string[], cwd: string, floorOn: boolean,
 	const results = targets.map((t) => gradeTarget(t, cwd, true, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
-	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow" };
+	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow", rule: "path-write" };
 	const gray = results.find((r) => r.verdict === "gray");
 	return gray ?? { verdict: "gray", reason: `write outside project directory (CWD): ${targets.join(", ")}` };
 }
@@ -377,10 +377,10 @@ export function s0DirectoryBeneath(target: string, cwd: string): boolean {
  *  beats allow) so a list-split part cannot silently evade the floor either
  *  (Claude-review F6 — over-extraction is the safe direction on both sides). */
 export function classifyReads(targets: string[], cwd: string, floorOn: boolean, host: HostKind): RuleResult {
-	if (targets.length === 0) return { verdict: "allow" };
+	if (targets.length === 0) return { verdict: "allow", rule: "path-read" };
 	const results = targets.map((t) => gradeTarget(t, cwd, false, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	const gray = results.find((r) => r.verdict === "gray");
-	return gray ?? { verdict: "allow" };
+	return gray ?? { verdict: "allow", rule: "path-read" };
 }

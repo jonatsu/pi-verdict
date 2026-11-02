@@ -409,6 +409,19 @@ function settle(a: Adjudication, s: Settlement): Verdict {
 	}
 }
 
+/** Appends the compact record of a rule-layer allow or deny when audit is on. It is recorded before
+ *  `settle`, so a deny that `autoDeny: false` turns into an ask still counts as the rule's deny. */
+function auditRuleVerdict(state: SessionState, env: AdjudicateEnv, tool: string, verdict: "allow" | "deny", rule: RuleResult): void {
+	state.audit?.append({
+		kind: "rule",
+		ts: new Date().toISOString(),
+		sessionId: env.host.getSessionId(),
+		tool,
+		verdict,
+		rule: rule.rule ?? "unlabeled",
+	});
+}
+
 /** Settles a rule-layer ask: a protected-path or rule ask that only the user who declared it may answer
  *  (ADR-0002), so it never reaches a model. Unlike rule allows and denies, it is audited (#62). */
 function adjudicateRuleAsk(a: Adjudication, rule: RuleResult): Verdict {
@@ -517,12 +530,15 @@ export async function adjudicate(state: SessionState, call: ToolCall, env: Adjud
 		host: env.hostKind,
 		shellState,
 	});
-	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
+	if (rule.verdict === "allow") {
+		auditRuleVerdict(state, env, call.toolName, "allow", rule);
+		return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
+	}
 	// The action under review is never elided: the rule layer already asked about an over-cap action.
 	const a: Adjudication = { state, env, call, actionLine: actionCallLine(call.toolName, call.input, displayedCwd).line };
 	switch (rule.verdict) {
 		case "deny":
-			// Rule allows and denies stay unaudited (#54).
+			auditRuleVerdict(state, env, call.toolName, "deny", rule);
 			return settle(a, {
 				ruling: { verdict: "deny", reason: rule.reason ?? "", source: "rule" },
 				record: null,

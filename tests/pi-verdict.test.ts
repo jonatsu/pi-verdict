@@ -3528,20 +3528,61 @@ describe("audit verdict records (#54)", () => {
 		expect(recs[1]).toMatchObject({ source: "fail-closed", model: null, transcript: null, rawResponse: null });
 	});
 
-	test("rule-layer verdicts stay unaudited; protected-path asks are recorded (#62)", async () => {
+	test("rule-layer allows and denies get a compact record; protected-path asks a full one (#62)", async () => {
 		clearAudit();
-		const h1 = session({ audit: true, deny: ["push"] });
+		expect(fs.existsSync(VERDICTS())).toBe(false);
+		const h1 = session({ audit: true, deny: ["push"], allow: ["^ls\\b"] });
 		const r1 = await toolCall(h1, "bash", { command: "git push origin main" });
 		expect(r1?.block).toBe(true);
-		expect(fs.existsSync(VERDICTS())).toBe(false); // lazy dir: rule-only session → no dir
+		expect(await toolCall(h1, "bash", { command: "ls" })).toBeUndefined();
 		const h2 = session({ audit: true, denyPaths: [path.join(TMP_AGENT, "sensitive-53")] });
 		const r2 = await toolCall(h2, "read", { path: path.join(TMP_AGENT, "sensitive-53", "secret.md") });
 		expect(r2).toBeUndefined(); // confirm defaults to allow
-		const recs = readAudit();
+		const all = readAudit();
+		const compact = all.filter((r: any) => r.kind === "rule");
+		expect(compact.map((r: any) => [r.tool, r.verdict, r.rule])).toEqual([
+			["bash", "deny", "user-deny"],
+			["bash", "allow", "user-allow"],
+		]);
+		// No input, path or reason reaches a compact record.
+		expect(Object.keys(compact[0]).sort()).toEqual(["kind", "rule", "sessionId", "tool", "ts", "verdict"]);
+		expect(JSON.stringify(compact)).not.toContain("push");
+		const recs = all.filter((r: any) => r.kind === undefined);
 		expect(recs.length).toBe(1);
 		expect(recs[0]).toMatchObject({ verdict: "ask", source: "protected-path", degraded: false, userAnswer: "allowed", model: null });
 		expect(recs[0].detail).toContain("sensitive-53");
 		expect(typeof recs[0].answeredAt).toBe("string");
+	});
+
+	test("every rule-layer allow and deny names the rule that decided it", async () => {
+		clearAudit();
+		const h = session({ audit: true, tools: ["todo_write"] });
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["bash", { command: "rm " + "-rf /tmp/x" }],
+			["bash", { command: " " }],
+			["write", { path: path.join(TMP_AGENT, "config", "pi-verdict.json"), content: "x" }],
+			["read", { path: "~/.ssh/" + "id_rsa" }],
+			["write", { path: "/etc/hosts", content: "x" }],
+			["write", { path: "/proj/.git/hooks/pre-commit", content: "x" }],
+			["read", { path: "/proj/src/a.ts" }],
+			["write", { path: "/proj/src/a.ts", content: "x" }],
+			["todo_write", { todos: [] }],
+		];
+		for (const [tool, input] of calls) await toolCall(h, tool, input);
+		const rules = readAudit()
+			.filter((r: any) => r.kind === "rule")
+			.map((r: any) => `${r.verdict}:${r.rule}`);
+		expect(rules).toEqual([
+			"deny:rm-recursive",
+			"allow:empty-command",
+			"deny:self-protection",
+			"deny:S0",
+			"deny:S1",
+			"deny:S3",
+			"allow:path-read",
+			"allow:path-write",
+			"allow:user-tools",
+		]);
 	});
 
 	test("audit write failure never alters the verdict; warns exactly once", async () => {

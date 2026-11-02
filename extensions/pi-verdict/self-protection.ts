@@ -327,5 +327,5 @@ const COMMAND_TOUCHES_GATE = "self-protection layer (ADR-0005): command touches 
 
 /** A self-protection deny, which no configuration exempts (`autoDeny:false` included). */
 function selfDeny(reason: string): RuleResult {
-	return { verdict: "deny", reason, selfProtect: true };
+	return { verdict: "deny", reason, selfProtect: true, rule: "self-protection" };
 }

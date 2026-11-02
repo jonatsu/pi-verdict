@@ -172,7 +172,7 @@ function userDeny(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	const urls = access.direction === "unknown" ? [] : [...access.gradedReads, ...access.gradedWrites].filter(isHostInternalUrl);
 	const denyTargets = [...targets, ...urls, ...(access.kind === "code" && access.command !== null ? [access.command] : [])];
 	for (const re of ctx.userRules.deny) {
-		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}` };
+		if (denyTargets.some((t) => re.test(t))) return { verdict: "deny", reason: `user deny rule: ${re.source}`, rule: "user-deny" };
 	}
 	return null;
 }
@@ -248,7 +248,7 @@ function userAllow(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	// The regexes run first: they are cheaper than the operand grading, which reads the filesystem.
 	if (!ctx.userRules.allow.some((re) => call.targets.every((t) => re.test(t)))) return null;
 	if (isCommandTool(call.toolName) && !commandAdmitted(call.toolName, commandText(call.input), ctx)) return null;
-	return { verdict: "allow", reason: "user allow rule" };
+	return { verdict: "allow", reason: "user allow rule", rule: "user-allow" };
 }
 
 /** True when a user allow rule may admit this command: one simple command (ADR-0008) whose operands the
@@ -266,7 +266,7 @@ function commandAdmitted(toolName: string, command: string, ctx: RuleContext): b
  *  command can. */
 function toolsExemption(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (!ctx.userRules.tools.includes(call.toolName) || call.access.kind === "code" || !call.vouchable) return null;
-	return { verdict: "allow", reason: "user tools allow rule" };
+	return { verdict: "allow", reason: "user tools allow rule", rule: "user-tools" };
 }
 
 /** Asks on a known mutating call whose payload names no target; an unknown tool is never opaque. */
