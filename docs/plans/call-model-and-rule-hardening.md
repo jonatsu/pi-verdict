@@ -340,7 +340,7 @@ regex to their own `allow` list, where ADR-0008's rule that the user endorses th
 user-side trade as well.
 
 **ADR.** This partly reverses the project's "no built-in allowlist" position (#12, `docs/layers.md`,
-`research/rule-layer-security-audit.md` V3). Write a new ADR, taking the next free number at landing time (ADR-0013
+`research/rule-layer-security-audit.md` V3). Write a new ADR, taking the next free number at landing time (ADR-0014
 as of 2026-11-02). It records three things:
 
 - why V3's objection no longer holds: the guard is shape-checked and operand-graded, and the list is fixed and
