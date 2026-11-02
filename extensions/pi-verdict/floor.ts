@@ -144,10 +144,24 @@ const S0_DIRECTORY_RULES: readonly (S0Entry & { readonly homeDirs: readonly stri
 const S0_SECRET: readonly S0Entry[] = [
 	...S0_DIRECTORY_RULES,
 	// The dotless credential homes under `~/.config` and their XDG alternatives live in `anchoredS0`.
-	{ id: "env", rule: /(^|\/)\.env(\.|$)/i },
+	// `.env` and its variants, but not the `.example`, `.sample` and `.template` files a project ships.
+	{ id: "env", rule: /(^|\/)\.env(?!\.(?:example|sample|template)$)(\.|$)/i },
 	{ id: "credentials", rule: /credentials?(\.|\/|$)/i },
-	{ id: "id-rsa", rule: /(^|\/)id_rsa/i },
+	// Private SSH key names, but not their `.pub` public halves.
+	{ id: "id-rsa", rule: /(^|\/)id_rsa(?![^/]*\.pub$)/i },
+	{ id: "id-ed25519", rule: /(^|\/)id_ed25519(?![^/]*\.pub$)/i },
+	{ id: "id-ecdsa", rule: /(^|\/)id_ecdsa(?![^/]*\.pub$)/i },
+	{ id: "id-dsa", rule: /(^|\/)id_dsa(?![^/]*\.pub$)/i },
 	{ id: "pem", rule: /\.pem$/i },
+	// Key stores, key files and password vaults by extension.
+	{ id: "key", rule: /\.key$/i },
+	{ id: "p12", rule: /\.p12$/i },
+	{ id: "pfx", rule: /\.pfx$/i },
+	{ id: "jks", rule: /\.jks$/i },
+	{ id: "keystore", rule: /\.keystore$/i },
+	{ id: "kdbx", rule: /\.kdbx$/i },
+	{ id: "ovpn", rule: /\.ovpn$/i },
+	{ id: "ppk", rule: /\.ppk$/i },
 	{ id: "history", rule: /_history$/i },
 	// V8 (security audit): add common plaintext credential files
 	{ id: "netrc", rule: /(^|\/)\.netrc$/i },
@@ -160,16 +174,61 @@ const S0_SECRET: readonly S0Entry[] = [
 	{ id: "proc-environ", rule: /^\/proc\/(?:\d+|self|thread-self)\/(?:task\/\d+\/)?environ$/i },
 ];
 
+/** The S0 ids of key material: a write that creates such a file is graded gray rather than denied, because
+ *  generating a test key is ordinary work and a new file holds nothing yet (ADR-0013). */
+const KEY_MATERIAL_IDS: ReadonlySet<string> = new Set([
+	"pem",
+	"key",
+	"p12",
+	"pfx",
+	"jks",
+	"keystore",
+	"kdbx",
+	"ovpn",
+	"ppk",
+	"id-rsa",
+	"id-ed25519",
+	"id-ecdsa",
+	"id-dsa",
+]);
+
+const PUBLIC_KEY = /\.pub$/i;
+
 /** Returns the ids of every S0 entry a rule form hits: the static ones, the home and XDG anchored
- *  credential homes, or the agent directory's database. */
-function s0Hits(ruleForms: readonly string[]): string[] {
+ *  credential homes, or the agent directory's database. A read of a `.pub` public key does not hit a
+ *  credential home; a write there still does. Each form is tested on its own, so a public-key name whose
+ *  real path is a private key still hits. */
+function s0Hits(ruleForms: readonly string[], isWrite: boolean): string[] {
+	const homes = new Set<S0Entry>([...S0_DIRECTORY_RULES, ...anchoredS0]);
 	const entries = [...S0_SECRET, ...anchoredS0, ...agentDbS0()];
-	return entries.filter((e) => ruleForms.some((f) => e.rule.test(f))).map((e) => e.id);
+	const hits = (e: S0Entry, f: string): boolean => e.rule.test(f) && (isWrite || !homes.has(e) || !PUBLIC_KEY.test(f));
+	return [...new Set(entries.filter((e) => ruleForms.some((f) => hits(e, f))).map((e) => e.id))];
 }
 
-/** True when a rule form hits any S0 entry. */
+/** True when a rule form hits any S0 entry, graded as a write so no read exemption applies. */
 function hitsS0(ruleForms: readonly string[]): boolean {
-	return s0Hits(ruleForms).length > 0;
+	return s0Hits(ruleForms, true).length > 0;
+}
+
+/** True when any form of a target hits an S0 entry with no read exemption. For a shell operand, which the
+ *  gate cannot tell a read from a write (`cp x ~/.ssh/a.pub`). */
+export function hitsS0AsWrite(rawPath: string, cwd: string): boolean {
+	return hitsS0(canonicalPathForms(rawPath, cwd).ruleForms);
+}
+
+/** True when the write target does not exist in any form: its lexical path and every rebuilt or
+ *  kernel-walked form fail `lstat` with ENOENT or ENOTDIR, so a dangling symlink counts as existing.
+ *  Fails closed: any other `lstat` error counts as existing. */
+function isNewFile(abs: string, forms: readonly string[]): boolean {
+	return [abs, ...forms].every((f) => {
+		try {
+			fs.lstatSync(f);
+			return false;
+		} catch (err) {
+			const code = err instanceof Error && "code" in err ? err.code : undefined;
+			return code === "ENOENT" || code === "ENOTDIR";
+		}
+	});
 }
 // /private prefixes: macOS firmlinks — /etc, /var are really /private/etc,
 // /private/var, and realpath'd toolchain output uses the real spelling (#21)
@@ -294,7 +353,7 @@ export function classifyPath(
 	// the floor on its lexical spelling alone. The kernel walk adds the spelling the
 	// kernel would open when a symlink component precedes `..` or the leaf is a symlink
 	// itself (path-layer review items 4, 7–8); one walk feeds this and the check below.
-	const { forms, ruleForms, walk } = canonicalPathForms(rawPath, cwd);
+	const { abs, forms, ruleForms, walk } = canonicalPathForms(rawPath, cwd);
 	const hit = (rules: RegExp[]) => ruleForms.some((f) => rules.some((r) => r.test(f)));
 	const lifted = new LiftedRules();
 	// When the floor is off: downgrade all built-in denies to gray (never promote to allow); preserve non-deny branches (allow/gray).
@@ -307,7 +366,12 @@ export function classifyPath(
 		return null;
 	};
 
-	for (const id of s0Hits(ruleForms)) {
+	const s0 = s0Hits(ruleForms, isWrite);
+	// Creating a key file goes to the classifier; overwriting one, or creating one in a credential home
+	// (whose own hit is no key-material id), stays denied.
+	const createsKey = isWrite && s0.some((id) => KEY_MATERIAL_IDS.has(id)) && isNewFile(abs, forms);
+	for (const id of s0) {
+		if (createsKey && KEY_MATERIAL_IDS.has(id)) continue;
 		const denied = D(`S0:${id}`, `S0 secrets/credential path: ${rawPath}`);
 		if (denied) return denied;
 	}
@@ -334,6 +398,7 @@ export function classifyPath(
 	// In-cwd write allowance (#20): every canonical form must sit inside the cwd
 	// (in either its lexical or real form) — a lexical prefix hit whose real
 	// form escapes the project (symlink alias) grades as an outside-cwd write.
+	if (createsKey) return lifted.onto({ verdict: "gray", reason: `write creates a key-material file: ${rawPath}` });
 	if (formsInCwd(forms, cwd)) return lifted.onto({ verdict: "allow", rule: "path-write" });
 	return lifted.onto({ verdict: "gray", reason: `write outside project directory (CWD): ${rawPath}` });
 }
@@ -348,11 +413,14 @@ function withLifted(grade: RuleResult, parts: readonly RuleResult[]): RuleResult
 
 /** Every canonical form of a target the path rules test: lexical and realpath-rebuilt, plus the
  *  kernel-walked spelling, each also in rule form. */
-function canonicalPathForms(rawPath: string, cwd: string): { forms: string[]; ruleForms: string[]; walk: ReturnType<typeof kernelWalk> } {
+function canonicalPathForms(
+	rawPath: string,
+	cwd: string,
+): { abs: string; forms: string[]; ruleForms: string[]; walk: ReturnType<typeof kernelWalk> } {
 	const abs = path.resolve(cwd, expandHome(rawPath));
 	const walk = kernelWalk(rawPath, cwd);
 	const forms = [...new Set([...rebuiltForms(abs), ...(walk.resolved === null ? [] : rebuiltForms(walk.resolved))])];
-	return { forms, ruleForms: forms.map(toRuleForm), walk };
+	return { abs, forms, ruleForms: forms.map(toRuleForm), walk };
 }
 
 /** Does every form sit inside the cwd, in either its lexical or its real spelling? */

@@ -13,10 +13,19 @@ function stripZeroWidth(text: string): string {
 	return text.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "");
 }
 
-/** Returns the text without zero-width characters, capped at `MAX_ENTRY_CHARS` by keeping its head and tail
+/** Matches a PEM or PGP private-key block, through its END line or, when that is missing, the end of the text. */
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+
+/** Returns the text without zero-width characters and with every private-key block replaced by a marker,
+ *  so key material never reaches a model (ADR-0013). Runs before any cut, which could drop a BEGIN line. */
+function cleanText(text: string): string {
+	return stripZeroWidth(text).replace(PRIVATE_KEY_BLOCK, "[private key block redacted]");
+}
+
+/** Returns the text cleaned by `cleanText`, capped at `MAX_ENTRY_CHARS` by keeping its head and tail
  *  around a `…[truncated]…` marker. */
 export function sanitize(text: string): string {
-	const cleaned = stripZeroWidth(text);
+	const cleaned = cleanText(text);
 	if (cleaned.length <= MAX_ENTRY_CHARS) return cleaned;
 	const head = Math.floor(MAX_ENTRY_CHARS * 0.6);
 	const tail = MAX_ENTRY_CHARS - head;
@@ -65,9 +74,10 @@ const CONTENT_SEPARATOR = "| content:";
 /** Separates a command from the directory it runs in on the one action line. */
 const CWD_SEPARATOR = "| cwd:";
 
-/** Returns a sanitized excerpt behind a visible `[excerpt: N of M chars]` marker, so a cut is never silent. */
+/** Returns an excerpt cleaned by `cleanText` behind a visible `[excerpt: N of M chars]` marker, so a cut is
+ *  never silent. */
 function boundedExcerpt(text: string, maxChars: number): string {
-	const safe = escapeLineBreaks(stripZeroWidth(text));
+	const safe = escapeLineBreaks(cleanText(text));
 	const shown = safe.length > maxChars ? safe.slice(0, maxChars) : safe;
 	return `[excerpt: ${shown.length} of ${safe.length} chars] ${shown}`;
 }

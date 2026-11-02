@@ -1118,14 +1118,14 @@ export function buildCases(fx: FixtureTree): Case[] {
 			label: "read of a missing relative file is never a rule allow because the host may open another file",
 			family: "host-path",
 			tool: "read",
-			input: { path: "id_ed25519" },
+			input: { path: "known_hosts" },
 			expected: { layer: "classifier" },
 		},
 		{
 			label: "read of a missing relative file is not carried by a user allow rule",
 			family: "host-path",
 			tool: "read",
-			input: { path: "id_ed25519" },
+			input: { path: "known_hosts" },
 			config: { allow: ["^.*$"] },
 			expected: { layer: "classifier" },
 		},
@@ -1814,6 +1814,42 @@ export function buildCases(fx: FixtureTree): Case[] {
 			},
 		});
 	}
+
+	// ---- secret signatures (ADR-0013) --------------------------------------------------
+	cases.push(
+		{
+			label: "a read of a password vault is an S0 deny",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.work}/vault.kdbx` },
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "a read of a public key is the floor's allow",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.work}/id_ed25519.pub` },
+			ref: "ADR-0013",
+			expected: { layer: "allow" },
+		},
+		{
+			label: "a read of a shipped .env template is the floor's allow",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.work}/.env.example` },
+			ref: "ADR-0013",
+			expected: { layer: "allow" },
+		},
+		{
+			label: "creating a key store reaches the classifier",
+			family: "path-tier",
+			tool: "write",
+			input: { path: `${fx.work}/new.p12`, content: "x" },
+			ref: "ADR-0013",
+			expected: { layer: "classifier" },
+		},
+	);
 
 	// ---- floor-overrides (ADR-0013) ----------------------------------------------------
 	// A scoped override lifts one floor rule only where every form of the call sits in its scope, and

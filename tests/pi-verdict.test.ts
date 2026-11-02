@@ -8511,7 +8511,7 @@ describe("host path spelling (ADR-0009)", () => {
 				fs.writeFileSync(path.join(cwd, "a.ts"), "x");
 				const h = session({ allow: ["^.*$"], tools: ["read"] }, { cwd });
 				h.responses = [{ text: "<verdict>deny</verdict> unknown target" }];
-				for (const spelling of ["id_ed25519", "sub/dir/key.txt", "id_ed25519:1-5", "a.ts;id_ed25519"]) {
+				for (const spelling of ["known_hosts", "sub/dir/key.txt", "known_hosts:1-5", "a.ts;known_hosts"]) {
 					h.calls.length = 0;
 					const r = await toolCall(h, "read", { path: spelling });
 					expect(h.calls).toHaveLength(1);
@@ -9323,5 +9323,126 @@ describe("floorOverrides (ADR-0013)", () => {
 				fs.rmSync(trustFile, { force: true });
 			}
 		});
+	});
+});
+
+describe("secret signatures (ADR-0013)", () => {
+	const BASE = plannedTempDir(os.tmpdir(), "pv-secret-sig-");
+	const PROJ = path.join(BASE, "proj");
+	beforeAll(() => fs.mkdirSync(PROJ, { recursive: true }));
+	afterAll(() => fs.rmSync(BASE, { recursive: true, force: true }));
+
+	const headless = (): Harness => {
+		const h = session({}, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		return h;
+	};
+	const KEY_NAMES = ["a.key", "a.p12", "a.pfx", "a.jks", "a.keystore", "a.kdbx", "a.ovpn", "a.ppk", "id_ed25519", "id_ecdsa", "id_dsa"];
+
+	test("a read of each key, vault and private key name is an S0 deny", async () => {
+		const h = headless();
+		for (const name of KEY_NAMES) {
+			const r = await toolCall(h, "read", { path: path.join(PROJ, name) });
+			expect([name, String(r?.reason)]).toEqual([name, expect.stringContaining("S0")]);
+		}
+	});
+
+	test("a read of a public key or a shipped .env template is the floor's allow", async () => {
+		const h = headless();
+		for (const name of ["id_rsa.pub", "id_ed25519.pub", ".env.example", ".env.sample", ".env.template"]) {
+			expect([name, await toolCall(h, "read", { path: path.join(PROJ, name) })]).toEqual([name, undefined]);
+		}
+		expect(h.calls).toHaveLength(0);
+		expect(String((await toolCall(h, "read", { path: path.join(PROJ, ".env.local") }))?.reason)).toContain("S0");
+	});
+
+	test("a public key in a credential home may be read but not written", async () => {
+		const h = headless();
+		const pub = path.join(os.homedir(), ".ssh", "id_rsa.pub");
+		expect(await toolCall(h, "read", { path: pub })).toBeUndefined();
+		expect((await toolCall(h, "write", { path: pub, content: "x" }))?.block).toBe(true);
+	});
+
+	test("a symlink named like a template whose real path is a secret still denies", async () => {
+		fs.writeFileSync(path.join(PROJ, ".env"), "SECRET=1");
+		fs.symlinkSync(path.join(PROJ, ".env"), path.join(PROJ, ".env.example"));
+		try {
+			expect(String((await toolCall(headless(), "read", { path: path.join(PROJ, ".env.example") }))?.reason)).toContain("S0");
+		} finally {
+			fs.rmSync(path.join(PROJ, ".env.example"), { force: true });
+			fs.rmSync(path.join(PROJ, ".env"), { force: true });
+		}
+	});
+
+	test("creating a key file reaches the classifier; overwriting one stays a deny", async () => {
+		const h = headless();
+		expect(await toolCall(h, "write", { path: path.join(PROJ, "new." + "pem"), content: "x" })).toBeUndefined();
+		expect(h.calls).toHaveLength(1);
+		fs.writeFileSync(path.join(PROJ, "old." + "pem"), "x");
+		const r = await toolCall(h, "write", { path: path.join(PROJ, "old." + "pem"), content: "y" });
+		expect(String(r?.reason)).toContain("S0");
+	});
+
+	test("a dangling symlink named like a key counts as existing", async () => {
+		const link = path.join(PROJ, "dangling.key");
+		fs.symlinkSync(path.join(BASE, "nowhere"), link);
+		try {
+			expect(String((await toolCall(headless(), "write", { path: link, content: "x" }))?.reason)).toContain("S0");
+		} finally {
+			fs.rmSync(link, { force: true });
+		}
+	});
+
+	test("creating a private key name in a credential home stays a deny", async () => {
+		const r = await toolCall(headless(), "write", { path: path.join(os.homedir(), ".ssh", "id_ed25519_pvtest_new"), content: "x" });
+		expect(String(r?.reason)).toContain("S0");
+	});
+
+	test("a .pub symlink to a private key still denies", async () => {
+		fs.writeFileSync(path.join(PROJ, "id_rsa"), "private");
+		fs.symlinkSync(path.join(PROJ, "id_rsa"), path.join(PROJ, "id_rsa.pub"));
+		try {
+			expect(String((await toolCall(headless(), "read", { path: path.join(PROJ, "id_rsa.pub") }))?.reason)).toContain("S0");
+		} finally {
+			fs.rmSync(path.join(PROJ, "id_rsa.pub"), { force: true });
+			fs.rmSync(path.join(PROJ, "id_rsa"), { force: true });
+		}
+	});
+
+	test("a user allow does not admit a command whose operand is a public key in a credential home", async () => {
+		const h = session({ allow: ["^cp "] }, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>deny</verdict> no" }];
+		await toolCall(h, "bash", { command: `cp x ${path.join(os.homedir(), ".ssh", "a.pub")}` });
+		expect(h.calls).toHaveLength(1);
+	});
+
+	test("a private-key block in a past call never reaches the classifier through the transcript", async () => {
+		const h = headless();
+		const body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmU";
+		const patch = `*** Begin Patch\n*** Add File: k.${"pem"}\n+-----BEGIN OPENSSH ${"PRIVATE"} KEY-----\n+${body}\n+-----END OPENSSH ${"PRIVATE"} KEY-----\n*** End Patch`;
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "edit", arguments: { input: patch } }] },
+		});
+		await toolCall(h, "write", { path: path.join(PROJ, "later.txt"), content: "x" });
+		await toolCall(h, "bash", { command: "echo later" });
+		expect(JSON.stringify(h.calls)).not.toContain(body);
+	});
+
+	test("creating authorized_keys in a credential home stays a deny", async () => {
+		const r = await toolCall(headless(), "write", { path: path.join(os.homedir(), ".ssh", "authorized_keys"), content: "x" });
+		expect(r?.block).toBe(true);
+	});
+
+	test("a private-key block in written content never reaches the classifier", async () => {
+		const h = headless();
+		const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC";
+		const pemText = `-----BEGIN ${"PRIVATE"} KEY-----\n${body}\n-----END ${"PRIVATE"} KEY-----\n`;
+		await toolCall(h, "write", { path: path.join(PROJ, "fresh." + "pem"), content: pemText });
+		const sent = JSON.stringify(h.calls[0]?.messages);
+		expect(sent).not.toContain(body);
+		expect(sent).toContain("[private key block redacted]");
 	});
 });

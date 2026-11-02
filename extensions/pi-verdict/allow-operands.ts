@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { escapeRegExp } from "./agent-dir.ts";
-import { classifyPath, s0DirectoryBeneath } from "./floor.ts";
+import { classifyPath, hitsS0AsWrite, s0DirectoryBeneath } from "./floor.ts";
 import { gitStaysInProject } from "./git-reach.ts";
 import type { ShellState } from "./shell-state.ts";
 import { ASSIGNMENT, MIN_LONG_PREFIX, shellWords, wordBasename } from "./shell-words.ts";
@@ -139,10 +139,13 @@ function walksDirectories(words: readonly string[], at: number): boolean {
 	return false;
 }
 
-/** True when the floor lets a file tool read `target` without asking. The floor is always on here, even
- *  with `builtinDenyFloor` off: a refused admission only reaches the classifier. */
+/** True when the floor lets a file tool read `target` without asking, and no read-only exemption carried
+ *  it: an operand may be written (`cp x ~/.ssh/a.pub`). The floor is always on here, even with
+ *  `builtinDenyFloor` off: a refused admission only reaches the classifier. */
 function readsAsAllowed(target: string, commandCwd: string): boolean {
-	return classifyPath(target, commandCwd, /* isWrite */ false, /* floorOn */ true).verdict === "allow";
+	return (
+		classifyPath(target, commandCwd, /* isWrite */ false, /* floorOn */ true).verdict === "allow" && !hitsS0AsWrite(target, commandCwd)
+	);
 }
 
 /**
