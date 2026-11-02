@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The audit names which built-in path rule decided: a compact rule-verdict record of an S0 deny now carries `S0:<entry>` (`S0:ssh`, `S0:pem`, `S0:env`, `S0:agent-db` …, one id per S0 entry) instead of `S0`, and the full record of a rule-layer ask gains a `rule` field (`deny-paths`, `deny-paths-spelling`, `gate-omp-dir`, `code-loading`, `over-cap`, `opaque`); verdicts are unchanged. These ids are the ones `floorOverrides` will name ([ADR-0013](docs/adr/0013-configurable-rules.md)).
+
 ## [0.26.0] - 2026-11-02
 
 Measurement release: compact audit records for every rule-layer decision, and a replay tool for audit logs.

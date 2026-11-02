@@ -188,6 +188,7 @@ function forcedOmpGate(call: RuleCall, ctx: RuleContext): RuleResult | null {
 		reason: "forced gate: access to a .omp directory (gateOmpDir)",
 		detail: omp + multiTargetDetailSuffix(call.access),
 		askSource: "protected-path",
+		rule: "gate-omp-dir",
 	};
 }
 
@@ -202,6 +203,7 @@ function denyPathsAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 		reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
 		detail: hit + multiTargetDetailSuffix(call.access),
 		askSource: "protected-path",
+		rule: "deny-paths",
 	};
 }
 
@@ -213,6 +215,7 @@ function protectedSpellingAsk(call: RuleCall, ctx: RuleContext): RuleResult | nu
 		verdict: "ask",
 		reason: "call names a user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]",
 		askSource: "protected-path",
+		rule: "deny-paths-spelling",
 	};
 }
 
@@ -227,6 +230,7 @@ function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 		verdict: "ask",
 		reason: `host code-loading location (${code.kind}): ${code.path} — the host runs it in later sessions, so a human must confirm the call (ADR-0011)`,
 		askSource: "rule",
+		rule: "code-loading",
 	};
 }
 
@@ -234,7 +238,12 @@ function codeLoadingAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
  *  The deny-side layers run first; they can only narrow the outcome. */
 function overCapAsk(call: RuleCall, ctx: RuleContext): RuleResult | null {
 	if (!actionCallLine(call.toolName, call.input, ctx.displayedCwd).overCap) return null;
-	return { verdict: "ask", reason: `action too long to grade safely (over ${ACTION_LINE_MAX_CHARS} chars)`, askSource: "rule" };
+	return {
+		verdict: "ask",
+		reason: `action too long to grade safely (over ${ACTION_LINE_MAX_CHARS} chars)`,
+		askSource: "rule",
+		rule: "over-cap",
+	};
 }
 
 /** Allows when a user `allow` rule matches every target. A command must be one simple command
@@ -272,5 +281,5 @@ function toolsExemption(call: RuleCall, ctx: RuleContext): RuleResult | null {
 /** Asks on a known mutating call whose payload names no target; an unknown tool is never opaque. */
 function opaqueAsk(call: RuleCall, _ctx: RuleContext): RuleResult | null {
 	if (call.access.direction !== "mutating" || !call.access.opaque) return null;
-	return { verdict: "ask", reason: "mutating call with no extractable target", askSource: "rule" };
+	return { verdict: "ask", reason: "mutating call with no extractable target", askSource: "rule", rule: "opaque" };
 }

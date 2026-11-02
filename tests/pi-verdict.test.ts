@@ -3551,7 +3551,14 @@ describe("audit verdict records (#54)", () => {
 		expect(JSON.stringify(compact)).not.toContain("push");
 		const recs = all.filter((r: any) => r.kind === undefined);
 		expect(recs.length).toBe(1);
-		expect(recs[0]).toMatchObject({ verdict: "ask", source: "protected-path", degraded: false, userAnswer: "allowed", model: null });
+		expect(recs[0]).toMatchObject({
+			verdict: "ask",
+			source: "protected-path",
+			degraded: false,
+			userAnswer: "allowed",
+			model: null,
+			rule: "deny-paths",
+		});
 		expect(recs[0].detail).toContain("sensitive-53");
 		expect(typeof recs[0].answeredAt).toBe("string");
 	});
@@ -3579,7 +3586,7 @@ describe("audit verdict records (#54)", () => {
 			"deny:rm-recursive",
 			"allow:empty-command",
 			"deny:self-protection",
-			"deny:S0",
+			"deny:S0:ssh",
 			"deny:S1",
 			"deny:S3",
 			"allow:path-read",

@@ -57,6 +57,8 @@ export interface AuditRecord {
 	userAnswer?: "allowed" | "declined";
 	/** #62: ISO timestamp of the confirm resolution; `ts` stays adjudication time. */
 	answeredAt?: string;
+	/** Rule-layer asks only: the id of the rule that asked (`RuleResult.rule`). */
+	rule?: string;
 	/** #62: protected-path records only — the matched path. */
 	detail?: string;
 	/** #67: the confidence floor fired — the first-layer verdict was demoted. */

@@ -369,8 +369,8 @@ export interface RuleResult {
 	/** Named only on verdict:"ask": which rule-layer ask this is. Every producer names its own
 	 *  source; an unset value maps to "protected-path". */
 	askSource?: "protected-path" | "rule";
-	/** A short id of the rule behind an allow or deny, kept in the audit's rule-verdict record; it never
-	 *  holds a path or other text from the call. */
+	/** A short id of the rule that decided, kept in the audit: the rule-verdict record of an allow or deny,
+	 *  the full record of an ask. It never holds a path or other text from the call. */
 	rule?: string;
 }
 

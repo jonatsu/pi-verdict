@@ -165,7 +165,7 @@ function buildRecord(
 	a: Adjudication,
 	v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">,
 	raw: ClassifierOutcome["auditRaw"] | null,
-	extra: Pick<AuditRecord, "detail" | "demoted" | "fallback"> = {},
+	extra: Pick<AuditRecord, "detail" | "demoted" | "fallback" | "rule"> = {},
 ): Readonly<AuditRecord> {
 	return {
 		ts: new Date().toISOString(),
@@ -348,7 +348,7 @@ interface RecordDraft {
 	readonly reason: string;
 	readonly source: AuditRecord["source"];
 	readonly raw: ClassifierOutcome["auditRaw"] | null;
-	readonly extra?: Pick<AuditRecord, "detail" | "demoted" | "fallback">;
+	readonly extra?: Pick<AuditRecord, "detail" | "demoted" | "fallback" | "rule">;
 }
 
 /** How a ruling settles into a verdict. */
@@ -429,7 +429,13 @@ function adjudicateRuleAsk(a: Adjudication, rule: RuleResult): Verdict {
 	const source = rule.askSource ?? "protected-path";
 	return settle(a, {
 		ruling: { verdict: "ask", reason, source },
-		record: { verdict: "ask", reason, source, raw: null, extra: { detail: rule.detail } },
+		record: {
+			verdict: "ask",
+			reason,
+			source,
+			raw: null,
+			extra: { detail: rule.detail, ...(rule.rule === undefined ? {} : { rule: rule.rule }) },
+		},
 		autoResolve: "deny",
 		detail: rule.detail,
 	});

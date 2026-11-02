@@ -74,12 +74,12 @@ const XDG_CREDENTIAL_HOMES: readonly string[] = [...CONFIG_CREDENTIAL_HOMES, "gh
  *  (`.ssh`, `.aws`, `.gnupg`) stay segment-anywhere by the established S0 discipline. An empty root
  *  list contributes no alternation branch, since an empty `|` arm would let the names match at
  *  string start. Rebuilt by `setXdgConfigRootsForTests`, so tests need not pin `XDG_CONFIG_HOME`. */
-const buildAnchoredS0 = (roots: readonly string[]): RegExp[] => {
+const buildAnchoredS0 = (roots: readonly string[]): S0Entry[] => {
 	const names = (list: readonly string[]) => list.map(escapeRegExp).join("|");
 	const home = HOME_RULE_ROOTS.map((r) => `${r}/\\.config/`).join("|");
 	const xdg = roots.flatMap(xdgRootForms).map((r) => `${r}/`);
 	const xdgBranch = xdg.length > 0 ? `|(?:${xdg.join("|")})(?:${names(XDG_CREDENTIAL_HOMES)})` : "";
-	return [new RegExp(`^(?:(?:${home})(?:${names(CONFIG_CREDENTIAL_HOMES)})${xdgBranch})(/|$)`, "i")];
+	return [{ id: "config-homes", rule: new RegExp(`^(?:(?:${home})(?:${names(CONFIG_CREDENTIAL_HOMES)})${xdgBranch})(/|$)`, "i") }];
 };
 let anchoredS0 = buildAnchoredS0(xdgConfigRoots);
 
@@ -87,7 +87,7 @@ let anchoredS0 = buildAnchoredS0(xdgConfigRoots);
  *  sidecar files), matched where the dir is custom (`PI_CODING_AGENT_DIR`) and the static
  *  `.omp/agent` entry in `S0_SECRET` cannot see it. Rebuilt only when the agent dir changes. */
 let agentDbRule: { dir: string; re: RegExp } | null = null;
-function agentDbS0(): RegExp[] {
+function agentDbS0(): S0Entry[] {
 	const dir = agentDirPath();
 	if (agentDbRule?.dir !== dir) {
 		agentDbRule = {
@@ -95,7 +95,7 @@ function agentDbS0(): RegExp[] {
 			re: new RegExp(`^(?:${xdgRootForms(path.resolve(dir)).join("|")})/agent\\.db(?:-wal|-shm|-journal)?(?::|\\?|$)`, "i"),
 		};
 	}
-	return [agentDbRule.re];
+	return [{ id: "agent-db", rule: agentDbRule.re }];
 }
 
 /** Test seam; null restores the production roots (mirrors `setTmpdirBasesForTests`). Takes raw
@@ -114,49 +114,61 @@ export function setXdgConfigRootsForTests(roots: string[] | null): void {
 /** The S0 entries that name a credential inside a directory, each with the home-relative directories it
  *  guards there, so a recursive search of a parent (`s0DirectoryBeneath`) reads the same set the path
  *  grade does. */
-const S0_DIRECTORY_RULES: readonly { readonly rule: RegExp; readonly homeDirs: readonly string[] }[] = [
-	{ rule: /\.ssh(\/|$)/i, homeDirs: [".ssh"] },
-	{ rule: /\.aws(\/|$)/i, homeDirs: [".aws"] },
-	{ rule: /\.gnupg(\/|$)/i, homeDirs: [".gnupg"] },
-	{ rule: /\.kube(\/|$)/i, homeDirs: [".kube"] },
-	{ rule: /\.config\/gh(\/|$)/i, homeDirs: [".config/gh"] },
-	{ rule: /\.docker\/config\.json$/i, homeDirs: [".docker"] },
-	{ rule: /\.gem\/credentials$/i, homeDirs: [".gem"] },
-	{ rule: /\.(?:pi|omp)\/agent\/auth\.json$/i, homeDirs: [".omp/agent", ".pi/agent"] },
+/** One S0 entry: its id, which `floorOverrides` and the audit name as `S0:<id>` (ADR-0013), and its pattern. */
+interface S0Entry {
+	readonly id: string;
+	readonly rule: RegExp;
+}
+
+const S0_DIRECTORY_RULES: readonly (S0Entry & { readonly homeDirs: readonly string[] })[] = [
+	{ id: "ssh", rule: /\.ssh(\/|$)/i, homeDirs: [".ssh"] },
+	{ id: "aws", rule: /\.aws(\/|$)/i, homeDirs: [".aws"] },
+	{ id: "gnupg", rule: /\.gnupg(\/|$)/i, homeDirs: [".gnupg"] },
+	{ id: "kube", rule: /\.kube(\/|$)/i, homeDirs: [".kube"] },
+	{ id: "gh", rule: /\.config\/gh(\/|$)/i, homeDirs: [".config/gh"] },
+	{ id: "docker", rule: /\.docker\/config\.json$/i, homeDirs: [".docker"] },
+	{ id: "gem", rule: /\.gem\/credentials$/i, homeDirs: [".gem"] },
+	{ id: "agent-auth", rule: /\.(?:pi|omp)\/agent\/auth\.json$/i, homeDirs: [".omp/agent", ".pi/agent"] },
 	// omp's settings and auth store; the SQLite sidecar files hold the same pages, and a `:table` or
 	// `?q=` suffix is the host's own read selector on the database. After `omp config init-xdg` the
 	// host keeps it at `$XDG_DATA_HOME/omp/agent.db` (the agent dir is flattened away), so a bare `omp`
 	// segment counts as well as the dotted `.omp/agent` and `.pi/agent` trees.
 	{
+		id: "agent-db",
 		rule: /(?:\.(?:pi|omp)\/agent|(?:^|\/)omp(?:\/agent)?)\/agent\.db(?:-wal|-shm|-journal)?(?::|\?|$)/i,
 		homeDirs: [".omp/agent", ".pi/agent", ".local/share/omp"],
 	},
 ];
 
-const S0_SECRET = [
-	...S0_DIRECTORY_RULES.map((d) => d.rule),
+const S0_SECRET: readonly S0Entry[] = [
+	...S0_DIRECTORY_RULES,
 	// The dotless credential homes under `~/.config` and their XDG alternatives live in `anchoredS0`.
-	/(^|\/)\.env(\.|$)/i,
-	/credentials?(\.|\/|$)/i,
-	/(^|\/)id_rsa/i,
-	/\.pem$/i,
-	/_history$/i,
+	{ id: "env", rule: /(^|\/)\.env(\.|$)/i },
+	{ id: "credentials", rule: /credentials?(\.|\/|$)/i },
+	{ id: "id-rsa", rule: /(^|\/)id_rsa/i },
+	{ id: "pem", rule: /\.pem$/i },
+	{ id: "history", rule: /_history$/i },
 	// V8 (security audit): add common plaintext credential files
-	/(^|\/)\.netrc$/i,
-	/(^|\/)\.npmrc$/i,
-	/(^|\/)\.pypirc$/i,
-	/(^|\/)\.envrc$/i,
-	/(^|\/)\.vault-token$/i,
+	{ id: "netrc", rule: /(^|\/)\.netrc$/i },
+	{ id: "npmrc", rule: /(^|\/)\.npmrc$/i },
+	{ id: "pypirc", rule: /(^|\/)\.pypirc$/i },
+	{ id: "envrc", rule: /(^|\/)\.envrc$/i },
+	{ id: "vault-token", rule: /(^|\/)\.vault-token$/i },
 	// A process environment, which holds the secrets exported to it: `/proc/<pid>/environ`, the
 	// `self` and `thread-self` links, and a thread's `task/<tid>/environ`.
-	/^\/proc\/(?:\d+|self|thread-self)\/(?:task\/\d+\/)?environ$/i,
+	{ id: "proc-environ", rule: /^\/proc\/(?:\d+|self|thread-self)\/(?:task\/\d+\/)?environ$/i },
 ];
 
-/** True when a rule form hits an S0 entry: the static ones, the home and XDG anchored credential
- *  homes, or the agent directory's database. */
+/** Returns the ids of every S0 entry a rule form hits: the static ones, the home and XDG anchored
+ *  credential homes, or the agent directory's database. */
+function s0Hits(ruleForms: readonly string[]): string[] {
+	const entries = [...S0_SECRET, ...anchoredS0, ...agentDbS0()];
+	return entries.filter((e) => ruleForms.some((f) => e.rule.test(f))).map((e) => e.id);
+}
+
+/** True when a rule form hits any S0 entry. */
 function hitsS0(ruleForms: readonly string[]): boolean {
-	const rules = [...S0_SECRET, ...anchoredS0, ...agentDbS0()];
-	return ruleForms.some((f) => rules.some((r) => r.test(f)));
+	return s0Hits(ruleForms).length > 0;
 }
 // /private prefixes: macOS firmlinks — /etc, /var are really /private/etc,
 // /private/var, and realpath'd toolchain output uses the real spelling (#21)
@@ -273,7 +285,8 @@ export function classifyPath(rawPath: string, cwd: string, isWrite: boolean, flo
 		? (rule: string, reason: string): RuleResult => ({ verdict: "deny", reason, rule })
 		: (_rule: string, reason: string): RuleResult => ({ verdict: "gray", reason });
 
-	if (hitsS0(ruleForms)) return D("S0", `S0 secrets/credential path: ${rawPath}`);
+	const s0 = s0Hits(ruleForms);
+	if (s0.length > 0) return D(`S0:${s0[0]}`, `S0 secrets/credential path: ${rawPath}`);
 	// #83: exempt only the directory-prefix family under a trusted macOS temp base.
 	const s1Rules = tmpdirExempt(forms) ? S1_SYSTEM_FILES : S1_SYSTEM;
 	if (!isWrite) {
