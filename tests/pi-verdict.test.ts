@@ -9246,6 +9246,16 @@ describe("floorOverrides (ADR-0013)", () => {
 		expect(await reasonOf(`git -C ${OUTSIDE} push --force`)).not.toContain("softened");
 		expect(await reasonOf(`git '-C' ${OUTSIDE} push --force`)).not.toContain("softened");
 		expect(await reasonOf(`GIT_DIR=${OUTSIDE}/.git git push --force`)).not.toContain("softened");
+		expect(await reasonOf(`env -C${OUTSIDE} git push --force`)).not.toContain("softened");
+	});
+
+	test("a scoped git override stays off once an earlier call exported a git variable", async () => {
+		const h = headless({ "git-push-force": { action: "ask", paths: [PROJ] } });
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "export GIT_WORK_TREE=$HOME" } }] },
+		});
+		expect(String((await toolCall(h, "bash", { command: "git push --force" }))?.reason)).not.toContain("softened");
 	});
 
 	test("a rule that cannot be overridden stays on and is named", async () => {
@@ -9477,6 +9487,18 @@ describe("secret signatures (ADR-0013)", () => {
 			expect([tool, sent.includes(body), sent.includes("[private key block redacted]")]).toEqual([tool, false, true]);
 		}
 	});
+
+	test("PuTTY and OpenVPN key material in written content never reaches the classifier", async () => {
+		const secret = "AAAAgQDSecretKeyMaterial";
+		for (const [name, content] of [
+			["fresh." + "ppk", `PuTTY-User-Key-File-3: ssh-rsa\nPrivate-Lines: 1\n${secret}\nPrivate-MAC: x`],
+			["fresh." + "ovpn", `-----BEGIN OpenVPN Static key V1-----\n${secret}\n-----END OpenVPN Static key V1-----`],
+		]) {
+			const h = headless();
+			await toolCall(h, "write", { path: path.join(PROJ, name), content });
+			expect([name, JSON.stringify(h.calls[0]?.messages).includes(secret)]).toEqual([name, false]);
+		}
+	});
 });
 
 describe("graded recursive delete (ADR-0013)", () => {
@@ -9679,6 +9701,20 @@ describe("graded recursive delete (ADR-0013)", () => {
 	test("rm --r and --re are recursive", async () => {
 		await denies("rm " + "--r /opt/x", "rm-outside-project");
 		await denies("rm " + "--re ~/Documents", "rm-outside-project");
+	});
+
+	test("a directory the delete follows is unreadable when another command may swap it first", async () => {
+		await denies(`${RM} build && ln -s ~ build && ${RM} build/`, "rm-unreadable-target");
+		await denies(`mv build x && ln -s ~ build && ${RM} build/sub`, "rm-unreadable-target");
+		await denies(`${RM} big build/ & ln -s ~ build`, "rm-unreadable-target");
+		await denies(`${RM} a; ln -s ~ m && r''m -rf m/`, "rm-unreadable-target");
+		await reachesClassifier(`npm run build && ${RM} build`);
+		await reachesClassifier(`${RM} build/sub && npm run build`);
+		await denies(`ls && ${RM} ~/`, "rm-root");
+	});
+
+	test("a command name built from an expansion counts as a directory change", async () => {
+		await denies(`D=c; $` + `{D}d /etc; ${RM} x`, "rm-unreadable-target");
 	});
 
 	test("a long here-document that writes code keeps relative deletes readable", async () => {

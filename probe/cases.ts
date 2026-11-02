@@ -1892,6 +1892,7 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["a target outside the project is rm-outside-project", `${rmRf} /opt/x`, { layer: "rule", ruleId: "rm-outside-project" }],
 		["a delete through xargs keeps the rm-recursive deny", `ls | xargs ${rmRf}`, { layer: "rule", ruleId: "rm-recursive" }],
 		["an in-project delete reaches the classifier", `${rmRf} build`, { layer: "classifier" }],
+		["a delete inside a temp directory reaches the classifier", `${rmRf} /tmp/pv-probe-scratch`, { layer: "classifier" }],
 		["a user allow does not admit an in-project delete", `${rmRf} build`, { layer: "classifier" }, { allow: ["^rm\\b"] }],
 		["a glob over the root is rm-root", `${rmRf} /*`, { layer: "rule", ruleId: "rm-root" }],
 		["an operand the gate cannot expand is rm-unreadable-target", `${rmRf} $TARGET`, { layer: "rule", ruleId: "rm-unreadable-target" }],

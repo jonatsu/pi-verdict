@@ -210,6 +210,26 @@ flowchart TD
     allow --> gray[8 classifier]
 ```
 
+### Implementation amendments (2026-11-02)
+
+The build and its reviews narrowed the decisions above; none widens the gate. Decision 2 and decision 4 were
+reworded in place where they had to name `rm-recursive`'s remaining role and the `--r…` tripwire; the rest is
+recorded here.
+
+- **Scoped shell overrides** (decision 2) also require the directory a leading `cd X &&` moves to inside the scope,
+  and stay off for any other directory change and for a `-C`, `--chdir`, `--git-dir` or `--work-tree` option or a
+  `GIT_DIR=` or `GIT_WORK_TREE=` assignment, `core.worktree`, or a variable an earlier session command set for a
+  command.
+- **Unreadable delete targets** (decision 4) also include a relative target after a session command set `CDPATH`,
+  ran `shopt -s cdable_vars` or voided every user allow (ADR-0008), after a leading `cd` that a set `CDPATH` would
+  redirect, after a quoted, escaped or expanded `cd`; and a target reached through a directory below the one it is
+  graded from whenever another command may run before or beside the delete, since it could swap that directory for a
+  symlink after grading. Only a lone leading `rm`, followed at most by `&&`, `||` or `;`, runs first.
+- **Command rules** (decision 1) read the word view up to eight times `BASH_MAX_MATCH_LEN`; past it, the tripwire
+  hit alone decides, so a long command can match on text it does not run. All candidate rules share one reading.
+- **Key material** (decision 3) is also redacted from the command or eval cell under review, and OpenVPN static keys
+  and PuTTY private lines are redacted beside PEM and PGP blocks.
+
 ## Consequences
 
 The user's cc-safety-net rulebooks load into pi-verdict nearly unchanged, and agent-setup can replace its ~55 `deny`

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { expandOperand, MAX_GRADED_OPERANDS } from "./allow-operands.ts";
 import { baseForms, fold, isWithin } from "./paths.ts";
 import type { DeleteCommand, DeleteGrader, DeleteHit } from "./shell.ts";
-import { anyCommandIn, shellWords } from "./shell-words.ts";
+import { ASSIGNMENT, anyCommandIn, mayExpand, shellWords } from "./shell-words.ts";
 
 // ============================================================================
 // Rule layer: recursive deletes graded by target (ADR-0013)
@@ -26,11 +26,9 @@ export interface DeleteContext {
 const GLOB_CHARS = /[*?[]/;
 const DIRECTORY_CHANGE = /\b(?:cd|pushd|popd)\b/g;
 const DIRECTORY_COMMANDS: ReadonlySet<string> = new Set(["cd", "pushd", "popd"]);
-/** Matches what joins two commands, raw, so one inside an `sh -c` script counts. */
-const COMMAND_JOIN = /[;&|\n]/;
-/** Matches a command or process substitution, which runs before the command it sits in. */
-const SUBSTITUTION = /`|\$\(|[<>]\(/;
-const RM_WORD = /\brm\b/g;
+/** Matches a command that is one leading `rm`, alone or followed in sequence by other commands, with nothing
+ *  that runs before or beside it: no substitution, pipe, background `&` or redirection. */
+const SOLE_LEADING_RM = /^\s*rm\s[^;&|\n`$<>()]*(?:&&|\|\||;|$)/;
 /** Matches a `cd` target that bash looks up in `CDPATH` first: any not starting with `/`, `~`, or a `.` or `..` component. */
 const CDPATH_SEARCHED = /^(?!\/|~|\.\.?(?:\/|$))/;
 const SYSTEM_DIRECTORIES = ["/System", "/Library"];
@@ -70,7 +68,7 @@ interface Grading {
  *  strictly inside the project or a temp directory yields no hit, so the classifier judges it. */
 export function deleteGrader(ctx: DeleteContext): DeleteGrader {
 	return (deletes, command) => {
-		const g = grading(command, ctx);
+		const g = grading(command, ctx, deletes.length);
 		const hits: GradedHit[] = [];
 		for (const word of deletes.flatMap(operandWords)) {
 			hits.push(...gradeOperand(word, g));
@@ -80,7 +78,7 @@ export function deleteGrader(ctx: DeleteContext): DeleteGrader {
 	};
 }
 
-function grading(command: string, ctx: DeleteContext): Grading {
+function grading(command: string, ctx: DeleteContext, deleteCount: number): Grading {
 	const homes = baseForms(os.homedir());
 	const project = baseForms(path.resolve(ctx.sessionCwd));
 	const temps = ["/tmp", "/var/tmp", os.tmpdir()]
@@ -94,7 +92,8 @@ function grading(command: string, ctx: DeleteContext): Grading {
 		project,
 		projectGit: fs.existsSync(path.join(ctx.sessionCwd, ".git")),
 		inside: [...(project.some((p) => rootClass(p, homes)) ? [] : project), ...temps],
-		compound: runsBeforeDelete(command),
+		// A lone leading rm runs before every other command, so none can move a path it follows.
+		compound: deleteCount !== 1 || !SOLE_LEADING_RM.test(command),
 		homeReassigned: ctx.homeReassigned,
 		graded: 0,
 	};
@@ -128,20 +127,14 @@ function wordChanges(command: string): number {
 	let changes = 0;
 	const unsound = anyCommandIn(command, {
 		runs: (seg) => {
-			changes += seg.filter((w) => DIRECTORY_COMMANDS.has(w)).length;
+			const name = seg.find((w) => !ASSIGNMENT.test(w));
+			// A command name built from an expansion (`${D}d`) may be a cd.
+			changes += name !== undefined && mayExpand(name) ? Number.POSITIVE_INFINITY : seg.filter((w) => DIRECTORY_COMMANDS.has(w)).length;
 			return false; // read on: every segment counts
 		},
 		mentions: () => false,
 	});
 	return unsound ? Number.POSITIVE_INFINITY : changes;
-}
-
-/** True when the delete may follow a path that another command creates first: one joined before the last
- *  `rm`, or a substitution anywhere, which runs before the command it sits in. */
-function runsBeforeDelete(command: string): boolean {
-	let last = -1;
-	for (const m of command.matchAll(RM_WORD)) last = m.index;
-	return SUBSTITUTION.test(command) || (last > 0 && COMMAND_JOIN.test(command.slice(0, last)));
 }
 
 /** The operand words of one `rm`: every word after it that is not an option, and every word after `--`. */
@@ -166,11 +159,25 @@ function gradeOperand(word: string, g: Grading): GradedHit[] {
 	const hits: GradedHit[] = [];
 	for (const p of expanded.paths) {
 		if (!path.isAbsolute(p) && g.cwd === null) return [hit("rm-unreadable-target", [])];
-		const forms = targetForms(path.isAbsolute(p) ? p : `${g.cwd}/${p}`, /\/\.?$/.test(p), g.compound);
-		const rule = forms === null ? "rm-unreadable-target" : targetRule(forms, g);
-		if (rule !== null) hits.push(hit(rule, forms ?? []));
+		const followsLeaf = /\/\.?$/.test(p);
+		const forms = targetForms(path.isAbsolute(p) ? p : `${g.cwd}/${p}`, followsLeaf);
+		const rule = targetRule(forms, g);
+		// A worse grade stands; only a target that would pass or fall outside is held unreadable.
+		const swappable = (rule === null || rule === "rm-outside-project") && g.compound && followsDirectory(p, followsLeaf, g);
+		if (swappable) hits.push(hit("rm-unreadable-target", []));
+		else if (rule !== null) hits.push(hit(rule, forms));
 	}
 	return hits;
+}
+
+/** True when a delete target is reached through a directory below the one it is graded from: a trailing `/`,
+ *  a relative path with more than one component, or an absolute path whose parent is not the project or a temp
+ *  directory itself. Another command of the call could swap such a directory for a symlink after grading. */
+function followsDirectory(p: string, followsLeaf: boolean, g: Grading): boolean {
+	if (followsLeaf) return true;
+	if (!path.isAbsolute(p)) return path.normalize(p).includes("/");
+	const parent = fold(path.dirname(path.resolve(p)));
+	return !g.inside.some((b) => fold(b) === parent);
 }
 
 function hit(rule: DeleteRule, forms: readonly string[]): GradedHit {
@@ -191,18 +198,13 @@ function globRoot(word: string, g: Grading): string | null {
 
 /** The forms one delete target is graded in: its lexical path, its name under the real path of its parent
  *  directory, and, for an operand ending in `/` or `/.` (which rm follows into a symlinked directory), its own
- *  real path. The leaf itself is not resolved: deleting a symlink removes only the link. Null when the command
- *  runs another command first, which may create it as a symlink, and a path the delete follows does not exist yet. */
-function targetForms(joined: string, followsLeaf: boolean, compound: boolean): string[] | null {
+ *  real path. The leaf itself is not resolved: deleting a symlink removes only the link. */
+function targetForms(joined: string, followsLeaf: boolean): string[] {
 	const forms = [path.resolve(joined)];
 	const parentReal = realpathOrNull(path.dirname(joined));
 	if (parentReal !== null) forms.push(path.resolve(parentReal, path.basename(joined)));
-	else if (compound) return null;
-	if (followsLeaf) {
-		const own = realpathOrNull(joined);
-		if (own !== null) forms.push(own);
-		else if (compound) return null;
-	}
+	const own = followsLeaf ? realpathOrNull(joined) : null;
+	if (own !== null) forms.push(own);
 	return [...new Set(forms)];
 }
 

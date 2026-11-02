@@ -13,8 +13,10 @@ function stripZeroWidth(text: string): string {
 	return text.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "");
 }
 
-/** Matches a PEM or PGP private-key block, through its END line or, when that is missing, the end of the text. */
-const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+/** Matches a PEM, PGP or OpenVPN static private-key block, through its END line or, when that is missing, the
+ *  end of the text, and the private lines of a PuTTY key file. */
+const PRIVATE_KEY_BLOCK =
+	/-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?|OpenVPN Static key V1)-----[\s\S]*?(?:-----END (?:[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?|OpenVPN Static key V1)-----|$)|Private-Lines: *\d+(?:\r?\n[A-Za-z0-9+/=]+)*/g;
 
 /** Returns the text without zero-width characters and with every private-key block replaced by a marker,
  *  so key material never reaches a model (ADR-0013). Runs before any cut, which could drop a BEGIN line. */

@@ -169,9 +169,9 @@ function directoryContext(ctx: RuleContext): DeleteContext {
 	};
 }
 
-/** Matches an option or variable that moves where a command works (`git -C`, `env -C`, `GIT_DIR=`), which a
- *  scoped override cannot place; quoted or not. */
-const DIRECTORY_OPTION = /(?:^|\s)['"]?(?:-C|--git-dir|--work-tree|--chdir)(?:['"\s=]|$)|\bGIT_(?:DIR|WORK_TREE)=/;
+/** Matches an option or variable that moves where a command works (`git -C`, `env -C/x`, `GIT_DIR=`,
+ *  `core.worktree`), which a scoped override cannot place; quoted or not. */
+const DIRECTORY_OPTION = /(?:^|\s)['"]?(?:-C|--git-dir|--work-tree|--chdir)|\bGIT_(?:DIR|WORK_TREE)=|core\.worktree/;
 
 /** Returns how the overrides lift a shell floor rule. A graded delete is scoped by its target's forms. Any
  *  other rule names no target the floor can see, so a scoped override applies only while the session cwd,
@@ -183,7 +183,9 @@ function shellLift(ctx: RuleContext, command: string): FloorLift {
 	let cwdForms: readonly string[] | undefined;
 	const directoryForms = (): readonly string[] => {
 		if (cwdForms !== undefined) return cwdForms;
-		const workingDirectory = commandWorkingDirectory(command, directoryContext(ctx));
+		// A variable an earlier call set for a command (`export GIT_WORK_TREE=…`) can move where it works too.
+		const voided = ctx.shellState.commands.size > 0;
+		const workingDirectory = voided ? null : commandWorkingDirectory(command, directoryContext(ctx));
 		cwdForms =
 			workingDirectory !== null && !DIRECTORY_OPTION.test(command)
 				? [...baseForms(ctx.sessionCwd), ...baseForms(ctx.commandCwd), ...baseForms(workingDirectory)]
