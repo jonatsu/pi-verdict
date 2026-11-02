@@ -104,7 +104,7 @@ and the first matching rule wins (`src/cli/rule/doc.ts:7-15`). A rule only adds 
 | GitHub | none built in (user rulebook) | `gh repo` and `gh release` changes denied |
 | Network | cloud metadata hosts, `curl`/`wget` uploads | `curl \| sh` and environment or history piped to a network tool |
 | Interpreters | dangerous inline code denied; every one-liner in paranoid mode | no interpreter rule; the classifier judges them, and Python `eval` cells get the bash floor on their shell lines |
-| Secrets | basename, extension and prefix signatures anywhere on disk, plus home paths and CLI credentials | S0 home locations (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, gcloud, the agent's own databases …) denied, plus the user's `denyPaths` as asks; no extension signatures such as `*.pem` |
+| Secrets | basename, extension and prefix signatures anywhere on disk, plus home paths and CLI credentials | S0 denies reads and writes of credential homes (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, gcloud, the agent's own databases …) and of a few signatures anywhere on disk (`.env*`, `.envrc`, `*credential*`, `id_rsa*`, `*.pem`, `*_history`, `.netrc`, `.npmrc`, `.pypirc`, `.vault-token`, `/proc/*/environ`), with no `.pub`, example or per-path exemption; the user's `denyPaths` add asks. It lacks most of cc-safety-net's extensions (`.key`, `.p12`, `.pfx`, `.jks`, `.kdbx`, `.ovpn` …) |
 | Git metadata | deletes and moves of `.git` and its hooks | writes to `.git/hooks`, `.git/config`, `.git/modules`, `.gitmodules` (S3) |
 | Tightening | three levels and per-capability switches | `builtinDenyFloor` (all or nothing), `autoDeny: false` (denies become asks), `gateOmpDir`, classifier settings |
 | Per-rule switches | `"on"`/`"off"` per built-in id, catastrophic exempt | none |
@@ -121,7 +121,7 @@ and the first matching rule wins (`src/cli/rule/doc.ts:7-15`). A rule only adds 
 - The `tests` fixtures give each rulebook its own checks; pi-verdict could run them at load or through a CLI, as `rule verify` does.
 - Per-rule overrides of the floor need a non-overridable set like cc-safety-net's catastrophic ids; for pi-verdict that is at least
   self-protection and `rm-root`.
-- The `.pem` case needs a path-scoped exemption like `secret_protection.allow_paths`; pi-verdict has no extension signatures today, so
-  the case arises only if item 9 also adds them, or for the agent-setup `deny` regexes that do.
+- The `.pem` case needs a path-scoped exemption like `secret_protection.allow_paths`: pi-verdict's S0 tier already denies every read
+  and write of a `*.pem` file anywhere, and only `builtinDenyFloor: false` lifts it today.
 - Candidates for new built-in floor rules, each to be weighed under the 80/20 rule against the classifier, which already sees these calls:
   `git push --delete/--mirror`, `git branch -D`, `git tag -d`, `git stash drop`, cloud metadata requests and `curl` uploads.
