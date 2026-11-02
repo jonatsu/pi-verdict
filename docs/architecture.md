@@ -236,6 +236,7 @@ flowchart BT
     redaction[redaction]
     gitreach[git-reach: whether an allowed git call stays in the project]
     allowops[allow-operands: what a user allow may admit]
+    deletes[delete-grade: recursive deletes graded by target]
     shellstate[shell-state: which allows the session's shell state voids]
     rules[rules: the step chain]
   end

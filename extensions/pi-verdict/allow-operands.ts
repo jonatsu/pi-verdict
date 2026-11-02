@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 import { escapeRegExp } from "./agent-dir.ts";
 import { classifyPath, hitsS0AsWrite, s0DirectoryBeneath } from "./floor.ts";
 import { gitStaysInProject } from "./git-reach.ts";
@@ -186,9 +187,11 @@ function valueAfterEquals(word: string): string {
  * too, which only refuses more). Returns null for any other expansion, which the gate cannot resolve: a
  * variable (the agent's shell persists exports between calls and does not share the gate's environment),
  * `~user`, a brace expansion, or a glob. A glob with no `/` that does not start with `.` expands to the
- * cwd entries it matches (`cwdGlobMatches`), each of which is graded.
+ * cwd entries it matches (`cwdGlobMatches`), each of which is graded. With `globInAnyDirectory`, a glob in
+ * the last segment alone (`build/*`) expands in its own directory the same way; a leading-dot pattern stays
+ * refused, since `.*` may match `..`.
  */
-function expandOperand(word: string, commandCwd: string): Expanded | null {
+export function expandOperand(word: string, commandCwd: string, globInAnyDirectory = false): Expanded | null {
 	const home = os.homedir();
 	const viaTilde = word === "~" || word.startsWith("~/");
 	if (!viaTilde && word.startsWith("~")) return null;
@@ -197,9 +200,12 @@ function expandOperand(word: string, commandCwd: string): Expanded | null {
 	const homeRelative = viaTilde || replaced !== word;
 	if (text.includes("$") || BRACE_EXPANSION.test(text)) return null;
 	if (!GLOB_CHARS.test(text)) return { paths: [text], homeRelative };
-	if (text.includes("/") || text.startsWith(".")) return null;
-	const matches = cwdGlobMatches(text, commandCwd);
-	return matches === null ? null : { paths: matches, homeRelative };
+	const slash = text.lastIndexOf("/");
+	const dir = slash === -1 ? "" : text.slice(0, slash + 1);
+	const pattern = text.slice(slash + 1);
+	if (pattern.startsWith(".") || GLOB_CHARS.test(dir) || (dir !== "" && !globInAnyDirectory)) return null;
+	const matches = cwdGlobMatches(pattern, path.resolve(commandCwd, dir));
+	return matches === null ? null : { paths: matches.map((name) => dir + name), homeRelative };
 }
 
 /**

@@ -43,6 +43,7 @@ export interface Case {
 		| "policy-degraded"
 		| "code-loading"
 		| "bash-danger"
+		| "graded-delete"
 		| "floor-overrides"
 		| "residual";
 	tool: string;
@@ -1850,6 +1851,31 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "classifier" },
 		},
 	);
+
+	// ---- graded-delete (ADR-0013) ------------------------------------------------------
+	// A recursive delete is graded by its targets: the project is the session cwd.
+	const rmRf = "rm " + "-rf";
+	const deleteRows: Array<[string, string, Expectation, Record<string, unknown>?]> = [
+		["the filesystem root is rm-root", `${rmRf} /`, { layer: "rule", ruleId: "rm-root" }],
+		["a glob over the home directory is rm-root", `${rmRf} ~/*`, { layer: "rule", ruleId: "rm-root" }],
+		["$HOME is rm-root", `${rmRf} $HOME`, { layer: "rule", ruleId: "rm-root" }],
+		["git metadata is rm-git", `${rmRf} .git`, { layer: "rule", ruleId: "rm-git" }],
+		["a target outside the project is rm-outside-project", `${rmRf} /opt/x`, { layer: "rule", ruleId: "rm-outside-project" }],
+		["a delete through xargs keeps the rm-recursive deny", `ls | xargs ${rmRf}`, { layer: "rule", ruleId: "rm-recursive" }],
+		["an in-project delete reaches the classifier", `${rmRf} build`, { layer: "classifier" }],
+		["a user allow does not admit an in-project delete", `${rmRf} build`, { layer: "classifier" }, { allow: ["^rm\\b"] }],
+	];
+	for (const [label, command, expected, config] of deleteRows) {
+		cases.push({
+			label,
+			family: "graded-delete",
+			tool: "bash",
+			input: { command },
+			...(config ? { config } : {}),
+			ref: "ADR-0013",
+			expected,
+		});
+	}
 
 	// ---- floor-overrides (ADR-0013) ----------------------------------------------------
 	// A scoped override lifts one floor rule only where every form of the call sits in its scope, and

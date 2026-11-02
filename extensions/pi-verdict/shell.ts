@@ -3,6 +3,7 @@
 // ============================================================================
 
 import {
+	ASSIGNMENT,
 	anyCommandIn,
 	firstOperandIs,
 	type GitInvocation,
@@ -20,11 +21,11 @@ import {
 type SegmentMatcher = (seg: readonly string[]) => boolean;
 
 /** Patterns that match one after another, at any distance, each with the `g` flag. */
-type Tripwire = readonly RegExp[];
+export type Tripwire = readonly RegExp[];
 
 /** A tripwire from its parts in order. Searching part by part keeps the cost linear in the text,
  *  where one regex with lazy `[\s\S]*?` gaps backtracks for seconds on a long repeated command. */
-function inOrder(...parts: RegExp[]): Tripwire {
+export function inOrder(...parts: RegExp[]): Tripwire {
 	return parts.map((part) => new RegExp(part.source, `${part.flags}g`));
 }
 
@@ -46,7 +47,57 @@ function tripwireMatches(text: string, tripwire: Tripwire): boolean {
  *  view may clear when no command runs it (ADR-0007). */
 type BashDangerRule =
 	| { readonly kind: "raw"; readonly id: string; readonly reason: string; readonly pattern: RegExp }
-	| { readonly kind: "words"; readonly id: string; readonly reason: string; readonly tripwire: Tripwire; readonly runs: SegmentMatcher };
+	| { readonly kind: "words"; readonly id: string; readonly reason: string; readonly tripwire: Tripwire; readonly runs: SegmentMatcher }
+	| { readonly kind: "delete"; readonly id: string; readonly reason: string; readonly tripwire: Tripwire };
+
+/** One recursive delete target the floor denies: the id of the rule it hit, why, and the target's forms, which
+ *  a scoped `floorOverrides` entry must hold (ADR-0013). */
+export interface DeleteHit {
+	readonly rule: string;
+	readonly reason: string;
+	readonly forms: readonly string[];
+}
+
+/** A recursive `rm` the word view found at command position: its segment and the index of the `rm` word. */
+export interface DeleteCommand {
+	readonly seg: readonly string[];
+	readonly at: number;
+}
+
+/** Grades the recursive deletes of a command by their targets, returning a hit per denied target, worst first;
+ *  none clears the floor's tripwire. Bound to the call's directories by the rule layer. */
+export type DeleteGrader = (deletes: readonly DeleteCommand[], command: string) => readonly DeleteHit[];
+
+/** True when the words after an `rm` hold a recursive option before `--`: a short bundle with `r` or `R`, or
+ *  `--recursive` abbreviated to at least `MIN_LONG_PREFIX` characters. */
+export function rmIsRecursive(args: readonly string[]): boolean {
+	for (const word of args) {
+		if (word === "--") return false;
+		if (word.startsWith("--")) {
+			if (word.length >= MIN_LONG_PREFIX && "--recursive".startsWith(word)) return true;
+		} else if (word.startsWith("-") && /[rR]/.test(word.slice(1))) return true;
+	}
+	return false;
+}
+
+/** The recursive deletes in a command, or null when the word view cannot show where each one runs: an `rm`
+ *  with a recursive option in argument position (`xargs rm -r`, `find … -exec rm -r`, `command rm -r`), a
+ *  word holding the tripwire's text outside a known inert position, or an unsound parse (ADR-0007). A
+ *  `git rm` removes only tracked files of its repository, so it is no file-system delete. */
+function deleteCommands(command: string, tripwire: Tripwire): DeleteCommand[] | null {
+	const found: DeleteCommand[] = [];
+	const runs = (seg: readonly string[]): boolean => {
+		const at = seg.findIndex((word) => !ASSIGNMENT.test(word));
+		if (at === -1) return false;
+		const name = wordBasename(seg[at]);
+		if (name === "rm") {
+			if (rmIsRecursive(seg.slice(at + 1))) found.push({ seg, at });
+			return false;
+		}
+		return name !== "git" && seg.some((word, k) => k > at && wordBasename(word) === "rm") && rmIsRecursive(seg.slice(at + 1));
+	};
+	return anyCommandIn(command, { runs, mentions: (word) => tripwireHit(word, tripwire) }) ? null : found;
+}
 
 /** A word that makes `git push` a force push. `--force-with-lease[=ref]` is the only escaping
  *  `--force-*` spelling; every other `--force-*` form is denied rather than handed to the classifier.
@@ -105,13 +156,12 @@ const GIT_PUSH_FORCE_RULE: BashDangerRule = {
 	runs: gitCommand("push", pushArgsForce),
 };
 
+/** Matches an `rm` word, then a short option bundle with `r`, quoted or not, or an abbreviated `--rec…`. */
+const RM_RECURSIVE_TRIPWIRE: Tripwire = inOrder(/\brm\b/i, /\s['"]?-[a-zA-Z]*r|--rec/i);
+
 const BASH_DANGER_RULES: readonly BashDangerRule[] = [
-	{
-		kind: "raw",
-		id: "rm-recursive",
-		pattern: /\brm\b[^;|&]*(\s-(?:[a-zA-Z]*r[a-zA-Z]*f?|[a-zA-Z]*f[a-zA-Z]*r)\b|--recursive)/i,
-		reason: "recursive delete (rm -r)",
-	},
+	// Graded by target in the word view (ADR-0013); the tripwire alone decides a Python cell's shell lines.
+	{ kind: "delete", id: "rm-recursive", tripwire: RM_RECURSIVE_TRIPWIRE, reason: "recursive delete (rm -r)" },
 	{
 		kind: "raw",
 		id: "rm-root",
@@ -208,8 +258,11 @@ const BASH_DANGER_RULES: readonly BashDangerRule[] = [
 	{ kind: "raw", id: "fork-bomb", pattern: /:\(\)\s*\{/, reason: "fork bomb" },
 ];
 
+/** The ids a graded recursive delete can deny under besides `rm-root` (ADR-0013). */
+export const DELETE_RULE_IDS = ["rm-git", "rm-unreadable-target", "rm-outside-project"] as const;
+
 /** The id of every bash floor rule, as `floorOverrides` and the audit name it. */
-export const BASH_FLOOR_RULE_IDS: readonly string[] = BASH_DANGER_RULES.map((rule) => rule.id);
+export const BASH_FLOOR_RULE_IDS: readonly string[] = [...BASH_DANGER_RULES.map((rule) => rule.id), ...DELETE_RULE_IDS];
 
 /**
  * Whether a raw-text tripwire matches the command. A tripwire over-approximates its rule and only
@@ -217,7 +270,7 @@ export const BASH_FLOOR_RULE_IDS: readonly string[] = BASH_DANGER_RULES.map((rul
  * word in the raw text, so the tripwire also tests the spelling with unescaped continuations removed
  * (an escaped `\\` pair is left alone: the shell splits there, and both views still hit that input).
  */
-function tripwireHit(command: string, tripwire: Tripwire): boolean {
+export function tripwireHit(command: string, tripwire: Tripwire): boolean {
 	const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 	if (tripwireMatches(capped, tripwire)) return true;
 	const joined = capped.replace(/(?<!\\)\\\r?\n/g, "");
@@ -239,6 +292,9 @@ function ruleHits(rule: BashDangerRule, command: string, view: FloorView): boole
 				tripwireHit(command, rule.tripwire) &&
 				(view === "raw-text" || anyCommandIn(command, { runs: rule.runs, mentions: (word) => tripwireHit(word, rule.tripwire) }))
 			);
+		case "delete":
+			// Without a delete grader the tripwire decides; `deleteHits` grades the targets when one is bound.
+			return tripwireHit(command, rule.tripwire);
 		default: {
 			const unknown: never = rule;
 			return unknown;
@@ -335,6 +391,9 @@ export function allowAdmits(command: string): boolean {
 	// POSIX sh reads `&>` as a background `&` and then a redirection, so a word after it may run as
 	// a second command; only the shell-word view reads it as one redirection.
 	if (command.includes("&>")) return false;
+	// A recursive delete may drop uncommitted work that only the classifier, with the session's context, can
+	// judge (ADR-0013). Checked on the raw text, so one inside an `sh -c` script counts too.
+	if (tripwireHit(command, RM_RECURSIVE_TRIPWIRE)) return false;
 	const words = shellWords(command);
 	if (hasUnsoundWord(words)) return false;
 	// An operator or newline means more than one simple command.
@@ -388,8 +447,9 @@ export interface RuleResult {
 export const BASH_MAX_MATCH_LEN = 8192;
 
 /** Returns what a `floorOverrides` entry does to a floor rule for the call being graded, or null when no
- *  entry applies and the rule stays on (ADR-0013). */
-export type FloorLift = (id: string) => "off" | "ask" | null;
+ *  entry applies and the rule stays on (ADR-0013). `forms` are a delete target's forms, which a scoped entry
+ *  must hold; without them the scope is checked against the call's directories. */
+export type FloorLift = (id: string, forms?: readonly string[]) => "off" | "ask" | null;
 
 const NO_LIFT: FloorLift = () => null;
 
@@ -411,9 +471,10 @@ export class LiftedRules {
 	}
 }
 
-/** Grades a bash command: a floor deny, or gray for the user rules and the classifier. */
-export function classifyBash(command: string, floorOn: boolean, lift: FloorLift = NO_LIFT): RuleResult {
-	return classifyShellText(command, floorOn, "words", lift);
+/** Grades a bash command: a floor deny, or gray for the user rules and the classifier. A recursive `rm` is
+ *  graded by its targets when `deletes` is bound, else denied on its tripwire. */
+export function classifyBash(command: string, floorOn: boolean, lift: FloorLift = NO_LIFT, deletes?: DeleteGrader): RuleResult {
+	return classifyShellText(command, floorOn, "words", lift, deletes);
 }
 
 /** Grades the shell lines of a Python cell on raw text only: Python decides how their strings are
@@ -422,16 +483,29 @@ export function classifyPyShellLines(lines: string, floorOn: boolean, lift: Floo
 	return classifyShellText(lines, floorOn, "raw-text", lift);
 }
 
-function classifyShellText(command: string, floorOn: boolean, view: FloorView, lift: FloorLift): RuleResult {
+/** The floor's hits for one rule: a single hit under the rule's own id, or for a graded delete a hit per
+ *  denied target. */
+function ruleDenials(rule: BashDangerRule, command: string, view: FloorView, deletes: DeleteGrader | undefined): readonly DeleteHit[] {
+	if (!ruleHits(rule, command, view)) return [];
+	const own: DeleteHit = { rule: rule.id, reason: `rule ${rule.id}: ${rule.reason}`, forms: [] };
+	if (rule.kind !== "delete" || view === "raw-text" || deletes === undefined) return [own];
+	const found = deleteCommands(command, rule.tripwire);
+	// Fails closed: a delete the word view cannot place has no target to grade, so the tripwire's own deny
+	// stands, which no override lifts.
+	return found === null ? [own] : deletes(found, command);
+}
+
+function classifyShellText(command: string, floorOn: boolean, view: FloorView, lift: FloorLift, deletes?: DeleteGrader): RuleResult {
 	const lifted = new LiftedRules();
 	if (floorOn) {
 		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			if (!ruleHits(rule, capped, view)) continue;
-			const reason = `rule ${rule.id}: ${rule.reason}`;
-			const action = lift(rule.id);
-			if (action === null) return { verdict: "deny", reason, rule: rule.id };
-			lifted.add(rule.id, reason, action);
+			for (const hit of ruleDenials(rule, capped, view, deletes)) {
+				// A delete is scoped by its targets alone, so one with no readable target lifts only unscoped.
+				const action = lift(hit.rule, rule.kind === "delete" ? hit.forms : undefined);
+				if (action === null) return { verdict: "deny", reason: hit.reason, rule: hit.rule };
+				lifted.add(hit.rule, hit.reason, action);
+			}
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command", rule: "empty-command" };

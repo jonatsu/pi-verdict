@@ -407,14 +407,14 @@ async function withTempDir(prefix: string, fn: (dir: string) => void | Promise<v
 describe("built-in deny floor", () => {
 	test("danger regex (rm -rf) → deny, zero model calls", async () => {
 		const h = session({});
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }); // Assemble to prevent the dangerous regex from accidentally blocking the test file
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" }); // Assemble to prevent the dangerous regex from accidentally blocking the test file
 		expect(r?.block).toBe(true);
-		expect(r.reason).toContain("rm-recursive");
+		expect(r.reason).toContain("rm-outside-project");
 		expect(h.calls.length).toBe(0);
 	});
 	test("floor NOT overridable by user allow", async () => {
 		const h = session({ allow: ["^rm"] });
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" });
 		expect(r?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
 	});
@@ -2048,7 +2048,7 @@ describe("user rules (deny > allow > gray)", () => {
 			.join("\n");
 		expect(warnings).toContain("parse");
 		// the built-in floor still denies
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" });
 		expect(r?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
 	});
@@ -2057,7 +2057,7 @@ describe("user rules (deny > allow > gray)", () => {
 		const head = "a".repeat(BASH_MAX_MATCH_LEN);
 		// danger within the capped prefix → rule-layer deny, zero model calls
 		const h = session({});
-		const r1 = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x && " + head });
+		const r1 = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x && " + head });
 		expect(r1?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
 		// danger beyond the cap: the floor's own reading horizon never sees it (unchanged,
@@ -2067,7 +2067,7 @@ describe("user rules (deny > allow > gray)", () => {
 		const h2 = session({});
 		h2.ctx.hasUI = false;
 		h2.responses = [{ text: "<verdict>deny</verdict> mock" }];
-		const r2 = await toolCall(h2, "bash", { command: head + " ; rm " + "-rf /tmp/x" });
+		const r2 = await toolCall(h2, "bash", { command: head + " ; rm " + "-rf /opt/x" });
 		expect(h2.calls.length).toBe(0);
 		expect(r2?.block).toBe(true);
 		expect(r2?.reason).toContain("too long");
@@ -2075,7 +2075,7 @@ describe("user rules (deny > allow > gray)", () => {
 	test("builtinDenyFloor: false disables the whole built-in deny floor (risk accepted by user)", async () => {
 		const h = session({ builtinDenyFloor: false });
 		h.responses = [{ text: "<verdict>deny</verdict> floor off" }];
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }); // Dangerous regex is disabled
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" }); // Dangerous regex is disabled
 		expect(h.calls.length).toBe(1); // Send to classifier
 		expect(r?.block).toBe(true); // Classifier verdict still applies
 	});
@@ -2088,7 +2088,7 @@ describe("user rules (deny > allow > gray)", () => {
 	});
 	test("builtinDenyFloor default true keeps the floor", async () => {
 		const h = session({ allow: ["^rm"] });
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" });
 		expect(r?.block).toBe(true); // On by default: floor still takes precedence over user allow
 		expect(h.calls.length).toBe(0);
 	});
@@ -2599,7 +2599,7 @@ describe("/automode command", () => {
 	test("off actually disables gating", async () => {
 		const h = session({});
 		await h.commands.automode.handler("off", h.ctx);
-		const r = await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
+		const r = await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" });
 		expect(r).toBeUndefined(); // After turning it off, even dangerous commands are no longer blocked
 	});
 	test("unknown arg → warning with usage", async () => {
@@ -2641,14 +2641,14 @@ describe("toggle shortcut", () => {
 	});
 	test("handler flips master switch silently — footer refresh, no notify, gating off", async () => {
 		const h = session({});
-		expect((await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }))?.block).toBe(true); // On: floor blocks
+		expect((await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" }))?.block).toBe(true); // On: floor blocks
 		const notifiesBefore = h.notifies.length;
 		h.shortcuts["ctrl+shift+a"].handler(h.ctx);
 		expect(h.notifies.length).toBe(notifiesBefore); // Silent: no additional notification
 		expect(h.statusSets.at(-1)![0]).toBe("auto-mode"); // Refresh footer
-		expect(await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined(); // Off: allow
+		expect(await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" })).toBeUndefined(); // Off: allow
 		h.shortcuts["ctrl+shift+a"].handler(h.ctx); // Press again: restore enabled state
-		expect((await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" }))?.block).toBe(true);
+		expect((await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" }))?.block).toBe(true);
 	});
 	test("footer status colors: on → success, off → warning", async () => {
 		const h = session({});
@@ -3569,7 +3569,7 @@ describe("audit verdict records (#54)", () => {
 		clearAudit();
 		const h = session({ audit: true, tools: ["todo_write"] });
 		const calls: Array<[string, Record<string, unknown>]> = [
-			["bash", { command: "rm " + "-rf /tmp/x" }],
+			["bash", { command: "rm " + "-rf /opt/x" }],
 			["bash", { command: " " }],
 			["write", { path: path.join(TMP_AGENT, "config", "pi-verdict.json"), content: "x" }],
 			["read", { path: "~/.ssh/" + "id_rsa" }],
@@ -3585,7 +3585,7 @@ describe("audit verdict records (#54)", () => {
 			.filter((r: any) => r.kind === "rule")
 			.map((r: any) => `${r.verdict}:${r.rule}`);
 		expect(rules).toEqual([
-			"deny:rm-recursive",
+			"deny:rm-outside-project",
 			"allow:empty-command",
 			"deny:self-protection",
 			"deny:S0:ssh",
@@ -4513,7 +4513,7 @@ describe("adjudicate pipeline (interface level)", () => {
 			source: "rule",
 			degraded: false,
 		});
-		expect(await run({}, "bash", { command: "rm " + "-rf /tmp/x" }, adjudicateEnv())).toMatchObject({
+		expect(await run({}, "bash", { command: "rm " + "-rf /opt/x" }, adjudicateEnv())).toMatchObject({
 			verdict: "deny",
 			source: "rule",
 			degraded: false,
@@ -5908,7 +5908,7 @@ describe("footer status", () => {
 		const h = session({});
 		withBg(h);
 		await h.handlers.session_start({}, h.ctx);
-		await toolCall(h, "bash", { command: "rm " + "-rf /tmp/x" });
+		await toolCall(h, "bash", { command: "rm " + "-rf /opt/x" });
 		expect(lastStatus(h)).toContain("\uF05E 1");
 		h.responses = [{ text: "<verdict>ask</verdict> needs a human" }];
 		h.confirmAnswer = true;
@@ -6669,16 +6669,16 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 
 	test("off: the gate is inert in subagents (the root stays gated)", async () => {
 		await withBridge({ subagentGate: "off" }, async (root, sub) => {
-			expect(await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" })).toBeUndefined();
+			expect(await toolCall(sub, "bash", { command: "rm " + "-rf /opt/x" })).toBeUndefined();
 			expect(sub.calls.length).toBe(0);
-			const r = await toolCall(root, "bash", { command: "rm " + "-rf /tmp/x" });
+			const r = await toolCall(root, "bash", { command: "rm " + "-rf /opt/x" });
 			expect(r?.block).toBe(true);
 		});
 	});
 
 	test("default is normal: a fresh config adjudicates subagent calls", async () => {
 		await withBridge({ subagentGate: undefined }, async (root, sub) => {
-			const r = await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" });
+			const r = await toolCall(sub, "bash", { command: "rm " + "-rf /opt/x" });
 			expect(r?.block).toBe(true);
 			expect(String(r?.reason)).toContain("recursive delete");
 			expect(sub.calls.length).toBe(0); // the rule layer, not the classifier
@@ -6971,7 +6971,7 @@ describe("subagent gate (omp ctx.agent.kind = sub)", () => {
 		await h.handlers["session_shutdown"]({}, h.ctx);
 		// an invalid mode falls back to the default (normal): the subagent is gated
 		await withBridge({ subagentGate: "x", subagentAskTimeoutMs: 0 }, async (root, sub) => {
-			const r = await toolCall(sub, "bash", { command: "rm " + "-rf /tmp/x" });
+			const r = await toolCall(sub, "bash", { command: "rm " + "-rf /opt/x" });
 			expect(r?.block).toBe(true);
 			expect(root.confirms).toBe(0);
 		});
@@ -9093,7 +9093,7 @@ describe("audit replay tool", () => {
 			const lines = [
 				JSON.stringify({ kind: "rule", ts: "t", sessionId: "s1", tool: "read", verdict: "allow", rule: "path-read" }),
 				record(proj, "ls"),
-				record(proj, "rm " + "-rf /tmp/x"),
+				record(proj, "rm " + "-rf /opt/x"),
 				record(proj, "make build"),
 				record(proj, "make test", { verdict: "ask", userAnswer: "declined" }),
 				record(path.join(proj, "gone"), "ls"),
@@ -9117,13 +9117,13 @@ describe("audit replay tool", () => {
 				cwdMissing: 1,
 				stillGray: 2,
 				nowAllowed: { "user-allow": 1 },
-				nowDeniedOrAsked: { "deny:rm-recursive": 1 },
+				nowDeniedOrAsked: { "deny:rm-outside-project": 1 },
 				recordedRuleVerdicts: { "allow:path-read": 1 },
 				recordedAsks: { "protected-path": 1 },
 				answers: { "ask->declined": 1 },
 			});
 			expect(report.answers).toEqual({ "ask->declined": 1 }); // a protected-path ask's answer is not the classifier's
-			expect(report.changes.map((c) => c.to)).toEqual(["allow:user-allow", "deny:rm-recursive"]);
+			expect(report.changes.map((c) => c.to)).toEqual(["allow:user-allow", "deny:rm-outside-project"]);
 			expect(renderReport(report)).toContain("  user-allow: 1");
 		});
 	});
@@ -9140,8 +9140,8 @@ describe("audit replay tool", () => {
 	test("a rule deny shown as an ask under autoDeny false still counts as the rule's deny", async () => {
 		await withTempDir("pv-replay-", async (proj) => {
 			setConfig({ autoDeny: false });
-			const report = await replayAudit(gate, [{ name: "s1.jsonl", text: record(proj, "rm " + "-rf /tmp/x") }]);
-			expect(report.nowDeniedOrAsked).toEqual({ "deny:rm-recursive": 1 });
+			const report = await replayAudit(gate, [{ name: "s1.jsonl", text: record(proj, "rm " + "-rf /opt/x") }]);
+			expect(report.nowDeniedOrAsked).toEqual({ "deny:rm-outside-project": 1 });
 		});
 	});
 });
@@ -9265,7 +9265,7 @@ describe("floorOverrides (ADR-0013)", () => {
 		expect((await toolCall(h, "read", { path: path.join(OUTSIDE, PEM) }))?.block).toBe(true);
 	});
 
-	test("rm-recursive cannot be overridden until deletes are graded by target", async () => {
+	test("rm-recursive, the raw-text delete rule of a Python cell, cannot be overridden", async () => {
 		const h = headless({ ["rm-" + "recursive"]: "off" });
 		expect(await reloadNotes(h)).toContain("this rule cannot be overridden");
 		expect((await toolCall(h, "bash", { command: "rm " + "-rf ~/" }))?.block).toBe(true);
@@ -9444,5 +9444,159 @@ describe("secret signatures (ADR-0013)", () => {
 		const sent = JSON.stringify(h.calls[0]?.messages);
 		expect(sent).not.toContain(body);
 		expect(sent).toContain("[private key block redacted]");
+	});
+});
+
+describe("graded recursive delete (ADR-0013)", () => {
+	const BASE = plannedTempDir(os.tmpdir(), "pv-graded-rm-");
+	const PROJ = path.join(BASE, "proj");
+	beforeAll(() => {
+		fs.mkdirSync(path.join(PROJ, ".git"), { recursive: true });
+		fs.mkdirSync(path.join(PROJ, "build"), { recursive: true });
+		fs.symlinkSync("/usr", path.join(PROJ, "vendor"));
+		fs.symlinkSync("/usr/share", path.join(PROJ, "link"));
+	});
+	afterAll(() => fs.rmSync(BASE, { recursive: true, force: true }));
+
+	const RM = "rm " + "-rf";
+	/** A headless session in the fixture project whose classifier allows, so a gray delete passes and a floor deny blocks. */
+	const run = async (
+		command: string,
+		opts: { cwd?: string; cfg?: Parameters<typeof setConfig>[0]; input?: Record<string, unknown>; omp?: boolean } = {},
+	) => {
+		const h = session(opts.cfg ?? {}, { cwd: opts.cwd ?? PROJ, omp: opts.omp });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		const r = await toolCall(h, "bash", { command, ...(opts.input ?? {}) });
+		return { r, calls: h.calls.length, reason: String(r?.reason ?? "") };
+	};
+	const denies = async (command: string, rule: string, opts: Parameters<typeof run>[1] = {}) => {
+		const { reason, calls } = await run(command, opts);
+		expect([command, reason.includes(`rule ${rule}`), calls]).toEqual([command, true, 0]);
+	};
+	const reachesClassifier = async (command: string, opts: Parameters<typeof run>[1] = {}) => {
+		const { r, calls } = await run(command, opts);
+		expect([command, r, calls]).toEqual([command, undefined, 1]);
+	};
+
+	test("a delete strictly inside the project or a temp directory reaches the classifier", async () => {
+		await reachesClassifier(`${RM} build`);
+		await reachesClassifier(`${RM} ./build/`);
+		await reachesClassifier(`${RM} /tmp/pv-scratch-x`);
+		await reachesClassifier(`rm '-rf' build`);
+		await reachesClassifier("rm --rec build");
+	});
+
+	test("the root, a top-level or system directory and the home directory are rm-root", async () => {
+		for (const target of [
+			"/",
+			"//",
+			"/.",
+			"~",
+			"~/",
+			"$HOME",
+			"$" + "{HOME}",
+			'"$HOME"',
+			"/usr",
+			"/etc",
+			"/*",
+			"~/*",
+			"~/.*",
+			"/System",
+			"/private/var",
+		]) {
+			await denies(`${RM} ${target}`, "rm-root");
+		}
+	});
+
+	test("git metadata and the project that holds it are rm-git", async () => {
+		await denies(`${RM} .git`, "rm-git");
+		await denies(`${RM} .git/hooks`, "rm-git");
+		await denies(`${RM} ../proj`, "rm-git");
+		await denies(`${RM} ${PROJ}`, "rm-git");
+	});
+
+	test("an operand the gate cannot read is rm-unreadable-target; a delete it cannot place keeps rm-recursive", async () => {
+		await denies(`${RM} $DIR`, "rm-unreadable-target");
+		await denies(`${RM} build/{a,b}`, "rm-unreadable-target");
+		await denies(`ls | xargs ${RM}`, "rm-recursive");
+		await denies(`find . -name x -exec ${RM} {} +`, "rm-recursive");
+		await denies(`cd sub; ${RM} build`, "rm-unreadable-target");
+	});
+
+	test("a target outside the project and the temp directories is rm-outside-project", async () => {
+		await denies(`${RM} /opt/x`, "rm-outside-project");
+		await denies(`${RM} ~/Documents`, "rm-outside-project");
+		await denies(`${RM} vendor/lib`, "rm-outside-project");
+		await denies(`${RM} link/`, "rm-outside-project");
+	});
+
+	test("deleting a symlink itself, without a trailing slash, stays inside the project", async () => {
+		await reachesClassifier(`${RM} link`);
+	});
+
+	test("a leading cd moves the working directory, as omp does", async () => {
+		await reachesClassifier(`cd build && ${RM} sub`);
+		await denies(`cd /opt && ${RM} x`, "rm-outside-project");
+	});
+
+	test("a session cwd at home has no inside", async () => {
+		await denies(`${RM} build-pv-test`, "rm-outside-project", { cwd: os.homedir() });
+	});
+
+	test("a cwd argument at home grades relative operands there", async () => {
+		await denies(`${RM} build`, "rm-outside-project", { input: { cwd: os.homedir() }, omp: true });
+	});
+
+	test("git rm is no file-system delete", async () => {
+		await reachesClassifier("git rm -r --cached build");
+	});
+
+	test("a user allow rule never admits a recursive delete", async () => {
+		const { calls } = await run(`${RM} build`, { cfg: { allow: ["^rm\\b"] } });
+		expect(calls).toBe(1);
+	});
+
+	test("a delete the word view cannot place keeps the non-overridable deny, whatever overrides say", async () => {
+		const cfg = { floorOverrides: { "rm-unreadable-target": "off" } };
+		for (const command of [`time ${RM} ~/`, `command ${RM} /*`, `${RM} ~/ \`true\``]) {
+			const { reason } = await run(command, { cfg });
+			expect([command, reason.includes("rule rm-recursive")]).toEqual([command, true]);
+		}
+	});
+
+	test("a user allow rule never admits a recursive delete inside an sh -c script", async () => {
+		const { calls } = await run(`bash -c '${RM} build'`, { cfg: { allow: ["^bash\\b"] } });
+		expect(calls).toBe(1);
+	});
+
+	test("a symlink the command itself creates makes its target unreadable", async () => {
+		await denies(`ln -s ~ made && ${RM} made/`, "rm-unreadable-target");
+	});
+
+	test("cd - is no readable working directory", async () => {
+		await denies(`cd - && ${RM} build`, "rm-unreadable-target");
+	});
+
+	test("a home-relative target is unreadable once the session may have reassigned HOME", async () => {
+		const h = session({}, { cwd: PROJ });
+		h.ctx.hasUI = false;
+		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
+		h.branch.push({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "export HOME=/tmp/elsewhere" } }] },
+		});
+		const r = await toolCall(h, "bash", { command: `${RM} ~/scratch` });
+		expect(String(r?.reason)).toContain("rule rm-unreadable-target");
+	});
+
+	test("a command with more graded targets than the cap is unreadable", async () => {
+		await denies(`${RM} ${Array.from({ length: 70 }, (_, i) => `build/x${i}`).join(" ")}`, "rm-unreadable-target");
+	});
+
+	test("an rm-outside-project override applies only to targets inside its scope", async () => {
+		const cfg = { floorOverrides: { "rm-outside-project": { action: "ask", paths: ["/opt/scratch"] } } };
+		expect((await run(`${RM} /opt/scratch/x`, { cfg })).reason).toContain("softened to an ask");
+		expect((await run(`${RM} /opt/other`, { cfg })).reason).toContain("rule rm-outside-project");
 	});
 });

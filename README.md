@@ -168,7 +168,9 @@ tool_call
   │     │   every form the host can resolve it to
   │     ├─ built-in deny floor: bash danger regexes + path sensitivity S0–S5,
   │     │   graded over every adapter target, worst grade wins; a write whose kernel
-  │     │   target is unresolvable (symlink loop) fails closed → deny; a floorOverrides
+  │     │   target is unresolvable (symlink loop) fails closed → deny; a recursive rm is
+  │     │   graded by target: root, home, .git, unreadable or outside the project → deny,
+  │     │   inside the project or /tmp → on to the classifier; a floorOverrides
   │     │   entry (ADR-0013) can switch off or soften one rule, optionally per directory
   │     ├─ your deny rules: any matching target form denies; deny beats allow
   │     ├─ optional gateOmpDir (default off): .omp access → terminal ask

@@ -12,6 +12,7 @@ import { ACTION_LINE_MAX_CHARS, actionCallLine } from "./action-line.ts";
 import { allowOperandsAdmit } from "./allow-operands.ts";
 import { hitCodeLoadPath } from "./code-loading.ts";
 import type { UserRules } from "./config.ts";
+import { deleteGrader } from "./delete-grade.ts";
 import { hitDenyPaths, hitOmpDir } from "./deny-paths.ts";
 import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDeviceUrl, s0DirectoryBeneath } from "./floor.ts";
 import { overrideFor } from "./floor-overrides.ts";
@@ -123,7 +124,15 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	const { toolName, input, access } = call;
 	const floorOn = ctx.userRules.builtinDenyFloor;
 	const overrides = ctx.userRules.floorOverrides;
-	if (isCommandTool(toolName)) return classifyBash(commandText(input), floorOn, shellLift(ctx));
+	if (isCommandTool(toolName)) {
+		const deletes = deleteGrader({
+			sessionCwd: ctx.sessionCwd,
+			commandCwd: ctx.commandCwd,
+			commandCwdExact: ctx.commandCwdExact,
+			homeReassigned: ctx.shellState.homeOperands,
+		});
+		return classifyBash(commandText(input), floorOn, shellLift(ctx), deletes);
+	}
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,
 		// after the deny-side layers and the tools exemption get first look.
@@ -141,12 +150,13 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
 }
 
-/** Returns how the overrides lift a shell floor rule. A command names no target the floor can see, so a
- *  scoped override applies only while both the session cwd and the command cwd sit inside its scope, in
- *  every form; a command cwd the gate cannot resolve keeps every rule on. */
+/** Returns how the overrides lift a shell floor rule. A graded delete is scoped by its target's forms. Any
+ *  other rule names no target the floor can see, so a scoped override applies only while both the session
+ *  cwd and the command cwd sit inside its scope, in every form; a command cwd the gate cannot resolve keeps
+ *  every rule on. */
 function shellLift(ctx: RuleContext): FloorLift {
-	const forms = ctx.commandCwdExact ? [...baseForms(ctx.sessionCwd), ...baseForms(ctx.commandCwd)] : [];
-	return (id) => overrideFor(ctx.userRules.floorOverrides, id, forms)?.action ?? null;
+	const cwdForms = ctx.commandCwdExact ? [...baseForms(ctx.sessionCwd), ...baseForms(ctx.commandCwd)] : [];
+	return (id, targetForms) => overrideFor(ctx.userRules.floorOverrides, id, targetForms ?? cwdForms)?.action ?? null;
 }
 
 /** Asks on a floor deny a `floorOverrides` entry softened (ADR-0013). It runs after the protected-path and
