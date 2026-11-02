@@ -17,6 +17,7 @@ import { hitCodeLoadPath } from "../extensions/pi-verdict/code-loading.ts";
 import { computeTmpdirBases, setTmpdirBasesForTests, setXdgConfigRootsForTests } from "../extensions/pi-verdict/floor.ts";
 import autoMode, {
 	type AdjudicateEnv,
+	AuditLog,
 	adjudicate,
 	approveCodeMarkdown,
 	BASH_MAX_MATCH_LEN,
@@ -51,6 +52,7 @@ import {
 	readHostHandlerBudget,
 	subagentAskWindow,
 } from "../extensions/pi-verdict/subagent.ts";
+import { renderReport, replayAudit } from "../tools/replay.ts";
 
 // ── Stub utilities ───────────────────────────────────────
 
@@ -3569,6 +3571,7 @@ describe("audit verdict records (#54)", () => {
 			["todo_write", { todos: [] }],
 		];
 		for (const [tool, input] of calls) await toolCall(h, tool, input);
+		await toolCall(session({ audit: true }, { omp: true }), "write", { path: "xd://bash", content: '{"command":"ls"}' });
 		const rules = readAudit()
 			.filter((r: any) => r.kind === "rule")
 			.map((r: any) => `${r.verdict}:${r.rule}`);
@@ -3582,6 +3585,7 @@ describe("audit verdict records (#54)", () => {
 			"allow:path-read",
 			"allow:path-write",
 			"allow:user-tools",
+			"allow:device",
 		]);
 	});
 
@@ -9053,5 +9057,82 @@ describe("hashline header spellings (ADR-0009)", () => {
 			expect(await toolCall(h, "edit", { input: `${row}\n1:x\n` })).toBeUndefined();
 		}
 		expect(h.confirms).toBe(0);
+	});
+});
+
+describe("audit replay tool", () => {
+	const record = (cwd: string, command: string, extra: Record<string, unknown> = {}) =>
+		JSON.stringify({
+			ts: "2026-11-02T00:00:00.000Z",
+			sessionId: "s1",
+			cwd,
+			model: "m",
+			tool: "bash",
+			input: { command },
+			actionLine: `$ ${command}`,
+			verdict: "allow",
+			reason: "r",
+			source: "model",
+			degraded: false,
+			...extra,
+		});
+	const gate = { adjudicate, SessionState, AuditLog };
+
+	test("counts how the current build decides each recorded gray-zone call", async () => {
+		await withTempDir("pv-replay-", async (proj) => {
+			setConfig({ allow: ["^ls\\b"] });
+			const lines = [
+				JSON.stringify({ kind: "rule", ts: "t", sessionId: "s1", tool: "read", verdict: "allow", rule: "path-read" }),
+				record(proj, "ls"),
+				record(proj, "rm " + "-rf /tmp/x"),
+				record(proj, "make build"),
+				record(proj, "make test", { verdict: "ask", userAnswer: "declined" }),
+				record(path.join(proj, "gone"), "ls"),
+				JSON.stringify({
+					sessionId: "s1",
+					cwd: proj,
+					tool: "read",
+					input: {},
+					verdict: "ask",
+					source: "protected-path",
+					degraded: false,
+					userAnswer: "allowed",
+				}),
+				"not json",
+			];
+			const report = await replayAudit(gate, [{ name: "s1.jsonl", text: lines.join("\n") }], { show: true });
+			expect(report).toMatchObject({
+				files: 1,
+				unreadable: 1,
+				gray: 5,
+				cwdMissing: 1,
+				stillGray: 2,
+				nowAllowed: { "user-allow": 1 },
+				nowDeniedOrAsked: { "deny:rm-recursive": 1 },
+				recordedRuleVerdicts: { "allow:path-read": 1 },
+				recordedAsks: { "protected-path": 1 },
+				answers: { "ask->declined": 1 },
+			});
+			expect(report.answers).toEqual({ "ask->declined": 1 }); // a protected-path ask's answer is not the classifier's
+			expect(report.changes.map((c) => c.to)).toEqual(["allow:user-allow", "deny:rm-recursive"]);
+			expect(renderReport(report)).toContain("  user-allow: 1");
+		});
+	});
+
+	test("the report holds no recorded command unless the changes are asked for", async () => {
+		await withTempDir("pv-replay-", async (proj) => {
+			setConfig({ allow: ["^ls\\b"] });
+			const report = await replayAudit(gate, [{ name: "s1.jsonl", text: record(proj, "ls secret-name") }]);
+			expect(report.nowAllowed).toEqual({ "user-allow": 1 });
+			expect(renderReport(report)).not.toContain("secret-name");
+		});
+	});
+
+	test("a rule deny shown as an ask under autoDeny false still counts as the rule's deny", async () => {
+		await withTempDir("pv-replay-", async (proj) => {
+			setConfig({ autoDeny: false });
+			const report = await replayAudit(gate, [{ name: "s1.jsonl", text: record(proj, "rm " + "-rf /tmp/x") }]);
+			expect(report.nowDeniedOrAsked).toEqual({ "deny:rm-recursive": 1 });
+		});
 	});
 });

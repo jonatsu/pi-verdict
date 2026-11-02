@@ -88,9 +88,9 @@ export class AuditLog {
 	constructor(readonly dir: string) {}
 
 	append(record: AuditRecord | RuleVerdictRecord): void {
-		// sessionId comes from the host with no shape guarantee: narrow to a safe filename charset
-		const file = path.join(this.dir, `${record.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.jsonl`);
 		try {
+			// sessionId comes from the host with no shape guarantee: narrow to a safe filename charset
+			const file = path.join(this.dir, `${String(record.sessionId).replace(/[^a-zA-Z0-9_-]/g, "_")}.jsonl`);
 			fs.mkdirSync(this.dir, { recursive: true });
 			fs.appendFileSync(file, JSON.stringify(record) + "\n");
 		} catch (err) {

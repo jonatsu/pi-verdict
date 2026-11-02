@@ -52,6 +52,7 @@
 		"coverage": "bun run tools/coverage.ts",
 		"provenance": "bun run tools/provenance.ts",
 		"release-check": "bun run tools/release-check.ts",
+		"replay": "bun run tools/replay.ts",
 		"lint": "mise exec -- biome lint .",
 		"format": "mise exec -- biome format --write ."
 	},

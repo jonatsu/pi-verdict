@@ -336,7 +336,7 @@ export function classifyWrites(targets: string[], cwd: string, floorOn: boolean,
 	const results = targets.map((t) => gradeTarget(t, cwd, true, floorOn, host));
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
-	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow", rule: "path-write" };
+	if (results.every((r) => r.verdict === "allow")) return { verdict: "allow", rule: sharedRule(results, "path-write") };
 	const gray = results.find((r) => r.verdict === "gray");
 	return gray ?? { verdict: "gray", reason: `write outside project directory (CWD): ${targets.join(", ")}` };
 }
@@ -382,5 +382,11 @@ export function classifyReads(targets: string[], cwd: string, floorOn: boolean, 
 	const deny = results.find((r) => r.verdict === "deny");
 	if (deny) return deny;
 	const gray = results.find((r) => r.verdict === "gray");
-	return gray ?? { verdict: "allow", rule: "path-read" };
+	return gray ?? { verdict: "allow", rule: sharedRule(results, "path-read") };
+}
+
+/** The rule id every target's allow shares, such as `device` for an omp device URL, else `fallback`. */
+function sharedRule(results: readonly RuleResult[], fallback: string): string {
+	const first = results[0]?.rule;
+	return first !== undefined && results.every((r) => r.rule === first) ? first : fallback;
 }

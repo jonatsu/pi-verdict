@@ -1,8 +1,9 @@
 # Call model, rule hardening and measurement — plan
 
-**Status (2026-10-25).** Delivery steps 1-5 are done: item 12 (the module split), items 3-6 and items 1-2 with 1a
-shipped by v0.22.0, and their review follow-ups by v0.23.0. Their residuals are tracked in `TODO.md` item 3. Next is
-step 6 (item 11), then steps 7-9.
+**Status (2026-11-02).** Delivery steps 1-6 are done: item 12 (the module split), items 3-6 and items 1-2 with 1a
+shipped by v0.22.0, their review follow-ups by v0.23.0, and item 11 (compact rule-verdict records and `bun run replay`)
+after v0.25.0. Their residuals are tracked in `TODO.md` item 3. Next is step 7 (item 9, decided as ADR-0012: defer the
+shared reader until a consumer needs it), then step 8 (item 7, the read-only fast path, measured with the replay).
 
 **Approval.** Approved by the user on 2026-10-05: items 1-8, item 1's shell-expansion amendment
 (1a), and items 9-12. On 2026-10-07 the user reordered delivery: item 12 (the file split) now comes first, along

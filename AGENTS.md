@@ -74,7 +74,7 @@ Two independent extensions in `extensions/` (no `src/`, no build step; TypeScrip
 | `extensions/` | Shipped runtime code (the two extensions above) |
 | `tests/` | `bun:test` suites, one per extension file |
 | `probe/` | The shared gate-testing contract: `cases.ts` (the case table), `probe.ts` (three-run runner), `fixtures.ts`, `consumer-policy.json`, `README.md`. Dev artifact; not shipped |
-| `tools/` | `provenance.ts`, `coverage.ts` (generates `docs/coverage.md`), `release-check.ts`. Dev artifacts; not shipped |
+| `tools/` | `provenance.ts`, `coverage.ts` (generates `docs/coverage.md`), `release-check.ts`, `replay.ts` (re-runs recorded gray-zone calls against the current build). Dev artifacts; not shipped |
 | `docs/` | Reference docs, plans and ADRs (routed in "Where to Read"); `agents/` is skill config, not product docs |
 | `.agents/rules/` | Repository rules for agents (`pv-*.md`); `.claude/rules/` holds symlinks to them |
 | `research/` | Evidence notes + offline sims (`cache-sim/`, `rule-engine-sim/`); not part of tests/typecheck |
@@ -93,6 +93,7 @@ bun run probe               # the shared case-table contract; --filter "<label>"
 bun run coverage            # regenerate docs/coverage.md from probe/cases.ts
 bun run provenance          # sha256 of the committed extension blobs at HEAD
 bun run release-check       # package.json version == annotated tag v<version> (local pre-tag gate)
+bun run replay              # count how the current build decides the audit log's gray-zone calls (--agent-dir, --show; private data, not CI)
 ```
 
 `lint`/`format` scripts exist (`mise exec -- biome …`) and `biome.json` is the config; CI runs `biome ci .` over `extensions/`, `tests/`, `probe/` and `tools/` (`tests/` alone may use `any`). Run the full set in `pv-typescript.md`'s "Done" after any change to `extensions/`, `probe/`, or `tools/`. For headless smoke-testing of a build, see "Smoke-testing" below.
