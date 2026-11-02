@@ -1,7 +1,7 @@
 # 0013 - Configurable command rules, floor overrides, secret signatures and graded deletes
 
 ---
-status: proposed
+status: accepted
 date: 2026-11-02
 ---
 
