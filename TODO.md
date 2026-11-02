@@ -39,6 +39,11 @@ The live state of open work, updated at every commit, merge, review and pause; t
     - Residual: a write graded as creating a new key file can race a sibling call that creates a symlink at that path before the write runs.
     - Residual: a scoped bash override cannot see a directory change inside a Python cell (`os.chdir`, `%cd`, also from an earlier cell of the persistent kernel). Unverified: the gate reads `CDPATH` from its own environment; if omp's session shell sourced rc files that set `CDPATH` or `cdable_vars`, the gate would not see them (omp 18.13.0's spawn path was not traced).
   - *Branch security re-review (autopilot, 2026-11-02): triage.* Fixed: an existing directory swapped for a symlink by an earlier command of the same call (`rm -rf made && ln -s ~ made && rm -rf made/`), also through `&`, `mv` or a second `r''m`; a `GIT_DIR` or `GIT_WORK_TREE` exported by an earlier call escaping a scoped git override, and `core.worktree` and `env -C/x`; a command name built from an expansion (`${D}d`) hiding a `cd`; PuTTY and OpenVPN key material in a created key file's excerpt. Documented: a scoped bash override bounds where a command runs, not what it reaches (`git push <url> --force`, `gh … -R other/repo`).
+  - *Final security review (autopilot, 2026-11-02): triage.* Fixed: a `..` after a named component of a delete operand (`ln -s ~/src build && rm -rf build/../Documents`) was graded as text; it is now unreadable in every call. Residuals, all exotic:
+    - A same-call move of the project directory itself (`mv /abs/proj /abs/p2 && ln -s ~ /abs/proj && rm -rf /abs/proj/x`), the same class as the scope-directory swap.
+    - A background job from an earlier call that keeps swapping a directory a later lone `rm -rf build/` follows, the bash analog of the sibling-write race.
+    - A `-C` inside a short-option bundle (`env -iC/x git push --force`) escapes the scoped-lift directory check.
+    - A PuTTY key written with escaped newlines (`printf 'Private-Lines: 1\nAAAA…'`) keeps its body; the agent's own model already holds it.
 
 ## Next, in order
 

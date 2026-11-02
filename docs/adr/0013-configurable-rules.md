@@ -224,7 +224,8 @@ recorded here.
   ran `shopt -s cdable_vars` or voided every user allow (ADR-0008), after a leading `cd` that a set `CDPATH` would
   redirect, after a quoted, escaped or expanded `cd`; and a target reached through a directory below the one it is
   graded from whenever another command may run before or beside the delete, since it could swap that directory for a
-  symlink after grading. Only a lone leading `rm`, followed at most by `&&`, `||` or `;`, runs first.
+  symlink after grading (only a lone leading `rm`, followed at most by `&&`, `||` or `;`, runs first); and a `..`
+  after a named component, which the kernel resolves through that component.
 - **Command rules** (decision 1) read the word view up to eight times `BASH_MAX_MATCH_LEN`; past it, the tripwire
   hit alone decides, so a long command can match on text it does not run. All candidate rules share one reading.
 - **Key material** (decision 3) is also redacted from the command or eval cell under review, and OpenVPN static keys

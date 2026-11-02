@@ -28,6 +28,9 @@ const DIRECTORY_CHANGE = /\b(?:cd|pushd|popd)\b/g;
 const DIRECTORY_COMMANDS: ReadonlySet<string> = new Set(["cd", "pushd", "popd"]);
 /** Matches a command that is one leading `rm`, alone or followed in sequence by other commands, with nothing
  *  that runs before or beside it: no substitution, pipe, background `&` or redirection. */
+/** Matches a `..` that follows a named component (`build/../x`): the kernel resolves it from wherever that
+ *  component leads, which may be a symlink, so the text cannot place the target. */
+const INTERIOR_PARENT = /(?:^|\/)(?!\.\.(?:\/|$))[^/]+\/\.\.(?:\/|$)/;
 const SOLE_LEADING_RM = /^\s*rm\s[^;&|\n`$<>()]*(?:&&|\|\||;|$)/;
 /** Matches a `cd` target that bash looks up in `CDPATH` first: any not starting with `/`, `~`, or a `.` or `..` component. */
 const CDPATH_SEARCHED = /^(?!\/|~|\.\.?(?:\/|$))/;
@@ -158,7 +161,7 @@ function gradeOperand(word: string, g: Grading): GradedHit[] {
 	if (g.graded > MAX_GRADED_OPERANDS) return [];
 	const hits: GradedHit[] = [];
 	for (const p of expanded.paths) {
-		if (!path.isAbsolute(p) && g.cwd === null) return [hit("rm-unreadable-target", [])];
+		if ((!path.isAbsolute(p) && g.cwd === null) || INTERIOR_PARENT.test(p)) return [hit("rm-unreadable-target", [])];
 		const followsLeaf = /\/\.?$/.test(p);
 		const forms = targetForms(path.isAbsolute(p) ? p : `${g.cwd}/${p}`, followsLeaf);
 		const rule = targetRule(forms, g);

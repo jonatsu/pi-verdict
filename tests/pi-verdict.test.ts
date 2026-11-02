@@ -9717,6 +9717,14 @@ describe("graded recursive delete (ADR-0013)", () => {
 		await denies(`D=c; $` + `{D}d /etc; ${RM} x`, "rm-unreadable-target");
 	});
 
+	test("a .. after a named component is unreadable, since that component may be a symlink", async () => {
+		await denies(`ln -s ~/src build && ${RM} build/../Documents`, "rm-unreadable-target");
+		await denies(`ln -s ~/src build && ${RM} ${PROJ}/build/../Documents`, "rm-unreadable-target");
+		await denies(`${RM} vendor/../x`, "rm-unreadable-target");
+		await denies(`${RM} ~/src/../Documents`, "rm-unreadable-target");
+		await reachesClassifier(`${RM} ./build`);
+	});
+
 	test("a long here-document that writes code keeps relative deletes readable", async () => {
 		const longFile = `cat > src/x.ts <<'EOF'\n${"export function f() { return source(); }\n".repeat(300)}EOF`;
 		expect(await afterEarlier(longFile, `${RM} build`)).toBe("undefined");
