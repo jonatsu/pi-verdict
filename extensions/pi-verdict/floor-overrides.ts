@@ -22,7 +22,7 @@ export const NO_OVERRIDES: FloorOverrides = new Map();
 
 /** Rules no override may change: the catastrophic deletes, the agent's own credential store, and the
  *  write whose kernel target is unknowable, which is a fail-closed mechanism rather than a policy.
- *  `rm-recursive` now decides only the raw text of a Python cell, where it alone catches `rm -rf ~/` and `/*`. */
+ *  `rm-recursive` decides the deletes grading cannot place and a Python cell's raw text, where it alone catches `rm -rf ~/`. */
 export const NOT_OVERRIDABLE: ReadonlySet<string> = new Set(["rm-root", "rm-recursive", "rm-git", "S0:agent-db", "unresolved-symlink"]);
 
 /** Returns the overrides a raw `floorOverrides` value declares, and a warning for each entry it ignores.

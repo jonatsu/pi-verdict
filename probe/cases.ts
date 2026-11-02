@@ -10,6 +10,7 @@
 // This module imports TYPES ONLY from the extension (see probe.ts): a value import would hoist
 // above the runner's env setup and compute HOME_RULE_ROOTS from the wrong home.
 
+import os from "node:os";
 import type { FixtureTree } from "./fixtures.ts";
 
 /** The layer that must decide the call (assert the source, not the verdict). */
@@ -61,6 +62,8 @@ export interface Case {
 	kernelOpens?: string;
 	/** POSIX-only families (symlink + /etc). */
 	skipOn?: "win32";
+	/** The session cwd the runs use: the fixture work directory unless `home`. */
+	sessionCwd?: "home";
 	/** The host the runs present; omp unless the case is about pi. */
 	host?: "pi";
 	/** Defect item number (from the source handover's ledger). */
@@ -1851,12 +1854,37 @@ export function buildCases(fx: FixtureTree): Case[] {
 			ref: "ADR-0013",
 			expected: { layer: "classifier" },
 		},
+		{
+			label: "overwriting an existing key file is an S0 deny",
+			family: "path-tier",
+			tool: "write",
+			input: { path: `${fx.root}/keys/existing.${"pem"}`, content: "x" },
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "a .pub symlink to a private key is an S0 deny",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.root}/keys/leak.pub` },
+			skipOn: "win32",
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
+		{
+			label: "creating authorized_keys in the SSH home stays an S0 deny",
+			family: "path-tier",
+			tool: "write",
+			input: { path: "~/.ssh/authorized_keys", content: "x" },
+			ref: "ADR-0013",
+			expected: { layer: "rule", reasonIncludes: "S0" },
+		},
 	);
 
 	// ---- graded-delete (ADR-0013) ------------------------------------------------------
 	// A recursive delete is graded by its targets: the project is the session cwd.
 	const rmRf = "rm " + "-rf";
-	const deleteRows: Array<[string, string, Expectation, Record<string, unknown>?]> = [
+	const deleteRows: Array<[string, string, Expectation, Record<string, unknown>?, "posix"?]> = [
 		["the filesystem root is rm-root", `${rmRf} /`, { layer: "rule", ruleId: "rm-root" }],
 		["a glob over the home directory is rm-root", `${rmRf} ~/*`, { layer: "rule", ruleId: "rm-root" }],
 		["$HOME is rm-root", `${rmRf} $HOME`, { layer: "rule", ruleId: "rm-root" }],
@@ -1865,18 +1893,55 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["a delete through xargs keeps the rm-recursive deny", `ls | xargs ${rmRf}`, { layer: "rule", ruleId: "rm-recursive" }],
 		["an in-project delete reaches the classifier", `${rmRf} build`, { layer: "classifier" }],
 		["a user allow does not admit an in-project delete", `${rmRf} build`, { layer: "classifier" }, { allow: ["^rm\\b"] }],
+		["a glob over the root is rm-root", `${rmRf} /*`, { layer: "rule", ruleId: "rm-root" }],
+		["an operand the gate cannot expand is rm-unreadable-target", `${rmRf} $TARGET`, { layer: "rule", ruleId: "rm-unreadable-target" }],
+		[
+			"a symlinked vendor/lib is graded where it lands",
+			`${rmRf} vendor/lib/`,
+			{ layer: "rule", ruleId: "rm-outside-project" },
+			undefined,
+			"posix",
+		],
+		[
+			"a trailing slash follows a symlinked directory",
+			`${rmRf} link/`,
+			{ layer: "rule", ruleId: "rm-outside-project" },
+			undefined,
+			"posix",
+		],
+		["deleting the symlink itself stays in the project", `${rmRf} link`, { layer: "classifier" }, undefined, "posix"],
 	];
-	for (const [label, command, expected, config] of deleteRows) {
+	for (const [label, command, expected, config, posix] of deleteRows) {
 		cases.push({
 			label,
 			family: "graded-delete",
 			tool: "bash",
 			input: { command },
 			...(config ? { config } : {}),
+			...(posix ? { skipOn: "win32" as const } : {}),
 			ref: "ADR-0013",
 			expected,
 		});
 	}
+	cases.push(
+		{
+			label: "a cwd argument at home puts the delete outside the project",
+			family: "graded-delete",
+			tool: "bash",
+			input: { command: `${rmRf} build`, cwd: os.homedir() },
+			ref: "ADR-0013",
+			expected: { layer: "rule", ruleId: "rm-outside-project" },
+		},
+		{
+			label: "a session cwd at home has no inside",
+			family: "graded-delete",
+			tool: "bash",
+			input: { command: `${rmRf} build` },
+			sessionCwd: "home",
+			ref: "ADR-0013",
+			expected: { layer: "rule", ruleId: "rm-outside-project" },
+		},
+	);
 
 	// ---- floor-overrides (ADR-0013) ----------------------------------------------------
 	// A scoped override lifts one floor rule only where every form of the call sits in its scope, and
@@ -1967,7 +2032,46 @@ export function buildCases(fx: FixtureTree): Case[] {
 			ref: "ADR-0013",
 			expected: { layer: "rule", ruleId: "sudo" },
 		},
+		{
+			label: "a scoped rm-outside-project override asks only for targets inside its scope",
+			family: "floor-overrides",
+			tool: "bash",
+			input: { command: `${rmRf} /opt/scratch/x` },
+			config: { floorOverrides: { "rm-outside-project": { action: "ask", paths: ["/opt/scratch"] } } },
+			ref: "ADR-0013",
+			expected: softened,
+		},
+		{
+			label: "a scoped rm-outside-project override keeps the deny outside its scope",
+			family: "floor-overrides",
+			tool: "bash",
+			input: { command: `${rmRf} /opt/other` },
+			config: { floorOverrides: { "rm-outside-project": { action: "ask", paths: ["/opt/scratch"] } } },
+			ref: "ADR-0013",
+			expected: { layer: "rule", ruleId: "rm-outside-project" },
+		},
 	);
+	// An override naming a rule that cannot be overridden is skipped with a note; the rule stays on.
+	const notOverridable: Array<[string, string, Record<string, unknown>, Expectation, "posix"?]> = [
+		["rm-root", "bash", { command: `${rmRf} /` }, { layer: "rule", ruleId: "rm-root" }],
+		["rm-git", "bash", { command: `${rmRf} .git` }, { layer: "rule", ruleId: "rm-git" }],
+		["rm-recursive", "eval", { language: "py", code: `!${rmRf} ~/` }, { layer: "rule", ruleId: "rm-recursive" }],
+		["S0:agent-db", "read", { path: `${agentDirSlice}/agent.db` }, { layer: "rule", reasonIncludes: "S0" }],
+		["unresolved-symlink", "write", { path: fx.loop, content: "x" }, { layer: "rule", reasonIncludes: "unresolved symlink" }, "posix"],
+	];
+	for (const [id, tool, input, expected, posix] of notOverridable) {
+		cases.push({
+			label: `${id} cannot be overridden`,
+			family: "floor-overrides",
+			tool,
+			input,
+			config: { floorOverrides: { [id]: "off" } },
+			degradedConfig: true,
+			...(posix ? { skipOn: "win32" as const } : {}),
+			ref: "ADR-0013",
+			expected,
+		});
+	}
 
 	// ---- command-rules (ADR-0013) ------------------------------------------------------
 	// A command rule matches on the command words: a deny in layer 2, an ask in layer 4b, both before
@@ -1992,6 +2096,23 @@ export function buildCases(fx: FixtureTree): Case[] {
 		["a commit message naming the rule's words leaves the allow", "git commit -m 'git add -A'", { layer: "allow" }],
 		["an ask rule beats a user allow", "systemctl restart nginx", { layer: "rule-ask", reasonIncludes: "user-command:system-restart" }],
 		["exclude_args clears an ask rule", "systemctl --user restart pipewire", { layer: "allow" }],
+		["a quoted block word still matches", 'git add "."', { layer: "rule", ruleId: "user-command:no-bulk-add" }],
+		[
+			"a heredoc commit stays clear of a git add rule",
+			"git commit -m \"$(cat <<'EOF'\nfix: name the paths\nEOF\n)\"",
+			{ layer: "classifier" },
+		],
+		["an unknown option before the subcommand fails closed", "git --frob add -A", { layer: "rule", ruleId: "user-command:no-bulk-add" }],
+		[
+			"a rule past the action-line cap still denies",
+			`echo ${"x".repeat(9000)} && git add -A`,
+			{ layer: "rule", ruleId: "user-command:no-bulk-add" },
+		],
+		[
+			"a rule-file edit through cd is a self-protection deny",
+			`cd ${agentDirSlice}/config && echo {} > pi-verdict-rules/x.json`,
+			{ layer: "rule", reasonIncludes: "self-protection" },
+		],
 	];
 	for (const [label, command, expected] of commandRuleRows) {
 		cases.push({ label, family: "command-rules", tool: "bash", input: { command }, config: commandRules, ref: "ADR-0013", expected });

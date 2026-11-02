@@ -47,9 +47,9 @@ function stubModel(id: string): HostModel {
 }
 
 /** Build the per-run AdjudicateEnv. */
-function envFor(hasUI: boolean, withModel: boolean, hostKind: "omp" | "pi"): AdjudicateEnv {
+function envFor(hasUI: boolean, withModel: boolean, hostKind: "omp" | "pi", cwd: string = fx.work): AdjudicateEnv {
 	return {
-		cwd: fx.work,
+		cwd,
 		hostKind,
 		hasUI,
 		getModel: withModel ? () => ({ model: stubModel("probe-stub"), thinking: "off" as const }) : () => null,
@@ -64,12 +64,12 @@ function envFor(hasUI: boolean, withModel: boolean, hostKind: "omp" | "pi"): Adj
 }
 
 /** Write the config for a case (or `{}`), construct the state, and reload against the cwd. */
-function makeState(config: Record<string, unknown> | null): { state: SessionState; skipped: string[] } {
+function makeState(config: Record<string, unknown> | null, cwd: string = fx.work): { state: SessionState; skipped: string[] } {
 	const cfgPath = path.join(agentDir, "config", "pi-verdict.json");
 	fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
 	fs.writeFileSync(cfgPath, JSON.stringify(config ?? {}, null, 2));
 	const state = new ext.SessionState();
-	const report = state.reloadRules(fx.work);
+	const report = state.reloadRules(cwd);
 	return { state, skipped: report.skipped };
 }
 
@@ -169,20 +169,21 @@ async function runCase(c: Case, consumerPolicy: Record<string, unknown>): Promis
 	}
 
 	const call = { toolName: c.tool, input: c.input };
-	const { state: stateA, skipped: skipA } = makeState(c.config ?? null);
+	const sessionCwd = c.sessionCwd === "home" ? os.homedir() : fx.work;
+	const { state: stateA, skipped: skipA } = makeState(c.config ?? null, sessionCwd);
 	if (skipA.length > 0 && !c.degradedConfig) {
 		return { c, channel: "A", message: `config skipped entries: ${skipA.join(", ")}`, pass: false };
 	}
 	const hostKind = c.host ?? "omp";
-	const a = await ext.adjudicate(stateA, call, envFor(false, false, hostKind));
-	const b = await ext.adjudicate(stateA, call, envFor(true, true, hostKind));
+	const a = await ext.adjudicate(stateA, call, envFor(false, false, hostKind, sessionCwd));
+	const b = await ext.adjudicate(stateA, call, envFor(true, true, hostKind, sessionCwd));
 
 	const runs: Array<["A" | "B" | "C", Verdict]> = [
 		["A", a],
 		["B", b],
 	];
 	if (c.policy === "consumer") {
-		const { state: stateC, skipped: skipC } = makeState(consumerPolicy);
+		const { state: stateC, skipped: skipC } = makeState(consumerPolicy, sessionCwd);
 		if (skipC.length > 0) {
 			return { c, channel: "C", message: `consumer config skipped entries: ${skipC.join(", ")}`, pass: false };
 		}

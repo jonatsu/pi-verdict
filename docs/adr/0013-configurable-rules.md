@@ -125,8 +125,9 @@ A new user-only key, `floorOverrides`, changes one built-in rule by its id:
   `code-loading`. `docs/configuration.md` lists every id.
 - **Not overridable by `floorOverrides`.** Self-protection (a separate layer, ADR-0005), `rm-root`, `rm-git`,
   `S0:agent-db` (the agent's own credential store) and `unresolved-symlink` (a fail-closed mechanism, not a policy rule).
-  `rm-recursive` is not overridable either: once decision 4 grades shell deletes by target, it decides only the raw
-  text of a Python cell's shell lines, where it alone catches `rm -rf ~/` and `rm -rf /*`. An override naming one of
+  `rm-recursive` is not overridable either: once decision 4 grades shell deletes by target, it decides only the deletes
+  that grading cannot place (an `rm` after `xargs`, inside `-exec` or an unsound view, which decision 4 keeps denied) and
+  the raw text of a Python cell's shell lines, where it alone catches `rm -rf ~/` and `rm -rf /*`. An override naming one of
   them, or an unknown id, is ignored with a notification, and the rule stays on. The two global
   switches keep their present meaning for these rules: `autoDeny: false` turns their deny into an ask, and
   `builtinDenyFloor: false` turns them off.

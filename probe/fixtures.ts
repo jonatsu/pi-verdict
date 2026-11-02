@@ -76,6 +76,10 @@ export function buildFixtures(agentDir: string): FixtureTree {
 	mkdirp(path.join(root, "protected", "sub"));
 	writeFile(path.join(root, "gnupghome", "pubring.kbx"), "gnupghome-keyring\n");
 	mkdirp(path.join(root, "escape"));
+	// ADR-0013 fixtures: key files for the signature cases.
+	writeFile(path.join(root, "keys", "existing.pem"), "probe test key\n");
+	writeFile(path.join(root, "keys", "id_rsa"), "probe private key\n");
+	mkdirp(path.join(work, "vendor"));
 
 	// XDG_CONFIG_HOME tree: the homes the item-9 cases name.
 	writeFile(path.join(root, "xdg", "age", "key.txt"), "xdg-age-key\n");
@@ -97,6 +101,10 @@ export function buildFixtures(agentDir: string): FixtureTree {
 		fs.symlinkSync("/", backslashLink);
 		fs.symlinkSync(path.join(agentDir, "config", "pi-verdict-trust.json"), dangling);
 		fs.symlinkSync("loop", loop);
+		fs.symlinkSync(path.join(root, "keys", "id_rsa"), path.join(root, "keys", "leak.pub"));
+		// Link targets outside the temp directories, since a graded delete lets a temp target through.
+		fs.symlinkSync("/usr/share", path.join(work, "vendor", "lib"));
+		fs.symlinkSync("/usr/share", path.join(work, "link"));
 		hasSymlinks = true;
 	}
 

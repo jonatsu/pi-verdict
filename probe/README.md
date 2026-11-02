@@ -27,7 +27,9 @@ matching and the deployed `deny` regex took over, C reports the `user deny rule`
 case fails.
 
 Every run presents the host as omp (`AdjudicateEnv.hostKind`). A case with `host: "pi"` runs as pi
-instead, for behaviour that differs between the hosts, such as an `xd://` target.
+instead, for behaviour that differs between the hosts, such as an `xd://` target. Every run uses
+the fixture work directory as the session cwd; a case with `sessionCwd: "home"` uses the home
+directory instead, for behaviour that depends on where the project is, such as a graded delete.
 
 ## Layer vocabulary
 
