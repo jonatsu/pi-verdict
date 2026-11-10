@@ -49,23 +49,28 @@ positions and its options that take a value, so a value is skipped unless the op
 - **Copiers** put the content where a later command can read it, and only their sources are graded: `cp`, `mv`,
   `scp`, `rsync` (every positional but the last, or every positional when `-t`/`--target-directory` names the
   destination), `tar` in create mode (the files after the options; the `-f` archive is not graded), `zip` (every
-  positional after the archive name), `7z a` (likewise). A destination is a write, which is a separate question,
+  positional after the archive name), `7z a` (likewise). tar's append and update modes (`r`, `u`) read their
+  files as create mode does. An old-style tar bundle (`tar czf out.tgz .env`) is read as options, and its `f`
+  takes the next word as the archive. zip's `-x` and `-i` take a list that runs to the next option word, so
+  `zip -r a.zip . -x .env '*.pem'` grades nothing after `-x`. A destination is a write, which is a separate question,
   so `cp .env.example .env` passes.
 - **Loaders** put the content into the shell's environment: `source` and `.`, first positional only. omp keeps
   one shell per session, so a loaded secret stays in that shell, where a later `env` prints it; that is why
   `source .env` denies while `docker run --env-file .env` goes to the classifier.
 - **Uploads** send the content off the machine: curl's `-d`/`--data`/`--data-binary`/`--data-ascii`/`--json` and
   `-H` with an `@file` value, `--data-urlencode` with `@file` or `name@file`, `-F` with `name=@file` or `name=<file`,
-  `-T`/`--upload-file`, and `-K`/`--config`; wget's `--post-file` and `--body-file`; `gh gist create` and its file
+  `-T`/`--upload-file`; wget's `--post-file` and `--body-file`; `gh gist create` and its file
   operands. curl's `--data-raw` sends its text literally and is not graded.
-- **`xargs -a`/`--arg-file`** reads its value as a file of arguments.
+- **`xargs`** is a wrapper whose command is found after its options, and its `-a`/`--arg-file` value is a file
+  it reads, so `… | xargs cat .env` and `xargs -a .env echo` both deny.
 
 Every option in an entry's value table has its value skipped (`grep -C 3 .env README.md` reads `README.md` only;
 `rsync -e "ssh -i deploy.pem"` and `--exclude .env` are skipped). An option the table does not know is read as a
 flag without a value; a missing value-taking option can only add a false deny, which the probe cases catch.
 
-Input redirected from a file (`cmd < .env`, `cmd 0< .env`) reads it, whatever the command is. A here-string or a
-here-document is no file and is not graded.
+Input redirected from a file reads it, whatever the command is: `<`, `N<` and `<>` count (`cmd < .env`,
+`cmd 0< .env`). `<&` duplicates a descriptor, `<<` and `<<<` are a here-document and a here-string, and `<(` is a
+process substitution; none of them names a file, so none is graded.
 
 ### Where a reading command is found
 
@@ -81,16 +86,18 @@ the operand is graded locally by its name; the quoted `ssh prod 'cat /app/.env'`
 Each graded word is expanded as user allows expand it (ADR-0008): a leading `~`, `$HOME` and `${HOME}`. A
 relative word resolves against the directory the command runs in, which `commandWorkingDirectory`
 (`delete-grade.ts`) computes from the call's `cwd` and a leading `cd X &&`; so `cd ~/.kube && cat config` denies.
-When that directory is unknown (another directory change, `CDPATH`, a session that voided it), only the S0
-entries that match a file name anywhere grade a relative word, since they do not depend on the directory.
+When that directory is unknown (another directory change, `CDPATH`, a session that voided it), a relative word
+is graded by name only: its literal text is tested against every S0 entry that is not anchored to an absolute
+path, so `cd ~; cat .ssh/config` still denies through the `.ssh/` entry.
 
 The expanded path is graded by `classifyPath` as a read. The call denies when any word grades an S0 deny, with
 that entry's id (`S0:env`, `S0:pem`, `S0:ssh` …) and the reason `rule S0:<entry>: shell command reads a secret
 file`. The S0 exemptions hold as for a file tool: `.env.example`, `.env.sample`, `.env.template` and a `.pub` key
 are no secret, so `cat .env.example` passes.
 
-A word whose last path segment is literal but whose directory part holds a variable (`cat "$PWD/.env"`,
-`cat $DIR/x.pem`) is graded by the name-anywhere S0 entries on that segment alone. Any other expansion
+A word whose directory part holds a variable or a glob but whose tail is literal (`cat "$PWD/.env"`,
+`cat $DIR/x.pem`, `cat "$ROOT/.ssh/config"`, `cat apps/*/.env`) is graded by name only on the literal text after
+the last expansion, as above. Any other expansion
 (`cat $F`, `cat ~user/x`, `cat {a,b}.env`) is not graded; the classifier decides it, as today.
 
 Globs are expanded in a deny-side mode that follows bash's defaults, because an over-match here denies:
@@ -99,6 +106,7 @@ Globs are expanded in a deny-side mode that follows bash's defaults, because an 
 - `*` and `?` do not match a leading dot, but a pattern that starts with `.` does (`cat .env*` matches `.env` and
   `.env.local`); `.` and `..` never match.
 - The match is case-sensitive.
+- A pattern that matches nothing denies nothing (bash passes it through literally, and the command fails).
 
 A session that turned on `dotglob`, `nocaseglob` or `GLOBIGNORE` is a residual. The allow side keeps its own mode,
 which matches hidden entries and ignores case, because there an over-match only refuses an allow.
@@ -124,10 +132,15 @@ flowchart LR
 ### Fail direction
 
 The grading only adds denies; it never allows. Every case it cannot decide passes to the later layers as today:
-an unsound parse (a here-document, a backtick, an `eval` anywhere in the command disables the grading for the
-whole command), an operand that may expand, and a command over `BASH_MAX_MATCH_LEN`, which is not graded at all,
-since a word cut at the cap (`.env.example` cut to `.env`) would deny falsely. The floor's tripwires still decide
-those calls.
+an operand that may expand, and a command over `BASH_MAX_MATCH_LEN`, which is not graded at all, since a word cut
+at the cap (`.env.example` cut to `.env`) would deny falsely. The floor's tripwires still decide those calls.
+
+An unsound construct (a here-document, a backtick, `$'…'`, an `eval`) makes the word view stop trusting the rest
+of the command. The segments that end before the first unsound word are still graded, so
+`set -a; source .env; set +a; python3 - <<'EOF'` denies on its `source .env`. A command substitution inside
+double quotes (`TOKEN="$(grep '^TOKEN=' .env | cut -d= -f2)"`) is the one unsound spelling an agent writes
+often; its body, found by a linear scan for the balancing `)`, is graded as a nested script. Everything from the
+first other unsound word on is not graded.
 
 ### Cost
 
@@ -145,19 +158,26 @@ fold this pass into its single reading.
   binds it to the call's directories and passes it to `classifyBash`, as it does the `DeleteGrader`.
 - `shellWords` drops a redirection with its target word, and it is a public export. A new tokenizer-level
   function returns the input-redirection targets beside the words, so the existing word view does not change.
-- Before its branch merges, the build runs `bun run replay` there: the count of
-  recorded gray-zone calls that now deny under an S0 id is the false-deny estimate, and only `--show`, run by the
-  user in a terminal, shows which commands they are.
+- Before its branch merges, the build runs `bun run replay` there. The count of recorded gray-zone calls that now
+  deny under an S0 id is an upper bound on the false denies, since it also counts the true ones. The user reviews
+  the `--show` list, which only they can run in a terminal, before the merge.
 
 ### S0 entries that over-match
 
 S0 already denies a `read` of some ordinary files, and this ADR extends that to their shell reads, where an agent
 could fall back today: the `credentials` entry matches any file name holding the word (`src/credentials.ts`,
 `docs/credentials.md`), `.pem` matches public certificates, and `.env.dist` or `.env.local.example` are not
-exempt. The build narrows these in the S0 table, so file tools and shell reads change together: `credentials`
-stops matching a file with a source-code or documentation extension, and `.env.dist` joins the exemptions, along
-with any `.env*` name ending in `.example`, `.sample` or `.template`. A public `.pem` certificate stays denied,
-because the name cannot tell it from a key; a scoped override covers a project that reads its certificates.
+exempt. A separate build slice narrows these in the S0 table, so file tools and shell reads change together.
+It waits for the user's decision, and it needs its own CHANGELOG entry and a `docs/security-principles.md` note,
+because a `read` of such a file turns from a deny into a rule allow:
+
+- `credentials` stops matching a file whose extension is on a closed source and documentation list: `.ts`,
+  `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.go`, `.rs`, `.java`, `.kt`, `.rb`, `.php`, `.cs`, `.c`, `.h`,
+  `.cpp`, `.swift`, `.md`, `.rst`, `.adoc`. `credentials.json`, `.yml`, `.yaml`, `.xml`, `.txt`, `.conf`, `.ini`
+  and an extensionless `credentials` stay denied, and so does every file under a directory named `credentials`.
+- `.env.dist` joins the exemptions, along with any `.env*` name ending in `.example`, `.sample` or `.template`.
+- A public `.pem` certificate stays denied, because the name cannot tell it from a key; a scoped override covers
+  a project that reads its certificates.
 
 ## Alternatives considered
 
@@ -191,14 +211,14 @@ because the name cannot tell it from a key; a scoped override covers a project t
   `node -e`, `git show HEAD:.env`), and a Python `eval` cell, whose shell lines get the raw-text view only. The
   classifier decides them, and the OS sandbox is the backstop.
 - Arguments built at run time: `xargs cat` with names from stdin, `find … | xargs cat`.
+- Quoted `"$(…)"` bodies whose parentheses a linear scan cannot balance (a `)` inside a nested quote), and every
+  other unsound construct from its first word on.
 - A recursive read or copy that walks into a secret: `grep -rn API_KEY .` prints lines of `./.env`, `cp -r config/
   backup/` copies one. User allows refuse the recursive ones that reach a credential home (ADR-0008, "Recursive
   commands"); the floor denies none of them.
 - An operand built from an expansion in its last segment, a glob under `dotglob`, `nocaseglob` or `GLOBIGNORE`, and
   a symlink to a secret created earlier in the same command.
 - A secret file whose name matches no S0 entry.
-- One unsound construct anywhere (a here-document, a backtick) disables the grading for the whole command,
-  including the segments before it.
 - A shell write over a secret (`echo x > .env`, `tee .env`, `cp a .env`). Shell writes to S0 files are a separate
   question.
 - PowerShell commands (`Get-Content .env`).
