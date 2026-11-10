@@ -232,6 +232,45 @@ recorded here.
 - **Key material** (decision 3) is also redacted from the command or eval cell under review, and OpenVPN static keys
   and PuTTY private lines are redacted beside PEM and PGP blocks.
 
+Judgement calls made during the build, each reversible at the place named:
+
+- `git rm -r` removes tracked files of its repository only, so it reaches the classifier (the `name !== "git"`
+  clause in `deleteCommands`, `shell.ts`).
+- A wrapped delete (`command rm -r`, `time rm -r`, `xargs rm -r`) or an unsound parse keeps the non-overridable
+  `rm-recursive` deny, which also decides a Python cell's raw shell lines (`NOT_OVERRIDABLE`).
+- The tripwire is the linear `inOrder(rm, -…r | --r)`, which may cross a `;`; in a Python cell, `rm x; ls -R`
+  denies. A directory change is found on the raw text and by word value, so `cd my-cd-dir` makes relative
+  operands unreadable.
+- A session that voided every user allow also voids the working directory, so after `source .venv/bin/activate`
+  a relative recursive delete denies as `rm-unreadable-target` (`|| everyAllow` in `stateOf`, `shell-state.ts`).
+- In a call where another command may run before or beside the delete, a target reached through a directory below
+  its base is unreadable: `npm ci && rm -rf node_modules/.cache` denies, while `npm run build && rm -rf build`
+  reaches the classifier (the `swappable` test in `gradeOperand`, `delete-grade.ts`).
+- The shell-state scan of an over-cap command leaves here-document bodies out (`scan`, `shell-state.ts`).
+- Command rules also match a Python cell's shell lines (`shellText`, `rules.ts`); a word holds at most 1024
+  characters (`maxTokenLength` in `COMMAND_RULE_LIMITS`); rule names are unique within one list, case-folded
+  (`parseCommandRules`); a `commandRuleFiles` entry may start with `~/` (`loadRuleFile`).
+- Self-protection's shell check denies any command naming `pi-verdict-rules`, reads included (`bashPatterns`).
+- The probe cannot load a trusted project config, so a project-added rule is pinned by the test
+  `a trusted project may add inline rules but not name rule files`.
+
+Residuals (ADR-0009):
+
+- An extglob operand such as `@(..)/*` is split at `(`, so only `@` is graded; it needs `extglob` on.
+- Command rules miss an escape inside a word (`git add \-A`), an argument from an expansion or stdin, a git alias
+  (`git -c alias.x=add x -A`), an abbreviated long option (`git add --al`), and a second run of the command after
+  one `exclude_args` word (`find -exec … \; -exec …`).
+- A scope path is resolved once, at load, so a scope directory replaced by a symlink widens the scope from the
+  next session on; a same-call move of the project directory itself is the same class.
+- A write graded as creating a new key file can race a sibling call that creates a symlink at that path, and a
+  background job can keep swapping a directory a later lone `rm -rf build/` follows.
+- A scoped bash override cannot see a directory change inside a Python cell (`os.chdir`, `%cd`), and a `-C` inside
+  a short-option bundle (`env -iC/x git push --force`) escapes its directory check. A scoped override bounds where
+  a command runs, not what it reaches (`git push <url> --force`, `gh … -R other/repo`).
+- The gate reads `CDPATH` from its own environment; rc files of omp's session shell that set `CDPATH` or
+  `cdable_vars` are not seen (not traced in omp 18.13.0).
+- A PuTTY key written with escaped newlines (`printf 'Private-Lines: 1\nAAAA…'`) keeps its body.
+
 ## Consequences
 
 The user's cc-safety-net rulebooks load into pi-verdict nearly unchanged, and agent-setup can replace its ~55 `deny`
