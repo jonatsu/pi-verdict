@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-10
+
+Configurable rules release ([ADR-0013](docs/adr/0013-configurable-rules.md)): command rules, per-rule floor overrides, secret signatures and recursive deletes graded by target.
+
 ### Added
 
 - `commandRules` and the user-only `commandRuleFiles` add command rules in cc-safety-net's rulebook rule shape plus an `action` field (`"deny"`, the default, or `"ask"`), inline or from `rulebook.json` files in `<agentDir>/config/pi-verdict-rules/` ([ADR-0013](docs/adr/0013-configurable-rules.md)): a rule matches a bash or powershell command or a Python cell's shell lines on its words, past wrappers such as `sudo` and `timeout`, git's and docker's global options, every command of a chain and `sh -c`, with short-option bundles (`-Am` holds `-A`), and never on text the command does not run, such as an `echo` argument or a commit message; an unknown option, an unsound parse or a command over eight times `BASH_MAX_MATCH_LEN` fails closed and lets the raw text decide. A deny rule decides right after the user `deny` regexes (layer 2) and an ask rule in the new layer 4b after the code-loading and softened floor asks, both before user `allow` and `tools`, with the reason `command rule <id>: <reason>` and the id (`user-command:<name>`, `user-command:<rulebook>/<name>`, `project-command:<name>`) in the audit's `rule` field. A trusted project may add inline rules only. An invalid rule or an unreadable rule file is skipped, named and sets `policyDegraded`. Self-protection denies agent writes to the rules directory and every shell command naming `pi-verdict-rules`. `bun run rules-verify` runs a rulebook's `tests` fixtures against the matcher
@@ -551,7 +555,8 @@ The accumulated fork rounds ship under plain semver, superseding the planned `0.
 - `CONTEXT.md`: domain glossary (Auto Mode / adjudication / rule layer / gray zone / classifier / self-reflection / fail-closed / three-state verdict / ask degradation)
 - `package.json` + `tsconfig.json`: extension type checking (`bun run typecheck`)
 
-[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/jonatsu/pi-verdict/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/jonatsu/pi-verdict/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/jonatsu/pi-verdict/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/jonatsu/pi-verdict/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/jonatsu/pi-verdict/compare/v0.23.0...v0.24.0
