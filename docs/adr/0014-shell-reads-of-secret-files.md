@@ -1,7 +1,7 @@
 # 0014 - The floor denies a shell command that reads a secret file
 
 ---
-status: proposed
+status: accepted
 date: 2026-11-10
 ---
 
@@ -168,7 +168,7 @@ S0 already denies a `read` of some ordinary files, and this ADR extends that to 
 could fall back today: the `credentials` entry matches any file name holding the word (`src/credentials.ts`,
 `docs/credentials.md`), `.pem` matches public certificates, and `.env.dist` or `.env.local.example` are not
 exempt. A separate build slice narrows these in the S0 table, so file tools and shell reads change together.
-It waits for the user's decision, and it needs its own CHANGELOG entry and a `docs/security-principles.md` note,
+The user approved it on 2026-11-10. It needs its own CHANGELOG entry and a `docs/security-principles.md` note,
 because a `read` of such a file turns from a deny into a rule allow:
 
 - `credentials` stops matching a file whose extension is on a closed source and documentation list: `.ts`,
