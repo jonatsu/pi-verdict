@@ -759,10 +759,10 @@ class OperandGrader {
 		const expansion = text.search(/[$*?[{]|^~/);
 		if (expansion === -1) {
 			if (homeRelative && this.where.homeReassigned) this.byName(text);
-			else if (path.isAbsolute(text)) this.fully(text, "/");
+			else if (path.isAbsolute(text)) this.fully(text, ["/"]);
 			else {
 				if (this.where.workingDirectory === null) this.byName(text);
-				for (const base of this.bases) this.fully(text, base);
+				this.fully(text, this.bases);
 			}
 			return;
 		}
@@ -778,19 +778,23 @@ class OperandGrader {
 		if (tail !== -1) this.byName(text.slice(tail));
 	}
 
-	/** Grades a path as written, from `base`, in every canonical form while the budget lasts, each pair once; past
-	 *  the budget, by its spelling. The text keeps its `..`, so the kernel walk resolves a symlink before it. */
-	private fully(text: string, base: string): void {
-		const key = `${base}\0${text}`;
-		if (this.graded.has(key)) return;
-		this.graded.add(key);
-		if (this.formsLeft <= 0) {
-			this.byName(path.resolve(base, text));
-			return;
+	/** Grades a path as written, from each of `bases`, in every canonical form while the budget lasts, each pair
+	 *  once; past the budget, by its spelling. One operand spends one unit however many bases it is graded from.
+	 *  The text keeps its `..`, so the kernel walk resolves a symlink before it. */
+	private fully(text: string, bases: readonly string[]): void {
+		const fresh = bases.filter((base) => !this.graded.has(`${base}\0${text}`));
+		if (fresh.length === 0) return;
+		for (const base of fresh) this.graded.add(`${base}\0${text}`);
+		const spend = this.formsLeft > 0;
+		if (spend) this.formsLeft--;
+		for (const base of fresh) {
+			if (!spend) {
+				this.byName(path.resolve(base, text));
+				continue;
+			}
+			const { rules, forms } = s0ReadHits(text, base);
+			for (const rule of rules) this.hits.push({ rule, reason: `rule ${rule}: shell command reads a secret file`, forms });
 		}
-		this.formsLeft--;
-		const { rules, forms } = s0ReadHits(text, base);
-		for (const rule of rules) this.hits.push({ rule, reason: `rule ${rule}: shell command reads a secret file`, forms });
 	}
 
 	/** A hit by spelling alone carries no forms, so only an unscoped override lifts it. */
@@ -812,7 +816,7 @@ class OperandGrader {
 			if (names === null) continue;
 			for (const name of names) {
 				if (this.namesLeft-- <= 0) return;
-				if ((hidden || !name.startsWith(".")) && globMatches(tokens, name)) this.fully(dir + name, base);
+				if ((hidden || !name.startsWith(".")) && globMatches(tokens, name)) this.fully(dir + name, [base]);
 			}
 		}
 	}
@@ -904,27 +908,48 @@ export function secretReads(command: string, where: ReadContext): readonly Floor
 }
 
 /** The directories a relative operand may resolve from when the working directory is unknown: the command cwd,
- *  then each literal `cd` or `pushd` target of the command and its `sh -c` scripts, resolved from every base
- *  found before it, so `cd ~/.config && cd gh` reaches `~/.config/gh`. At most `MAX_CD_TARGETS` beyond the cwd. */
+ *  then the literal `cd` and `pushd` targets of the command and its `sh -c` scripts, at most `MAX_CD_TARGETS`.
+ *  Absolute and home targets come first, so relative decoys cannot crowd them out; a relative target is resolved
+ *  from the target before it (`cd ~/.config && cd gh` reaches `~/.config/gh`) and from the command cwd. */
 function directoryBases(prefix: SoundPrefix, where: ReadContext): string[] {
-	const bases = [where.commandCwd];
-	const visit = (p: SoundPrefix, depth: number): void => {
-		for (const words of p.commands) {
-			const at = words.findIndex((word) => !ASSIGNMENT.test(word) && !PREFIX_WORDS.has(word));
-			const target = words[at + 1];
-			if (at === -1 || !["cd", "pushd"].includes(words[at]) || target === undefined || target.startsWith("-")) continue;
-			const { text, homeRelative } = spelled(target);
-			if (/[$*?[{~]/.test(text) || (homeRelative && where.homeReassigned)) continue;
-			for (const from of path.isAbsolute(text) ? ["/"] : [...bases]) {
-				const next = path.resolve(from, text);
-				if (bases.length > MAX_CD_TARGETS) return;
-				if (!bases.includes(next)) bases.push(next);
-			}
+	const absolute: string[] = [];
+	const chained: string[] = [];
+	const fromCwd: string[] = [];
+	let latest = where.commandCwd;
+	for (const text of cdTargets(prefix, where, 0)) {
+		latest = path.resolve(latest, text);
+		if (path.isAbsolute(text)) absolute.push(latest);
+		else {
+			chained.push(latest);
+			fromCwd.push(path.resolve(where.commandCwd, text));
 		}
-		if (depth < SHELL_RECURSION_DEPTH) for (const script of p.scripts) visit(soundPrefix(script), depth + 1);
-	};
-	visit(prefix, 0);
+	}
+	const bases = [where.commandCwd];
+	for (const dir of [...absolute, ...chained, ...fromCwd]) {
+		if (bases.length > MAX_CD_TARGETS) break;
+		if (!bases.includes(dir)) bases.push(dir);
+	}
 	return bases;
+}
+
+/** `cd` and `pushd` options that come before the directory: `-P`, `-L`, `-e`, `-@`, pushd's `-n`, and `--`. */
+const CD_OPTION = /^-(?:[PLe@n]+|-)$/;
+
+/** The literal `cd` and `pushd` targets in order, home expanded; a target with an expansion is skipped. */
+function cdTargets(prefix: SoundPrefix, where: ReadContext, depth: number): string[] {
+	const targets: string[] = [];
+	for (const words of prefix.commands) {
+		let at = words.findIndex((word) => !ASSIGNMENT.test(word) && !PREFIX_WORDS.has(word));
+		if (at === -1 || !["cd", "pushd"].includes(words[at])) continue;
+		do at++;
+		while (at < words.length && CD_OPTION.test(words[at]));
+		const target = words[at];
+		if (target === undefined || target.startsWith("-") || target.startsWith("+")) continue;
+		const { text, homeRelative } = spelled(target);
+		if (!/[$*?[{~]/.test(text) && !(homeRelative && where.homeReassigned)) targets.push(text);
+	}
+	if (depth < SHELL_RECURSION_DEPTH) for (const script of prefix.scripts) targets.push(...cdTargets(soundPrefix(script), where, depth + 1));
+	return targets;
 }
 
 function gradePrefix(prefix: SoundPrefix, grader: OperandGrader, depth: number): void {

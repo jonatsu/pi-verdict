@@ -238,16 +238,18 @@ reviews; the build reviews are summarized here) changed these points. Each only 
   an option the scan does not model is taken for a flag, so `bash -l -c 'cat .env'` denies. The words before the
   first unsound word in its own segment are read too (`cat .env <<<x`).
 - **Directory candidates.** When the working directory is unknown, a relative operand is also graded from the
-  command cwd and from up to eight literal `cd` or `pushd` targets in the command and its `sh -c` scripts, each
-  resolved from every directory found before it, so `cd ~/.kube; cat config`, `(cd ~/.kube && cat config)` and
-  `cd ~/.config && cd gh && cat hosts.yml` deny.
+  command cwd and from up to eight literal `cd` or `pushd` targets in the command and its `sh -c` scripts, so
+  `cd ~/.kube; cat config`, `(cd ~/.kube && cat config)` and `cd ~/.config && cd gh && cat hosts.yml` deny.
+  Absolute and home targets come first, so relative decoys cannot crowd them out. A relative target resolves from
+  the target before it and from the command cwd, which keeps the candidates linear in the number of `cd` words.
+  Options before the target (`cd -P`, `cd -L`, `cd --`) are skipped.
 - **More readers and wrappers.** `rev`, `fmt`, `pr`, `shuf`, `expand`, `unexpand` and `join` read their files;
   `install` copies; `sqlite3` reads its database and `-init` file, which covers the agent's own `agent.db`;
   `openssl` reads its `-in`, `-inkey` and `-key` values; curl prints a `file://` URL's file. `builtin`, `setsid`,
   `busybox` and `flock` (with its lock file) are wrappers. `/proc/$$/` and `/proc/$BASHPID/` read as
   `/proc/self/`.
 - **Bounds.** Each distinct path is graded once, so repeating a word does not spend the `MAX_GRADED_OPERANDS`
-  budget that grades a symlink's real path. Globs examine at most 4096 directory entries per call; past that,
+  budget that grades a symlink's real path. An operand spends one unit however many directories it is graded from. Globs examine at most 4096 directory entries per call; past that,
   globs are left to the classifier. The glob matcher backtracks only to the last star. The `credentials` S0
   entry tests a form with two linear checks instead of a lookahead with a repeated group.
 - **Fail closed.** A grading that throws denies the call under the rule id `S0`.
@@ -263,7 +265,7 @@ Residuals added (ADR-0009):
   `F=.env; cat "$F"`.
 - A source file that holds a hard-coded secret, such as an embedded project's `credentials.h`: the user chose to
   treat source and documentation files named for credentials as no secret.
-- More than eight decoy `cd` targets before the real one, and more than `MAX_GRADED_OPERANDS` distinct operands
+- More than eight relative decoy `cd` targets before a relative real one, and more than `MAX_GRADED_OPERANDS` distinct operands
   before a symlink to a secret (past the budget, an operand is graded by its spelling).
 - A glob after 4096 directory entries were examined in the same call, for example after a glob over a large
   directory an earlier call created: later globs are left to the classifier.

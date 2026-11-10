@@ -9704,6 +9704,23 @@ describe("shell reads of secret files (ADR-0014)", () => {
 		}
 	});
 
+	test("relative cd decoys cannot crowd out a home cd target, and cd options before the target are read", async () => {
+		expect(await s0Reason("cd a; cd b; cd c; cd d; cd e; cd f; cd g; cd h; cd ~/.kube; cat config")).toContain("S0:kube");
+		expect(await s0Reason("cd -P ~/.kube && cat config")).toContain("S0:kube");
+		expect(await s0Reason("cd -- ~/.kube && cat config")).toContain("S0:kube");
+	});
+
+	test("an operand graded from many cd targets spends one unit of the budget", async () => {
+		const link = path.join(PROJ, "notes-link");
+		fs.symlinkSync(path.join(ELSEWHERE, "live.pem"), link);
+		try {
+			const names = Array.from({ length: 20 }, (_, k) => `f${k}`).join(" ");
+			expect(await s0Reason(`cd a; cd b; cd c; cd d; cd e; cd f; cd g; cd h; cd ..; cat ${names} notes-link`)).toContain("S0:pem");
+		} finally {
+			fs.rmSync(link);
+		}
+	});
+
 	test("a relative .. after a symlinked directory is graded where the kernel resolves it", async () => {
 		const sub = path.join(ELSEWHERE, ".kube", "sub");
 		fs.mkdirSync(sub, { recursive: true });
