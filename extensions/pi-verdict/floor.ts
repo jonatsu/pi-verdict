@@ -144,9 +144,15 @@ const S0_DIRECTORY_RULES: readonly (S0Entry & { readonly homeDirs: readonly stri
 const S0_SECRET: readonly S0Entry[] = [
 	...S0_DIRECTORY_RULES,
 	// The dotless credential homes under `~/.config` and their XDG alternatives live in `anchoredS0`.
-	// `.env` and its variants, but not the `.example`, `.sample` and `.template` files a project ships.
-	{ id: "env", rule: /(^|\/)\.env(?!\.(?:example|sample|template)$)(\.|$)/i },
-	{ id: "credentials", rule: /credentials?(\.|\/|$)/i },
+	// `.env` and its variants, but not the templates a project ships: `.env.dist` and any `.env*` name ending in
+	// `.example`, `.sample` or `.template` (ADR-0014).
+	{ id: "env", rule: /(^|\/)\.env(?![^/]*\.(?:example|sample|template)$)(?!\.dist$)(\.|$)/i },
+	// A credentials file or directory, but not a source or documentation file named for the topic
+	// (`src/credentials.ts`, `credentials.test.ts`); a file under a `credentials/` directory still hits (ADR-0014).
+	{
+		id: "credentials",
+		rule: /credentials?(?:\/|$|\.(?!(?:[\w-]+\.)*(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|h|cpp|swift|md|rst|adoc)$))/i,
+	},
 	// Private SSH key names, but not their `.pub` public halves.
 	{ id: "id-rsa", rule: /(^|\/)id_rsa(?![^/]*\.pub$)/i },
 	{ id: "id-ed25519", rule: /(^|\/)id_ed25519(?![^/]*\.pub$)/i },

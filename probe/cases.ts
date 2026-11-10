@@ -1847,6 +1847,22 @@ export function buildCases(fx: FixtureTree): Case[] {
 			expected: { layer: "allow" },
 		},
 		{
+			label: "a read of a source file named for credentials is the floor's allow",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.work}/src/credentials.ts` },
+			ref: "ADR-0014",
+			expected: { layer: "allow" },
+		},
+		{
+			label: "a read of a credentials data file is an S0 deny",
+			family: "path-tier",
+			tool: "read",
+			input: { path: `${fx.work}/config/credentials.yml` },
+			ref: "ADR-0014",
+			expected: { layer: "rule" },
+		},
+		{
 			label: "creating a key store reaches the classifier",
 			family: "path-tier",
 			tool: "write",

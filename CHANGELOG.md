@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The S0 floor tier no longer treats a source or documentation file named for credentials as a secret ([ADR-0014](docs/adr/0014-shell-reads-of-secret-files.md)): `credentials` stops matching a file whose extension is `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.go`, `.rs`, `.java`, `.kt`, `.rb`, `.php`, `.cs`, `.c`, `.h`, `.cpp`, `.swift`, `.md`, `.rst` or `.adoc`, also after inner dots (`credentials.test.ts`), so reading or writing `src/credentials.ts` in the project is the floor's allow instead of an `S0:credentials` deny. `credentials.json`, `.yml`, `.conf` and other data formats, an extensionless `credentials` and every file under a `credentials/` directory stay denied. `.env.dist` and any `.env*` name ending in `.example`, `.sample` or `.template` (`.env.local.example`) join the `.env` exemptions.
+
 ## [0.27.0] - 2026-11-10
 
 Configurable rules release ([ADR-0013](docs/adr/0013-configurable-rules.md)): command rules, per-rule floor overrides, secret signatures and recursive deletes graded by target.

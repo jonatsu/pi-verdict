@@ -9385,6 +9385,35 @@ describe("secret signatures (ADR-0013)", () => {
 		expect(String((await toolCall(h, "read", { path: path.join(PROJ, ".env.local") }))?.reason)).toContain("S0");
 	});
 
+	test("a source or documentation file named for credentials, and every shipped .env template, are no secret (ADR-0014)", async () => {
+		const h = headless();
+		const plain = [
+			"src/credentials.ts",
+			"credentials.test.ts",
+			"lib/aws_credential.py",
+			"docs/credentials.md",
+			".env.dist",
+			".env.local.example",
+		];
+		for (const name of plain) {
+			expect([name, await toolCall(h, "read", { path: path.join(PROJ, name) })]).toEqual([name, undefined]);
+		}
+		expect(h.calls).toHaveLength(0);
+		const secret = [
+			"credentials",
+			"credentials.json",
+			"credentials.yml",
+			"credentials.conf",
+			"credentials/index.ts",
+			".env.local",
+			".env.example.bak",
+		];
+		for (const name of secret) {
+			const r = await toolCall(h, "read", { path: path.join(PROJ, name) });
+			expect([name, String(r?.reason)]).toEqual([name, expect.stringContaining("S0")]);
+		}
+	});
+
 	test("a public key in a credential home may be read but not written", async () => {
 		const h = headless();
 		const pub = path.join(os.homedir(), ".ssh", "id_rsa.pub");
