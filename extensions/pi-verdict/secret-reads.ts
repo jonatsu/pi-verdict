@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { HOME_VARIABLE, MAX_GRADED_OPERANDS } from "./allow-operands.ts";
 import { s0NameHits, s0ReadHits } from "./floor.ts";
 import type { FloorHit } from "./shell.ts";
-import { ASSIGNMENT, PREFIX_WORDS, soundPrefix, wordBasename } from "./shell-words.ts";
+import { ASSIGNMENT, PREFIX_WORDS, type SoundPrefix, soundPrefix, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
 // Floor: a shell command that reads a secret file (ADR-0014)
@@ -345,6 +345,21 @@ const READERS: Readonly<Record<string, ReaderSpec>> = {
 	"7z": { kind: "7z" },
 	"7za": { kind: "7z" },
 	"7zz": { kind: "7z" },
+	rev: FILES,
+	fmt: { kind: "files", short: "pw", long: ["--prefix", "--width"] },
+	pr: {
+		kind: "files",
+		short: "hlNoswW",
+		long: ["--header", "--length", "--first-line-number", "--indent", "--separator", "--width", "--page-width"],
+	},
+	shuf: { kind: "files", short: "ino", long: ["--input-range", "--head-count", "--output", "--random-source"] },
+	expand: { kind: "files", short: "t", long: ["--tabs"] },
+	unexpand: { kind: "files", short: "t", long: ["--tabs"] },
+	join: { kind: "files", short: "eot12j" },
+	install: { ...COPY, short: "gmoSt", long: ["--group", "--mode", "--owner", "--suffix", "--target-directory"] },
+	sqlite3: { kind: "options" },
+	sqlite: { kind: "options" },
+	openssl: { kind: "options" },
 	source: { kind: "load" },
 	".": { kind: "load" },
 	dd: { kind: "options" },
@@ -402,6 +417,10 @@ const WRAPPERS: Readonly<Record<string, WrapperSpec>> = {
 	command: { short: "", leading: 0 },
 	stdbuf: { short: "ioe", long: ["--input", "--output", "--error"], leading: 0 },
 	exec: { short: "a", leading: 0 },
+	builtin: { short: "", leading: 0 },
+	setsid: { short: "", leading: 0 },
+	busybox: { short: "", leading: 0 },
+	flock: { short: "wE", long: ["--timeout", "--conflict-exit-code"], leading: 1 },
 	xargs: { short: XARGS.short ?? "", long: XARGS_LONG, leading: 0 },
 	ssh: { short: "BbcDEeFIiJLlmOoPpQRSWw", leading: 1 },
 };
@@ -419,10 +438,36 @@ const CURL_FORM = new Set(["-F", "--form"]);
 const CURL_UPLOAD = new Set(["-T", "--upload-file"]);
 const WGET_UPLOAD = new Set(["--post-file", "--body-file"]);
 
+/** sqlite shell options that take the next word, which is no file. */
+const SQLITE_VALUES = new Set([
+	"-cmd",
+	"-separator",
+	"-newline",
+	"-nullvalue",
+	"-escape",
+	"-maxsize",
+	"-mmap",
+	"-pagecache",
+	"-lookaside",
+	"-heap",
+	"-vfs",
+]);
+/** openssl options whose value is a file it reads. */
+const OPENSSL_FILES = new Set(["-in", "-inkey", "-key", "-kfile", "-CAkey", "-signkey"]);
+
 const SHELL_RECURSION_DEPTH = 3;
+
+/** Glob entries examined per call; past it, globs are left to the classifier, so a large directory cannot stall
+ *  the gate. */
+const GLOB_NAME_LIMIT = 4096;
+
+/** Literal `cd` targets a relative operand is also graded from when the working directory is unknown. */
+const MAX_CD_TARGETS = 4;
 
 /** Where a shell command's relative operands resolve, and what the session's shell may have changed. */
 export interface ReadContext {
+	/** The directory the call names for the command. */
+	readonly commandCwd: string;
 	/** The directory the command runs in after a leading `cd X &&`, or null when it is unknown. */
 	readonly workingDirectory: string | null;
 	/** An earlier command of the session may have reassigned `HOME`. */
@@ -521,6 +566,8 @@ function readWords(seg: readonly string[], at: number): string[] {
 	const args = seg.slice(at + 1);
 	if (name === "dd") return args.filter((w) => w.startsWith("if=")).map((w) => w.slice(3));
 	if (name === "curl") return curlFiles(args);
+	if (name === "sqlite3" || name === "sqlite") return sqliteFiles(args);
+	if (name === "openssl") return valuesOf(args, OPENSSL_FILES);
 	if (name === "wget") return valuesOf(args, WGET_UPLOAD);
 	if (name === "gh")
 		return args[0] === "gist" && args[1] === "create"
@@ -570,6 +617,22 @@ function tarSources(args: readonly string[], spec: ReaderSpec): string[] {
 	return reads ? parsed.positionals : [];
 }
 
+/** The database an sqlite shell opens, its first positional, and an `-init` file it reads. Its options take a
+ *  single dash; those in `SQLITE_VALUES` take the next word. */
+function sqliteFiles(args: readonly string[]): string[] {
+	const files: string[] = [];
+	for (let k = 0; k < args.length; k++) {
+		const word = args[k];
+		if (word === "-init" && args[k + 1] !== undefined) files.push(args[++k]);
+		else if (SQLITE_VALUES.has(word)) k++;
+		else if (!word.startsWith("-")) {
+			files.push(word);
+			break;
+		}
+	}
+	return files;
+}
+
 /** The values of the named options among `args`, as the next word or after `=`. */
 function valuesOf(args: readonly string[], names: ReadonlySet<string>): string[] {
 	const values: string[] = [];
@@ -583,7 +646,8 @@ function valuesOf(args: readonly string[], names: ReadonlySet<string>): string[]
 }
 
 /** The files curl sends: an `@file` data or header value, a form field's `@file` or `<file`, a
- *  `--data-urlencode` `@file` or `name@file`, and an upload. `--data-raw` sends its text as written. */
+ *  `--data-urlencode` `@file` or `name@file`, an upload, and a `file://` URL, whose local file it prints. `--data-raw`
+ *  sends its text as written. */
 function curlFiles(args: readonly string[]): string[] {
 	const files: string[] = [];
 	const option = (name: string, value: string): void => {
@@ -608,6 +672,7 @@ function curlFiles(args: readonly string[]): string[] {
 			)
 				option(word, args[++k]);
 		} else if (/^-[dHFT]./.test(word)) option(word.slice(0, 2), word.slice(2));
+		else if (word.toLowerCase().startsWith("file://")) files.push(decodeFileUrl(word));
 	}
 	return files.filter((f) => f !== "-" && f !== "");
 }
@@ -664,8 +729,9 @@ interface Spelling {
 function spelled(word: string): Spelling {
 	const home = os.homedir();
 	const viaTilde = word === "~" || word.startsWith("~/");
+	// The shell's own process is `self` from where it reads, so `/proc/$$/environ` is its environment.
 	const replaced = word.replace(HOME_VARIABLE, () => home);
-	const text = viaTilde ? home + replaced.slice(1) : replaced;
+	const text = (viaTilde ? home + replaced.slice(1) : replaced).replace(/^\/proc\/(?:\$\$|\$BASHPID|\$\{BASHPID\})\//, "/proc/self/");
 	return { text, homeRelative: viaTilde || replaced !== word };
 }
 
@@ -673,10 +739,17 @@ function spelled(word: string): Spelling {
  *  full gradings per call; past it, an operand is graded by its spelling. */
 class OperandGrader {
 	private formsLeft = MAX_GRADED_OPERANDS;
+	private namesLeft = GLOB_NAME_LIMIT;
+	private readonly graded = new Set<string>();
 	private readonly listings = new Map<string, readonly string[] | null>();
 	readonly hits: FloorHit[] = [];
 
-	constructor(private readonly where: ReadContext) {}
+	/** `bases` are the directories a relative operand may resolve from: the known working directory, or when it
+	 *  is unknown the command cwd and each literal `cd` target of the command. */
+	constructor(
+		private readonly where: ReadContext,
+		private readonly bases: readonly string[],
+	) {}
 
 	/** Grades one operand word as a file the command reads. */
 	grade(word: string): void {
@@ -684,9 +757,12 @@ class OperandGrader {
 		const { text, homeRelative } = spelled(word);
 		const expansion = text.search(/[$*?[{]|^~/);
 		if (expansion === -1) {
-			const unknown = homeRelative ? this.where.homeReassigned : !path.isAbsolute(text) && this.where.workingDirectory === null;
-			if (unknown) this.byName(text);
-			else this.fully(text);
+			if (homeRelative && this.where.homeReassigned) this.byName(text);
+			else if (path.isAbsolute(text)) this.fully(text);
+			else {
+				if (this.where.workingDirectory === null) this.byName(text);
+				for (const base of this.bases) this.fully(path.join(base, text));
+			}
 			return;
 		}
 		const lastSlash = text.lastIndexOf("/");
@@ -701,13 +777,17 @@ class OperandGrader {
 		if (tail !== -1) this.byName(text.slice(tail));
 	}
 
-	private fully(text: string): void {
+	/** Grades an absolute path in every canonical form while the budget lasts, each path once; past the budget,
+	 *  by its spelling. */
+	private fully(absolute: string): void {
+		if (this.graded.has(absolute)) return;
+		this.graded.add(absolute);
 		if (this.formsLeft <= 0) {
-			this.byName(path.resolve(this.where.workingDirectory ?? "/", text));
+			this.byName(absolute);
 			return;
 		}
 		this.formsLeft--;
-		const { rules, forms } = s0ReadHits(text, this.where.workingDirectory ?? "/");
+		const { rules, forms } = s0ReadHits(absolute, "/");
 		for (const rule of rules) this.hits.push({ rule, reason: `rule ${rule}: shell command reads a secret file`, forms });
 	}
 
@@ -717,15 +797,20 @@ class OperandGrader {
 	}
 
 	/** Expands a glob in the last segment of a literal directory as bash does by default: case-sensitive, a
-	 *  leading dot matched only by a pattern that starts with one, and nothing when nothing matches. */
+	 *  leading dot matched only by a pattern that starts with one, and nothing when nothing matches. Past
+	 *  `GLOB_NAME_LIMIT` names examined in one call, globs are left to the classifier. */
 	private globbed(dir: string, pattern: string): void {
 		const tokens = globTokens(pattern);
-		const base = path.isAbsolute(dir) ? dir : this.where.workingDirectory === null ? null : path.join(this.where.workingDirectory, dir);
-		if (tokens === null || base === null) return;
-		const names = this.listing(base);
-		if (names === null) return;
+		if (tokens === null) return;
 		const hidden = pattern.startsWith(".");
-		for (const name of names) if ((hidden || !name.startsWith(".")) && globMatches(tokens, name)) this.fully(dir + name);
+		for (const base of path.isAbsolute(dir) ? [dir] : this.bases.map((b) => path.join(b, dir))) {
+			const names = this.listing(base);
+			if (names === null) continue;
+			for (const name of names) {
+				if (this.namesLeft-- <= 0) return;
+				if ((hidden || !name.startsWith(".")) && globMatches(tokens, name)) this.fully(path.join(base, name));
+			}
+		}
 	}
 
 	private listing(dir: string): readonly string[] | null {
@@ -807,15 +892,42 @@ function globMatches(tokens: readonly GlobToken[], name: string): boolean {
  * are read. Adds denies only: an operand the gate cannot expand is left to the classifier.
  */
 export function secretReads(command: string, where: ReadContext): readonly FloorHit[] {
-	const grader = new OperandGrader(where);
-	gradeText(command, grader, 0);
+	const prefix = soundPrefix(command);
+	const bases = where.workingDirectory !== null ? [where.workingDirectory] : [where.commandCwd, ...cdTargets(prefix.commands, where)];
+	const grader = new OperandGrader(where, bases);
+	gradePrefix(prefix, grader, 0);
 	return grader.hits;
 }
 
-function gradeText(text: string, grader: OperandGrader, depth: number): void {
-	const prefix = soundPrefix(text);
+/** The directories the literal `cd` and `pushd` commands of a command move to, resolved from the command cwd,
+ *  at most `MAX_CD_TARGETS` of them. */
+function cdTargets(commands: readonly (readonly string[])[], where: ReadContext): string[] {
+	const targets: string[] = [];
+	for (const words of commands) {
+		const at = words.findIndex((word) => !ASSIGNMENT.test(word) && !PREFIX_WORDS.has(word));
+		const target = words[at + 1];
+		if (at === -1 || !["cd", "pushd"].includes(words[at]) || target === undefined || target.startsWith("-")) continue;
+		const { text, homeRelative } = spelled(target);
+		if (/[$*?[{~]/.test(text) || (homeRelative && where.homeReassigned)) continue;
+		targets.push(path.resolve(where.commandCwd, text));
+		if (targets.length >= MAX_CD_TARGETS) break;
+	}
+	return targets;
+}
+
+function gradePrefix(prefix: SoundPrefix, grader: OperandGrader, depth: number): void {
 	for (const words of prefix.commands) for (const word of readingWords(words)) grader.grade(word);
 	for (const input of prefix.inputs) grader.grade(input);
 	if (depth >= SHELL_RECURSION_DEPTH) return;
-	for (const script of prefix.scripts) gradeText(script, grader, depth + 1);
+	for (const script of prefix.scripts) gradePrefix(soundPrefix(script), grader, depth + 1);
+}
+
+/** The path a `file://` URL names, or the URL text when it does not decode; curl prints the local file. */
+function decodeFileUrl(url: string): string {
+	const rest = url.slice("file://".length).replace(/^localhost(?=\/)/i, "");
+	try {
+		return decodeURIComponent(rest);
+	} catch {
+		return rest;
+	}
 }

@@ -22,7 +22,7 @@ Development checkouts are not protected, and the layer does not keep a baseline 
 
 The built-in deny floor (bash danger regexes + path sensitivity grades) runs next, before the classifier. The classifier may interpret ambiguity; it cannot override a hard deny, and user allow rules cannot override one either.
 
-The secret tier (S0) names credentials by path, so a name that only resembles one is no secret: a source or documentation file named for the topic (`src/credentials.ts`, `credentials.md`) and a shipped `.env` template (`.env.example`, `.env.dist`, `.env.local.sample`) are read like any project file, without the classifier. A credentials file in any data format, an extensionless `credentials` and every file under a `credentials/` directory stay denied ([ADR-0014](adr/0014-shell-reads-of-secret-files.md)).
+The secret tier (S0) names credentials by path, so a name that only resembles one is no secret: a source or documentation file named for the topic (`src/credentials.ts`, `credentials.md`) and a shipped `.env` template (`.env.example`, `.env.dist`, `.env.local.sample`) are read like any project file, without the classifier; a source file that holds a hard-coded secret (an embedded project's `credentials.h`) is the accepted cost. A credentials file in any data format, an extensionless `credentials` and every file under a `credentials/` directory stay denied ([ADR-0014](adr/0014-shell-reads-of-secret-files.md)).
 
 ### 3. The classifier judges semantics, not syntax
 

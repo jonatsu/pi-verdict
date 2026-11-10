@@ -21,7 +21,15 @@ import { baseForms } from "./paths.ts";
 import type { CallPredicate } from "./redaction.ts";
 import { secretReads } from "./secret-reads.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
-import { allowAdmits, classifyBash, classifyPyShellLines, type FloorLift, pyEvalShellLines, type RuleResult } from "./shell.ts";
+import {
+	allowAdmits,
+	classifyBash,
+	classifyPyShellLines,
+	type FloorHit,
+	type FloorLift,
+	pyEvalShellLines,
+	type RuleResult,
+} from "./shell.ts";
 import type { ShellState } from "./shell-state.ts";
 
 /** What the rule layer reads besides the call itself: the session's policy and protected sets. */
@@ -143,8 +151,7 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 		const directories = directoryContext(ctx);
 		return classifyBash(command, floorOn, shellLift(ctx, command), {
 			deletes: deleteGrader(directories),
-			reads: (text) =>
-				secretReads(text, { workingDirectory: commandWorkingDirectory(text, directories), homeReassigned: ctx.shellState.homeOperands }),
+			reads: (text) => gradeSecretReads(text, ctx, directories),
 		});
 	}
 	if (access.direction === "mutating") {
@@ -162,6 +169,20 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 		return lines ? classifyPyShellLines(lines, floorOn, shellLift(ctx, lines)) : { verdict: "gray" };
 	}
 	return { verdict: "gray", reason: `tool not covered by built-in rules: ${toolName}` };
+}
+
+/** The secret files a shell command reads (ADR-0014). Fails closed: a grading that throws denies the call, so
+ *  no error becomes a classifier allow. */
+function gradeSecretReads(command: string, ctx: RuleContext, directories: DeleteContext): readonly FloorHit[] {
+	try {
+		return secretReads(command, {
+			commandCwd: ctx.commandCwd,
+			workingDirectory: commandWorkingDirectory(command, directories),
+			homeReassigned: ctx.shellState.homeOperands,
+		});
+	} catch {
+		return [{ rule: "S0", reason: "rule S0: the gate could not grade the files this shell command reads", forms: [] }];
+	}
 }
 
 /** The directories a shell command's paths resolve against, and what the session's shell may have moved. */

@@ -112,10 +112,24 @@ export function setXdgConfigRootsForTests(roots: string[] | null): void {
 // normalization covers existing targets, /i covers the lexical forms of
 // nonexistent ones; on linux the uppercase spelling usually does not exist and
 // the occasional false positive fails toward deny (safe direction).
-/** One S0 entry: its id, which `floorOverrides` and the audit name as `S0:<id>` (ADR-0013), and its pattern. */
+/** One S0 entry: its id, which `floorOverrides` and the audit name as `S0:<id>` (ADR-0013), its pattern, and the
+ *  forms the pattern matches that are no secret. */
 interface S0Entry {
 	readonly id: string;
 	readonly rule: RegExp;
+	readonly exempt?: (form: string) => boolean;
+}
+
+/** Matches `credentials` or `credential` ending a name or before a `.` or `/`. */
+const CREDENTIALS_NAME = /credentials?(?:\/|\.|$)/i;
+/** Source and documentation extensions, whose file named for credentials holds code or prose, not a secret. */
+const SOURCE_OR_DOC = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|h|cpp|swift|md|rst|adoc)$/i;
+
+/** Whether a form is a source or documentation file whose name alone matches `CREDENTIALS_NAME`; a match in a
+ *  directory component still counts. Two linear tests, so a long path costs no backtracking. */
+function namedSourceFile(form: string): boolean {
+	const slash = form.lastIndexOf("/");
+	return SOURCE_OR_DOC.test(form) && !CREDENTIALS_NAME.test(form.slice(0, slash + 1));
 }
 
 /** The S0 entries that name a credential inside a directory, each with the home-relative directories it
@@ -149,10 +163,7 @@ const S0_SECRET: readonly S0Entry[] = [
 	{ id: "env", rule: /(^|\/)\.env(?![^/]*\.(?:example|sample|template)$)(?!\.dist$)(\.|$)/i },
 	// A credentials file or directory, but not a source or documentation file named for the topic
 	// (`src/credentials.ts`, `credentials.test.ts`); a file under a `credentials/` directory still hits (ADR-0014).
-	{
-		id: "credentials",
-		rule: /credentials?(?:\/|$|\.(?!(?:[\w-]+\.)*(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|h|cpp|swift|md|rst|adoc)$))/i,
-	},
+	{ id: "credentials", rule: CREDENTIALS_NAME, exempt: namedSourceFile },
 	// Private SSH key names, but not their `.pub` public halves.
 	{ id: "id-rsa", rule: /(^|\/)id_rsa(?![^/]*\.pub$)/i },
 	{ id: "id-ed25519", rule: /(^|\/)id_ed25519(?![^/]*\.pub$)/i },
@@ -207,7 +218,7 @@ const PUBLIC_KEY = /\.pub$/i;
 function s0Hits(ruleForms: readonly string[], isWrite: boolean): string[] {
 	const homes = new Set<S0Entry>([...S0_DIRECTORY_RULES, ...anchoredS0]);
 	const entries = [...S0_SECRET, ...anchoredS0, ...agentDbS0()];
-	const hits = (e: S0Entry, f: string): boolean => e.rule.test(f) && (isWrite || !homes.has(e) || !PUBLIC_KEY.test(f));
+	const hits = (e: S0Entry, f: string): boolean => e.rule.test(f) && !e.exempt?.(f) && (isWrite || !homes.has(e) || !PUBLIC_KEY.test(f));
 	return [...new Set(entries.filter((e) => ruleForms.some((f) => hits(e, f))).map((e) => e.id))];
 }
 

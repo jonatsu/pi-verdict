@@ -9604,6 +9604,19 @@ describe("shell reads of secret files (ADR-0014)", () => {
 			"diff --color .env .env.example",
 			"timeout -s KILL 5 cat .env",
 			"ssh -p 22 prod cat /app/.env",
+			"echo bash -x; cat .env",
+			"grep -rl eval src; cat .env",
+			"bash -l -c 'cat .env'",
+			"cat .env <<<x",
+			"cd ~/.kube; cat config",
+			"(cd ~/.kube && cat config)",
+			"sqlite3 ~/.omp/agent/agent.db .tables",
+			"openssl rsa -in certs/a.pem -text",
+			"builtin source .env",
+			"curl file://$PWD/.env",
+			"cat /proc/$$/environ",
+			"install -m 600 .env /tmp/x",
+			"rev .env",
 		];
 		const missed: string[] = [];
 		for (const command of denied) if ((await s0Reason(command)) === undefined) missed.push(command);
@@ -9675,6 +9688,16 @@ describe("shell reads of secret files (ADR-0014)", () => {
 		const command = "cd certs && cd .. && cat test-keys/x.pem";
 		expect(await s0Reason(command, { floorOverrides: { "S0:pem": { action: "off", paths: [KEYS] } } })).toContain("S0:pem");
 		expect(await s0Reason(command, { floorOverrides: { "S0:pem": "off" } })).toBeUndefined();
+	});
+
+	test("repeating one operand does not spend the budget that grades a symlink's real path", async () => {
+		const link = path.join(PROJ, "notes-link");
+		fs.symlinkSync(path.join(ELSEWHERE, "live.pem"), link);
+		try {
+			expect(await s0Reason(`cat ${"README.md ".repeat(70)}notes-link`)).toContain("S0:pem");
+		} finally {
+			fs.rmSync(link);
+		}
 	});
 
 	test("a glob built to backtrack is matched in bounded time", async () => {

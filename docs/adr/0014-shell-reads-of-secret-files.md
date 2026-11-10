@@ -227,3 +227,35 @@ because a `read` of such a file turns from a deny into a rule allow:
 - A shell write over a secret (`echo x > .env`, `tee .env`, `cp a .env`). Shell writes to S0 files are a separate
   question.
 - PowerShell commands (`Get-Content .env`).
+
+## Implementation amendments (2026-11-10)
+
+The build's code review and its security review (`research/2026-11-10-adr-0014-review.md` records the design
+reviews; the build reviews are summarized here) changed these points. Each only adds denies or bounds a cost.
+
+- **Unsound segments.** A segment that re-parses its words (`eval`, `env -S`) is skipped, and the segments after
+  it are still read, so a decoy `grep -rl eval src; cat .env` denies. A shell's `-c` script is read permissively:
+  an option the scan does not model is taken for a flag, so `bash -l -c 'cat .env'` denies. The words before the
+  first unsound word in its own segment are read too (`cat .env <<<x`).
+- **Directory candidates.** When the working directory is unknown, a relative operand is also graded from the
+  command cwd and from up to four literal `cd` or `pushd` targets in the command, so `cd ~/.kube; cat config` and
+  `(cd ~/.kube && cat config)` deny.
+- **More readers and wrappers.** `rev`, `fmt`, `pr`, `shuf`, `expand`, `unexpand` and `join` read their files;
+  `install` copies; `sqlite3` reads its database and `-init` file, which covers the agent's own `agent.db`;
+  `openssl` reads its `-in`, `-inkey` and `-key` values; curl prints a `file://` URL's file. `builtin`, `setsid`,
+  `busybox` and `flock` (with its lock file) are wrappers. `/proc/$$/` and `/proc/$BASHPID/` read as
+  `/proc/self/`.
+- **Bounds.** Each distinct path is graded once, so repeating a word does not spend the `MAX_GRADED_OPERANDS`
+  budget that grades a symlink's real path. Globs examine at most 4096 directory entries per call; past that,
+  globs are left to the classifier. The glob matcher backtracks only to the last star. The `credentials` S0
+  entry tests a form with two linear checks instead of a lookahead with a repeated group.
+- **Fail closed.** A grading that throws denies the call under the rule id `S0`.
+
+Residuals added (ADR-0009):
+
+- A directory changed by an earlier call. omp runs each bash call in the `cwd` it names (ADR-0013), so a `cd` in one call
+  does not move the next one; a session whose shell state voids the working directory grades by spelling.
+- A secret named in a list or an assignment and read through a variable: `for f in .env; do cat "$f"; done`,
+  `F=.env; cat "$F"`.
+- A source file that holds a hard-coded secret, such as an embedded project's `credentials.h`: the user chose to
+  treat source and documentation files named for credentials as no secret.

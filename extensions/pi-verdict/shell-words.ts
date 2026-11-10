@@ -663,9 +663,9 @@ export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): 
 	return false;
 }
 
-/** The part of a command the word view reads faithfully: every simple command that ends before the first
- *  unsound word, the input-redirection targets before it, and the scripts it runs there (an `sh -c` script,
- *  or the body of a command substitution inside double quotes). */
+/** What the secret-read grading reads in a command: the simple commands before the first unsound word, the
+ *  input-redirection targets before it, and the scripts they run (an `sh -c` script, or the body of a command
+ *  substitution inside double quotes). */
 export interface SoundPrefix {
 	readonly commands: readonly (readonly string[])[];
 	readonly inputs: readonly string[];
@@ -673,35 +673,45 @@ export interface SoundPrefix {
 }
 
 /**
- * Reads a command up to its first unsound word (ADR-0014). Where `anyCommandIn` treats any unsound word as a
- * hit, this keeps the complete simple commands before it, so `source .env; python3 - <<'EOF'` still shows
- * its `source`. A segment that re-parses its words (`eval`, `env -S`) or runs a shell whose options the
- * scan does not model ends the prefix as an unsound word does. Linear in the command's length.
+ * Reads a command for the secret-read grading (ADR-0014). Where `anyCommandIn` treats any unsound word as a
+ * hit, this keeps the words before the first one, so `source .env; python3 - <<'EOF'` and `cat .env <<<x` still
+ * show their reads; the scanner cannot tell where a here-document body ends, so nothing after it is read. A
+ * segment that re-parses its words (`eval`, `env -S`) is skipped, and the segments after it are read. Linear in
+ * the command's length.
  */
 export function soundPrefix(text: string): SoundPrefix {
 	const sink: ScanSink = { inputs: [], substitutions: [] };
 	const words = scanWords(text, sink);
 	const firstUnsound = words.indexOf(UNSOUND);
+	const cut = firstUnsound === -1 ? words.length : firstUnsound;
 	const commands: string[][] = [];
 	const scripts: string[] = [];
-	let cut = firstUnsound === -1 ? words.length : firstUnsound;
 	let start = 0;
 	for (let k = 0; k <= cut; k++) {
-		const ends = k === words.length || SHELL_OPERATORS.has(words[k]) || words[k] === "\n";
-		if (!ends) continue;
+		if (k !== cut && !SHELL_OPERATORS.has(words[k]) && words[k] !== "\n") continue;
 		const seg = words.slice(start, k);
 		start = k + 1;
-		if (seg.length === 0) continue;
-		const shellAt = seg.findIndex((word) => SHELL_NAMES.has(wordBasename(word)));
-		const script = shellAt === -1 ? undefined : shellScriptAt(seg, shellAt);
-		if (reparsesWords(seg) || script?.kind === "unsound") {
-			cut = k - seg.length;
-			break;
-		}
-		if (script?.kind === "script" && script.text !== undefined) scripts.push(script.text);
+		if (seg.length === 0 || reparsesWords(seg)) continue;
+		const script = shellScript(seg);
+		if (script !== undefined) scripts.push(script);
 		commands.push(seg);
 	}
 	const before = ({ at }: { readonly at: number }): boolean => at <= cut;
 	scripts.push(...sink.substitutions.filter(before).map((s) => s.text));
 	return { commands, inputs: sink.inputs.filter(before).map((r) => r.text), scripts };
+}
+
+/** The script a shell in the segment runs with `-c`, read permissively: any option the scan does not model is
+ *  taken for a flag (`bash -l -c '…'`), which can only read more. Undefined when no shell runs one. */
+function shellScript(seg: readonly string[]): string | undefined {
+	for (let i = 0; i < seg.length; i++) {
+		if (!SHELL_NAMES.has(wordBasename(seg[i]))) continue;
+		for (let j = i + 1; j < seg.length; j++) {
+			const opt = seg[j].toLowerCase();
+			if (SHELL_OPTIONS_WITH_ARG.has(opt)) j++;
+			else if (/^-[a-z]*c[a-z]*$/.test(opt)) return seg[j + 1];
+			else if (!opt.startsWith("-") && !opt.startsWith("+")) break;
+		}
+	}
+	return undefined;
 }
