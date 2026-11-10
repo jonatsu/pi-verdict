@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { expandOperand, MAX_GRADED_OPERANDS } from "./allow-operands.ts";
 import { baseForms, fold, isWithin } from "./paths.ts";
-import type { DeleteCommand, DeleteGrader, DeleteHit } from "./shell.ts";
+import type { DeleteCommand, DeleteGrader, FloorHit } from "./shell.ts";
 import { ASSIGNMENT, anyCommandIn, mayExpand, shellWords } from "./shell-words.ts";
 
 // ============================================================================
@@ -46,7 +46,7 @@ const REASONS = {
 type DeleteRule = keyof typeof REASONS;
 
 /** A hit whose rule is one of the graded delete rules. */
-type GradedHit = DeleteHit & { readonly rule: DeleteRule };
+type GradedHit = FloorHit & { readonly rule: DeleteRule };
 
 const SEVERITY: readonly DeleteRule[] = ["rm-root", "rm-git", "rm-unreadable-target", "rm-outside-project"];
 

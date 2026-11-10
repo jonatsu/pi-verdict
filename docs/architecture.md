@@ -240,6 +240,7 @@ flowchart BT
     gitreach[git-reach: whether an allowed git call stays in the project]
     allowops[allow-operands: what a user allow may admit]
     deletes[delete-grade: recursive deletes graded by target]
+    secretreads[secret-reads: shell commands that read a secret file]
     shellstate[shell-state: which allows the session's shell state voids]
     rules[rules: the step chain]
   end

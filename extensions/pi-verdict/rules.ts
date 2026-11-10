@@ -19,6 +19,7 @@ import { classifyReads, classifyWrites, globStaysInProject, type HostKind, isDev
 import { overrideFor } from "./floor-overrides.ts";
 import { baseForms } from "./paths.ts";
 import type { CallPredicate } from "./redaction.ts";
+import { secretReads } from "./secret-reads.ts";
 import { type ProtectedSet, selfProtectCheck } from "./self-protection.ts";
 import { allowAdmits, classifyBash, classifyPyShellLines, type FloorLift, pyEvalShellLines, type RuleResult } from "./shell.ts";
 import type { ShellState } from "./shell-state.ts";
@@ -139,7 +140,12 @@ function gradeBase(call: RuleCall, ctx: RuleContext): RuleResult {
 	const overrides = ctx.userRules.floorOverrides;
 	if (isCommandTool(toolName)) {
 		const command = commandText(input);
-		return classifyBash(command, floorOn, shellLift(ctx, command), deleteGrader(directoryContext(ctx)));
+		const directories = directoryContext(ctx);
+		return classifyBash(command, floorOn, shellLift(ctx, command), {
+			deletes: deleteGrader(directories),
+			reads: (text) =>
+				secretReads(text, { workingDirectory: commandWorkingDirectory(text, directories), homeReassigned: ctx.shellState.homeOperands }),
+		});
 	}
 	if (access.direction === "mutating") {
 		// Opaque calls have nothing for classifyWrites to grade; their own ask fires below,

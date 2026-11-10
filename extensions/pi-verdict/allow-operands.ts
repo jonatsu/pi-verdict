@@ -15,7 +15,7 @@ import { ASSIGNMENT, MIN_LONG_PREFIX, shellWords, wordBasename } from "./shell-w
 export const MAX_GRADED_OPERANDS = 64;
 
 /** Matches `$HOME` or `${HOME}`, not the prefix of a longer variable name such as `$HOMEBREW`. */
-const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
+export const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
 /** Matches a brace expansion: a `{` whose closing `}` follows a `,` or a `..`. */
 const BRACE_EXPANSION = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 /** Matches a glob metacharacter. */

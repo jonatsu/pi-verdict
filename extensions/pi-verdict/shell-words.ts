@@ -54,6 +54,35 @@ function continuationLength(command: string, i: number): number {
  * stands (ADR-0007).
  */
 export function shellWords(command: string): string[] {
+	return scanWords(command, undefined);
+}
+
+/** Text the scanner sets aside beside the words, each with the index the next word would take when it was
+ *  found, so a reader can tell whether it came before the first unsound word. */
+interface ScanSink {
+	/** The target of each input redirection (`<`, `N<`, `<>`): a file the shell opens for reading. */
+	readonly inputs: { readonly text: string; readonly at: number }[];
+	/** The body of each balanced command substitution inside double quotes; the word holds a `$` in its place. */
+	readonly substitutions: { readonly text: string; readonly at: number }[];
+}
+
+/** Returns, for each `(` in the command, the index of the `)` that closes it, counting parentheses only, and -1
+ *  for any other position or an unclosed one. One stack pass, so every substitution's end is found in linear
+ *  time. A `)` inside a nested quote miscounts; that only sets aside other text. */
+function closingParens(command: string): Int32Array {
+	const closers = new Int32Array(command.length).fill(-1);
+	const open: number[] = [];
+	for (let k = 0; k < command.length; k++) {
+		if (command[k] === "(") open.push(k);
+		else if (command[k] === ")") {
+			const at = open.pop();
+			if (at !== undefined) closers[at] = k;
+		}
+	}
+	return closers;
+}
+
+function scanWords(command: string, sink: ScanSink | undefined): string[] {
 	const words: string[] = [];
 	const n = command.length;
 	let i = 0;
@@ -61,18 +90,26 @@ export function shellWords(command: string): string[] {
 	let inWord = false;
 	// The next word is a redirection target: the shell opens it, it is not an argument.
 	let redirectTarget = false;
+	// That redirection reads its target.
+	let inputTarget = false;
 	// The current word holds a quoted or escaped character, so it cannot be a redirection's fd prefix.
 	let curQuoted = false;
+	// Where each `(` closes, built on the first quoted substitution a sink sets aside.
+	let closers: Int32Array | null | undefined;
 	const flush = () => {
 		if (inWord) {
-			if (redirectTarget) redirectTarget = false;
-			else words.push(cur);
+			if (redirectTarget) {
+				if (inputTarget) sink?.inputs.push({ text: cur, at: words.length });
+				redirectTarget = false;
+			} else {
+				words.push(cur);
+			}
 			cur = "";
 			inWord = false;
 		}
 		curQuoted = false;
 	};
-	const redirection = (length: number, takesFd: boolean) => {
+	const redirection = (length: number, takesFd: boolean, reads = false) => {
 		if (takesFd && inWord && !curQuoted && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(cur)) {
 			cur = ""; // `2>&1`, `{fd}>x`: an unquoted fd number or bash fd variable, not an argument
 			inWord = false;
@@ -81,6 +118,7 @@ export function shellWords(command: string): string[] {
 			flush();
 		}
 		redirectTarget = true;
+		inputTarget = reads;
 		i += length;
 	};
 	const unsound = () => {
@@ -140,7 +178,17 @@ export function shellWords(command: string): string[] {
 					continue;
 				}
 				if (c === "$" && command[i + 1] === "(") {
-					unsound(); // command substitution inside double quotes: not re-parsed
+					// With a sink, a balanced body is set aside for its own reading and the word holds an expansion
+					// in its place, so the words after it stay sound (ADR-0014). Without one it is not re-parsed.
+					closers ??= sink === undefined ? null : closingParens(command);
+					const end = closers === null ? -1 : closers[i + 1];
+					if (sink !== undefined && end !== -1) {
+						sink.substitutions.push({ text: command.slice(i + 2, end), at: words.length });
+						cur += "$";
+						i = end + 1;
+						continue;
+					}
+					unsound();
 					i += 2;
 					continue;
 				}
@@ -174,7 +222,8 @@ export function shellWords(command: string): string[] {
 			}
 			// The `&` of `>&`/`<&` and the `|` of `>|` belong to the redirection, not a command operator.
 			const twoChar = ch === ">" ? next === ">" || next === "&" || next === "|" : next === "&" || next === ">";
-			redirection(twoChar ? 2 : 1, true);
+			// `<` and `<>` open their target for reading; `<&` only duplicates a descriptor.
+			redirection(twoChar ? 2 : 1, true, ch === "<" && next !== "&");
 			continue;
 		}
 		if (ch === "&" && command[i + 1] === ">") {
@@ -496,6 +545,10 @@ function firstOperandIndex(seg: readonly string[], from: number, inert: Readonly
 	return -1;
 }
 
+/** Words that may precede the command word of a simple command without being it: reserved words, a brace
+ *  group's braces, `!` and `time`. */
+export const PREFIX_WORDS: ReadonlySet<string> = new Set(["{", "}", "!", "if", "then", "elif", "else", "do", "while", "until", "time"]);
+
 /** Matches a shell variable assignment word (`X=1`, `X+=1`), capturing the variable name. */
 export const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
 
@@ -608,4 +661,47 @@ export function anyCommandIn(text: string, matcher: CommandMatcher, depth = 0): 
 		if (seg.some((word, k) => !judged.has(k) && matcher.mentions(word))) return true;
 	}
 	return false;
+}
+
+/** The part of a command the word view reads faithfully: every simple command that ends before the first
+ *  unsound word, the input-redirection targets before it, and the scripts it runs there (an `sh -c` script,
+ *  or the body of a command substitution inside double quotes). */
+export interface SoundPrefix {
+	readonly commands: readonly (readonly string[])[];
+	readonly inputs: readonly string[];
+	readonly scripts: readonly string[];
+}
+
+/**
+ * Reads a command up to its first unsound word (ADR-0014). Where `anyCommandIn` treats any unsound word as a
+ * hit, this keeps the complete simple commands before it, so `source .env; python3 - <<'EOF'` still shows
+ * its `source`. A segment that re-parses its words (`eval`, `env -S`) or runs a shell whose options the
+ * scan does not model ends the prefix as an unsound word does. Linear in the command's length.
+ */
+export function soundPrefix(text: string): SoundPrefix {
+	const sink: ScanSink = { inputs: [], substitutions: [] };
+	const words = scanWords(text, sink);
+	const firstUnsound = words.indexOf(UNSOUND);
+	const commands: string[][] = [];
+	const scripts: string[] = [];
+	let cut = firstUnsound === -1 ? words.length : firstUnsound;
+	let start = 0;
+	for (let k = 0; k <= cut; k++) {
+		const ends = k === words.length || SHELL_OPERATORS.has(words[k]) || words[k] === "\n";
+		if (!ends) continue;
+		const seg = words.slice(start, k);
+		start = k + 1;
+		if (seg.length === 0) continue;
+		const shellAt = seg.findIndex((word) => SHELL_NAMES.has(wordBasename(word)));
+		const script = shellAt === -1 ? undefined : shellScriptAt(seg, shellAt);
+		if (reparsesWords(seg) || script?.kind === "unsound") {
+			cut = k - seg.length;
+			break;
+		}
+		if (script?.kind === "script" && script.text !== undefined) scripts.push(script.text);
+		commands.push(seg);
+	}
+	const before = ({ at }: { readonly at: number }): boolean => at <= cut;
+	scripts.push(...sink.substitutions.filter(before).map((s) => s.text));
+	return { commands, inputs: sink.inputs.filter(before).map((r) => r.text), scripts };
 }

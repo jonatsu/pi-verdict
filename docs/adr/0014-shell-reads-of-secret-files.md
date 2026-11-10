@@ -74,12 +74,15 @@ process substitution; none of them names a file, so none is graded.
 
 ### Where a reading command is found
 
-The reading command may sit at the command position of a segment or behind a wrapper (`sudo`, `env`, `timeout`,
-`nice`, `time`, `command`), and its operands are the words after it in that segment. One pass over each segment
-finds the first word that is a reading command and is not marked inert by the shell-word view, so an `echo`
-argument or a commit message is never a command word. An `sh -c` script is read the same way, through
-`anyCommandIn`. A command run on another host counts as a reader too: `ssh prod cat /app/.env` denies, since
-the operand is graded locally by its name; the quoted `ssh prod 'cat /app/.env'` is one word and passes.
+The reading command is the command word of a simple command: the first word after variable assignments and
+reserved words (`if … then`, `do`, `{`, `!`), and behind a wrapper (`sudo`, `doas`, `env`, `timeout`, `nice`,
+`ionice`, `nohup`, `time`, `command`, `stdbuf`, `exec`, `xargs`, `ssh`) the word after the wrapper's options,
+their values and its leading positionals (timeout's duration, ssh's host). Its operands are the words after it in
+that segment. A word in an argument position is never taken for a command, so `timeout 30 find . -name .env`, an
+`echo` argument and a commit message read nothing. An `sh -c` script is read the same way. A command run on
+another host counts as a reader too: `ssh prod cat /app/.env` denies, since the operand is graded locally by its
+name; the quoted `ssh prod 'cat /app/.env'` is one word and passes. A remote copy source (`scp host:/app/.env .`)
+is graded by its path text as well and denies, because it copies a secret onto this machine.
 
 ### How an operand is graded
 
@@ -139,8 +142,10 @@ An unsound construct (a here-document, a backtick, `$'…'`, an `eval`) makes th
 of the command. The segments that end before the first unsound word are still graded, so
 `set -a; source .env; set +a; python3 - <<'EOF'` denies on its `source .env`. A command substitution inside
 double quotes (`TOKEN="$(grep '^TOKEN=' .env | cut -d= -f2)"`) is the one unsound spelling an agent writes
-often; its body, found by a linear scan for the balancing `)`, is graded as a nested script. Everything from the
-first other unsound word on is not graded.
+often. When its parentheses balance (one stack pass over the command finds every closing `)`), its body is graded
+as a nested script and the word reads as an expansion, so the commands after it are graded too
+(`cd "$(git rev-parse --show-toplevel)" && cat .env`). Everything from the first other unsound word on is not
+graded.
 
 ### Cost
 

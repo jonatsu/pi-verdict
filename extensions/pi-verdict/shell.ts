@@ -50,9 +50,10 @@ type BashDangerRule =
 	| { readonly kind: "words"; readonly id: string; readonly reason: string; readonly tripwire: Tripwire; readonly runs: SegmentMatcher }
 	| { readonly kind: "delete"; readonly id: string; readonly reason: string; readonly tripwire: Tripwire };
 
-/** One recursive delete target the floor denies: the id of the rule it hit, why, and the target's forms, which
- *  a scoped `floorOverrides` entry must hold (ADR-0013). */
-export interface DeleteHit {
+/** One target the floor denies, a recursive delete's or a secret read's: the id of the rule it hit, why, and the
+ *  target's forms, which a scoped `floorOverrides` entry must hold; with none, only an unscoped entry lifts it
+ *  (ADR-0013, ADR-0014). */
+export interface FloorHit {
 	readonly rule: string;
 	readonly reason: string;
 	readonly forms: readonly string[];
@@ -66,7 +67,17 @@ export interface DeleteCommand {
 
 /** Grades the recursive deletes of a command by their targets, returning a hit per denied target, worst first;
  *  none clears the floor's tripwire. Bound to the call's directories by the rule layer. */
-export type DeleteGrader = (deletes: readonly DeleteCommand[], command: string) => readonly DeleteHit[];
+export type DeleteGrader = (deletes: readonly DeleteCommand[], command: string) => readonly FloorHit[];
+
+/** Returns a hit for each secret file a command reads (ADR-0014). Bound to the call's directories by the rule
+ *  layer. */
+export type SecretReadGrader = (command: string) => readonly FloorHit[];
+
+/** The graders the rule layer binds to a call's directories; without them the floor uses its tripwires alone. */
+export interface ShellGraders {
+	readonly deletes?: DeleteGrader;
+	readonly reads?: SecretReadGrader;
+}
 
 /** The shortest `--recursive` abbreviation: GNU `rm` reads `--r` as unique among its long options. */
 const RM_LONG_PREFIX = 3;
@@ -483,9 +494,10 @@ export class LiftedRules {
 }
 
 /** Grades a bash command: a floor deny, or gray for the user rules and the classifier. A recursive `rm` is
- *  graded by its targets when `deletes` is bound, else denied on its tripwire. */
-export function classifyBash(command: string, floorOn: boolean, lift: FloorLift = NO_LIFT, deletes?: DeleteGrader): RuleResult {
-	return classifyShellText(command, floorOn, "words", lift, deletes);
+ *  graded by its targets when `graders.deletes` is bound, else denied on its tripwire; a secret file the
+ *  command reads denies when `graders.reads` is bound. */
+export function classifyBash(command: string, floorOn: boolean, lift: FloorLift = NO_LIFT, graders: ShellGraders = {}): RuleResult {
+	return classifyShellText(command, floorOn, "words", lift, graders);
 }
 
 /** Grades the shell lines of a Python cell on raw text only: Python decides how their strings are
@@ -496,9 +508,9 @@ export function classifyPyShellLines(lines: string, floorOn: boolean, lift: Floo
 
 /** The floor's hits for one rule: a single hit under the rule's own id, or for a graded delete a hit per
  *  denied target. */
-function ruleDenials(rule: BashDangerRule, command: string, view: FloorView, deletes: DeleteGrader | undefined): readonly DeleteHit[] {
+function ruleDenials(rule: BashDangerRule, command: string, view: FloorView, deletes: DeleteGrader | undefined): readonly FloorHit[] {
 	if (!ruleHits(rule, command, view)) return [];
-	const own: DeleteHit = { rule: rule.id, reason: `rule ${rule.id}: ${rule.reason}`, forms: [] };
+	const own: FloorHit = { rule: rule.id, reason: `rule ${rule.id}: ${rule.reason}`, forms: [] };
 	if (rule.kind !== "delete" || view === "raw-text" || deletes === undefined) return [own];
 	const found = deleteCommands(command, rule.tripwire);
 	// Fails closed: a delete the word view cannot place has no target to grade, so the tripwire's own deny
@@ -506,17 +518,25 @@ function ruleDenials(rule: BashDangerRule, command: string, view: FloorView, del
 	return found === null ? [own] : deletes(found, command);
 }
 
-function classifyShellText(command: string, floorOn: boolean, view: FloorView, lift: FloorLift, deletes?: DeleteGrader): RuleResult {
+function classifyShellText(command: string, floorOn: boolean, view: FloorView, lift: FloorLift, graders: ShellGraders = {}): RuleResult {
 	const lifted = new LiftedRules();
 	if (floorOn) {
 		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			for (const hit of ruleDenials(rule, capped, view, deletes)) {
+			for (const hit of ruleDenials(rule, capped, view, graders.deletes)) {
 				// A delete is scoped by its targets alone, so one with no readable target lifts only unscoped.
 				const action = lift(hit.rule, rule.kind === "delete" ? hit.forms : undefined);
 				if (action === null) return { verdict: "deny", reason: hit.reason, rule: hit.rule };
 				lifted.add(hit.rule, hit.reason, action);
 			}
+		}
+		// Not past the cap: a word cut there (`.env.example` cut to `.env`) would deny falsely (ADR-0014).
+		const reads = graders.reads !== undefined && command.length <= BASH_MAX_MATCH_LEN ? graders.reads(command) : [];
+		for (const hit of reads) {
+			// A secret read is scoped by its file's forms, so one graded by name only lifts only unscoped.
+			const action = lift(hit.rule, hit.forms);
+			if (action === null) return { verdict: "deny", reason: hit.reason, rule: hit.rule };
+			lifted.add(hit.rule, hit.reason, action);
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command", rule: "empty-command" };

@@ -211,6 +211,26 @@ function s0Hits(ruleForms: readonly string[], isWrite: boolean): string[] {
 	return [...new Set(entries.filter((e) => ruleForms.some((f) => hits(e, f))).map((e) => e.id))];
 }
 
+/** The S0 entries a read of one shell operand hits, and the forms a scoped `floorOverrides` entry must hold. */
+export interface SecretRead {
+	readonly rules: readonly string[];
+	readonly forms: readonly string[];
+}
+
+/** Returns the S0 ids (`S0:<entry>`) a read of `rawPath` hits in every canonical form, with those forms
+ *  (ADR-0014). The read exemptions hold, so a `.pub` key or a shipped `.env` template hits nothing. */
+export function s0ReadHits(rawPath: string, cwd: string): SecretRead {
+	const { forms, ruleForms } = canonicalPathForms(rawPath, cwd);
+	return { rules: s0Hits(ruleForms, false).map((id) => `S0:${id}`), forms };
+}
+
+/** Returns the S0 ids `text` hits by its spelling alone, for an operand whose directory is unknown. Only the
+ *  entries that match a name anywhere can hit a relative spelling; the home and system anchored ones need it
+ *  absolute (ADR-0014). */
+export function s0NameHits(text: string): string[] {
+	return s0Hits([toRuleForm(text)], false).map((id) => `S0:${id}`);
+}
+
 /** True when a rule form hits any S0 entry, graded as a write so no read exemption applies. */
 function hitsS0(ruleForms: readonly string[]): boolean {
 	return s0Hits(ruleForms, true).length > 0;

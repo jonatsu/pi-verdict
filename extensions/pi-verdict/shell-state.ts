@@ -1,5 +1,5 @@
 import { BASH_MAX_MATCH_LEN } from "./shell.ts";
-import { ASSIGNMENT, gitSubcommandIndex, hasUnsoundWord, isShellOperator, shellWords, wordBasename } from "./shell-words.ts";
+import { ASSIGNMENT, gitSubcommandIndex, hasUnsoundWord, isShellOperator, PREFIX_WORDS, shellWords, wordBasename } from "./shell-words.ts";
 
 // ============================================================================
 // Session shell state: which user allows an earlier command may have voided (ADR-0008)
@@ -106,8 +106,6 @@ function gitConfigWrites(args: readonly string[]): boolean {
 	return !(rest[0] === "get" || rest[0] === "list" || rest.some((w) => GIT_CONFIG_READS.has(w)));
 }
 
-/** Words that may precede the command word of a simple command without being it. */
-const PREFIX_WORDS: ReadonlySet<string> = new Set(["{", "}", "!", "if", "then", "elif", "else", "do", "while", "until", "time"]);
 /** Commands that run the next word as the command (`env` and `nice` also take options first). */
 const WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "exec", "env", "nice"]);
 /** Builtins that declare, read into or unset the variables named in their arguments. */

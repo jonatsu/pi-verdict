@@ -171,7 +171,9 @@ tool_call
   │     │   graded over every adapter target, worst grade wins; a write whose kernel
   │     │   target is unresolvable (symlink loop) fails closed → deny; a recursive rm is
   │     │   graded by target: root, home, .git, unreadable or outside the project → deny,
-  │     │   inside the project or /tmp → on to the classifier; a floorOverrides
+  │     │   inside the project or /tmp → on to the classifier; a shell command that
+  │     │   reads, copies, loads or uploads a literal S0 file (cat .env, source .env,
+  │     │   cmd < .env) → deny (ADR-0014); a floorOverrides
   │     │   entry (ADR-0013) can switch off or soften one rule, optionally per directory
   │     ├─ your deny rules: any matching target form denies; deny beats allow;
   │     │   then your deny command rules (ADR-0013), matched on command words
@@ -240,7 +242,7 @@ Design decisions here are settled by measurement, and the lab notes ship with th
 ## Status & limitations
 
 - no built-in command allowlist by design (see the [bypass writeup](research/rule-layer-security-audit.md)); with an empty `allow` config most commands go to the classifier — point `--auto-mode-model` at a fast model if per-call latency matters
-- the path sensitivity floor applies to file tools only: bash command strings are matched by the danger regexes alone, so e.g. `cat ~/.ssh/id_rsa` goes to the classifier rather than the deterministic S0 deny (the file-tool spelling `read ~/.ssh/id_rsa` does deny)
+- in a bash command, the S0 secret tier grades only the files a listed command reads, copies, loads or uploads, named literally ([ADR-0014](docs/adr/0014-shell-reads-of-secret-files.md)): `cat ~/.ssh/id_rsa` denies, while an interpreter (`python -c "open('.env')"`), an operand built from a variable, or a recursive `grep -r` that walks into a secret goes to the classifier
 - on Windows the built-in floor covers bash-shaped patterns only — PowerShell-native dangerous commands (`Remove-Item -Recurse -Force`, `Invoke-Expression`, `Set-ExecutionPolicy`, …) rely on the classifier (fail-closed)
 - On macOS, the per-user temp tree under `/var/folders/...` is exempt from S1 system-path treatment: reads there do not go gray, and writes are not denied by S1
 - AGENTS.md is not passed to the classifier as downweighted intent evidence (Claude Code does this)
