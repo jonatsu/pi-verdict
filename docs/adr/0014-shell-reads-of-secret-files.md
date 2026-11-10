@@ -238,8 +238,9 @@ reviews; the build reviews are summarized here) changed these points. Each only 
   an option the scan does not model is taken for a flag, so `bash -l -c 'cat .env'` denies. The words before the
   first unsound word in its own segment are read too (`cat .env <<<x`).
 - **Directory candidates.** When the working directory is unknown, a relative operand is also graded from the
-  command cwd and from up to four literal `cd` or `pushd` targets in the command, so `cd ~/.kube; cat config` and
-  `(cd ~/.kube && cat config)` deny.
+  command cwd and from up to eight literal `cd` or `pushd` targets in the command and its `sh -c` scripts, each
+  resolved from every directory found before it, so `cd ~/.kube; cat config`, `(cd ~/.kube && cat config)` and
+  `cd ~/.config && cd gh && cat hosts.yml` deny.
 - **More readers and wrappers.** `rev`, `fmt`, `pr`, `shuf`, `expand`, `unexpand` and `join` read their files;
   `install` copies; `sqlite3` reads its database and `-init` file, which covers the agent's own `agent.db`;
   `openssl` reads its `-in`, `-inkey` and `-key` values; curl prints a `file://` URL's file. `builtin`, `setsid`,
@@ -250,12 +251,20 @@ reviews; the build reviews are summarized here) changed these points. Each only 
   globs are left to the classifier. The glob matcher backtracks only to the last star. The `credentials` S0
   entry tests a form with two linear checks instead of a lookahead with a repeated group.
 - **Fail closed.** A grading that throws denies the call under the rule id `S0`.
+- **Kernel-faithful `..`.** A relative operand is graded as written from each directory, so a `..` after a
+  symlinked directory (`cat bx/../config`) resolves where the kernel resolves it.
+- **Spellings.** sqlite options take one dash or two (`--cmd`), and `flock`'s `-c` command is read as a script.
 
 Residuals added (ADR-0009):
 
-- A directory changed by an earlier call. omp runs each bash call in the `cwd` it names (ADR-0013), so a `cd` in one call
-  does not move the next one; a session whose shell state voids the working directory grades by spelling.
+- A directory changed by an earlier call. omp runs each bash call in the `cwd` it names (ADR-0013), so a `cd` in one
+  call does not move the next one; a session whose shell state voids the working directory grades by spelling.
 - A secret named in a list or an assignment and read through a variable: `for f in .env; do cat "$f"; done`,
   `F=.env; cat "$F"`.
 - A source file that holds a hard-coded secret, such as an embedded project's `credentials.h`: the user chose to
   treat source and documentation files named for credentials as no secret.
+- More than eight decoy `cd` targets before the real one, and more than `MAX_GRADED_OPERANDS` distinct operands
+  before a symlink to a secret (past the budget, an operand is graded by its spelling).
+- A glob after 4096 directory entries were examined in the same call, for example after a glob over a large
+  directory an earlier call created: later globs are left to the classifier.
+- A backtick anywhere: the words after it are not read, like those after a here-document.

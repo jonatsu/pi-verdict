@@ -9617,6 +9617,10 @@ describe("shell reads of secret files (ADR-0014)", () => {
 			"cat /proc/$$/environ",
 			"install -m 600 .env /tmp/x",
 			"rev .env",
+			"bash -c 'cd ~/.kube && cat config'",
+			"cd ~/.config && cd gh && cat hosts.yml",
+			"sqlite3 --cmd .tables ~/.omp/agent/agent.db",
+			"flock /tmp/lock -c 'cat .env'",
 		];
 		const missed: string[] = [];
 		for (const command of denied) if ((await s0Reason(command)) === undefined) missed.push(command);
@@ -9697,6 +9701,17 @@ describe("shell reads of secret files (ADR-0014)", () => {
 			expect(await s0Reason(`cat ${"README.md ".repeat(70)}notes-link`)).toContain("S0:pem");
 		} finally {
 			fs.rmSync(link);
+		}
+	});
+
+	test("a relative .. after a symlinked directory is graded where the kernel resolves it", async () => {
+		const sub = path.join(ELSEWHERE, ".kube", "sub");
+		fs.mkdirSync(sub, { recursive: true });
+		fs.symlinkSync(sub, path.join(PROJ, "bx"));
+		try {
+			expect(await s0Reason("cat bx/../config")).toContain("S0:kube");
+		} finally {
+			fs.rmSync(path.join(PROJ, "bx"));
 		}
 	});
 

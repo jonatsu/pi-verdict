@@ -701,10 +701,15 @@ export function soundPrefix(text: string): SoundPrefix {
 	return { commands, inputs: sink.inputs.filter(before).map((r) => r.text), scripts };
 }
 
-/** The script a shell in the segment runs with `-c`, read permissively: any option the scan does not model is
- *  taken for a flag (`bash -l -c '…'`), which can only read more. Undefined when no shell runs one. */
+/** The script a shell or `flock` in the segment runs with `-c`, read permissively: any option the scan does not
+ *  model is taken for a flag (`bash -l -c '…'`), which can only read more. Undefined when none runs one. */
 function shellScript(seg: readonly string[]): string | undefined {
 	for (let i = 0; i < seg.length; i++) {
+		if (wordBasename(seg[i]) === "flock") {
+			// flock runs its `-c` command through a shell, after its lock file.
+			const c = seg.findIndex((word, j) => j > i && (word === "-c" || word === "--command"));
+			if (c !== -1) return seg[c + 1];
+		}
 		if (!SHELL_NAMES.has(wordBasename(seg[i]))) continue;
 		for (let j = i + 1; j < seg.length; j++) {
 			const opt = seg[j].toLowerCase();
