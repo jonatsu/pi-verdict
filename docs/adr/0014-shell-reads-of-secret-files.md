@@ -34,7 +34,7 @@ costs only a classifier call. Here it would deny `scp -i ~/.ssh/deploy_key …` 
 
 ### Reading commands and the words they read
 
-Each reading command has an entry in one table, `SECRET_READERS`. An entry names the command's file-reading
+Each reading command has an entry in one table, `READERS`. An entry names the command's file-reading
 positions and its options that take a value, so a value is skipped unless the option reads that file:
 
 - **Readers** print or transform content; every positional word is a file it reads: `cat`, `tac`, `nl`, `head`,
@@ -149,7 +149,8 @@ graded.
 
 ### Cost
 
-The grading reads the command once more with `anyCommandIn`, which tokenizes it once and visits each segment once.
+The grading reads the command once more with `soundPrefix`, which tokenizes it once and visits each segment once;
+when the working directory is unknown, each nested `sh -c` script is tokenized twice, once for its `cd` targets.
 Finding the reading command is one pass over the segment's words with a set lookup per word, and its operands
 are the words after it, so the walk is linear in the command's length. Name patterns are tested on every graded
 word. The file-system work shares one budget per call: `classifyPath`'s canonical forms for at most
@@ -159,7 +160,7 @@ fold this pass into its single reading.
 
 ### Implementation notes
 
-- The grader lives in its own module, `secret-reads.ts`, with `SECRET_READERS` and its budget. The rule layer
+- The grader lives in its own module, `secret-reads.ts`, with `READERS` and its budget. The rule layer
   binds it to the call's directories and passes it to `classifyBash`, as it does the `DeleteGrader`.
 - `shellWords` drops a redirection with its target word, and it is a public export. A new tokenizer-level
   function returns the input-redirection targets beside the words, so the existing word view does not change.
@@ -256,6 +257,14 @@ reviews; the build reviews are summarized here) changed these points. Each only 
 - **Kernel-faithful `..`.** A relative operand is graded as written from each directory, so a `..` after a
   symlinked directory (`cat bx/../config`) resolves where the kernel resolves it.
 - **Spellings.** sqlite options take one dash or two (`--cmd`), and `flock`'s `-c` command is read as a script.
+  curl reads a value option at the end of a bundle of short flags (`curl -sSd @.env`). `batcat` is read like
+  `bat`. A leading `eval` or `env -S` skips only its own segment.
+- **Expansion tails.** A `~user` or brace directory part is treated like a variable one: the literal tail after
+  it is graded by name, so `cat ~user/.env` and `cat {a,b}/.env` deny. A brace in the last segment
+  (`cat {a,b}.env`) is still not graded. When the session reassigned `HOME`, a `~` or `$HOME` operand is graded
+  by its name only.
+- **Beyond the listed readers.** `7z u` is read like `7z a`; `openssl` also reads `-kfile`, `-CAkey` and
+  `-signkey`; `sqlite`, `7za` and `7zz` are aliases. All of them only add denies.
 
 Residuals added (ADR-0009):
 
@@ -269,4 +278,5 @@ Residuals added (ADR-0009):
   before a symlink to a secret (past the budget, an operand is graded by its spelling).
 - A glob after 4096 directory entries were examined in the same call, for example after a glob over a large
   directory an earlier call created: later globs are left to the classifier.
-- A backtick anywhere: the words after it are not read, like those after a here-document.
+- A backtick or a here-string anywhere: the words after it are not read, like those after a here-document, so
+  `cmd <<<x; cat .env` reaches the classifier.

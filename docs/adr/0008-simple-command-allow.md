@@ -156,7 +156,9 @@ allows such as `^git\b`.
 a key without printing it, such as `ssh -i ~/.ssh/id_x host` and `ssh-keygen -f`. A refused admission
 is not a deny: the call reaches the classifier, which may still allow it. For the same reason the
 grading runs with `builtinDenyFloor: false` too; the option turns built-in denies off, and a refusal
-here denies nothing.
+here denies nothing. [ADR-0014](0014-shell-reads-of-secret-files.md) narrows this: the floor now denies
+a command that reads, copies, loads or uploads a secret file, and still skips option values such as
+`ssh -i`.
 
 **Consequences.** BREAKING for a policy whose allows covered such commands: they now cost a classifier
 call and fail closed headless with no model. Nothing new is denied, and `cat README.md`, `git status`,

@@ -96,6 +96,30 @@ const COPY: ReaderSpec = {
 	targetLong: ["--target-directory"],
 };
 
+/** bat, installed as `batcat` on Debian and Ubuntu. */
+const BAT: ReaderSpec = {
+	kind: "files",
+	short: "lHrm",
+	long: [
+		"--language",
+		"--highlight-line",
+		"--line-range",
+		"--map-syntax",
+		"--theme",
+		"--style",
+		"--tabs",
+		"--terminal-width",
+		"--wrap",
+		"--file-name",
+		"--diff-context",
+		"--paging",
+		"--pager",
+		"--color",
+		"--decorations",
+		"--italic-text",
+	],
+};
+
 /** The commands that print, transform, copy, load or archive the files they name. */
 const READERS: Readonly<Record<string, ReaderSpec>> = {
 	cat: FILES,
@@ -105,28 +129,8 @@ const READERS: Readonly<Record<string, ReaderSpec>> = {
 	tail: HEAD_TAIL,
 	less: { kind: "files", short: "bhjkoOpPtTxyz#" },
 	more: { kind: "files", short: "n" },
-	bat: {
-		kind: "files",
-		short: "lHrm",
-		long: [
-			"--language",
-			"--highlight-line",
-			"--line-range",
-			"--map-syntax",
-			"--theme",
-			"--style",
-			"--tabs",
-			"--terminal-width",
-			"--wrap",
-			"--file-name",
-			"--diff-context",
-			"--paging",
-			"--pager",
-			"--color",
-			"--decorations",
-			"--italic-text",
-		],
-	},
+	bat: BAT,
+	batcat: BAT,
 	od: {
 		kind: "files",
 		short: "AjNStw",
@@ -436,6 +440,8 @@ const TAR_LONG_READ_MODES = ["--create", "--append", "--update"];
 const CURL_AT_FILE = new Set(["-d", "--data", "--data-binary", "--data-ascii", "--json", "-H", "--header"]);
 const CURL_FORM = new Set(["-F", "--form"]);
 const CURL_UPLOAD = new Set(["-T", "--upload-file"]);
+/** curl's short options that take a value; the first of them in a bundle takes the rest of it. */
+const CURL_SHORT_WITH_VALUE = "AbcCdDeEFHKmoPQrtTuUwxXyYz";
 const WGET_UPLOAD = new Set(["--post-file", "--body-file"]);
 
 /** sqlite shell options that take the next word, which is no file. */
@@ -672,8 +678,13 @@ function curlFiles(args: readonly string[]): string[] {
 				(CURL_AT_FILE.has(word) || CURL_FORM.has(word) || CURL_UPLOAD.has(word) || word === "--data-urlencode")
 			)
 				option(word, args[++k]);
-		} else if (/^-[dHFT]./.test(word)) option(word.slice(0, 2), word.slice(2));
-		else if (word.toLowerCase().startsWith("file://")) files.push(decodeFileUrl(word));
+		} else if (/^-[A-Za-z]/.test(word)) {
+			// A bundle (`-sSd @f`): the first short option that takes a value takes the rest, or the next word.
+			const at = [...word.slice(1)].findIndex((c) => CURL_SHORT_WITH_VALUE.includes(c)) + 1;
+			if (at === 0) continue;
+			const value = at + 1 < word.length ? word.slice(at + 1) : args[++k];
+			if (value !== undefined) option(`-${word[at]}`, value);
+		} else if (word.toLowerCase().startsWith("file://")) files.push(decodeFileUrl(word));
 	}
 	return files.filter((f) => f !== "-" && f !== "");
 }

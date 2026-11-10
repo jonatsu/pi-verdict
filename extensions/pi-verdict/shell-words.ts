@@ -18,9 +18,13 @@ const SHELL_NAMES: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "
  */
 const UNSOUND = "\u0000unsound\u0000";
 
+/** Marks a segment that re-parses its own words (`eval`, `env -S`): unsound like `UNSOUND`, but the scan of the
+ *  segments after it stays faithful, so the secret-read grading skips only this segment. */
+const REPARSED = "\u0000reparsed\u0000";
+
 /** Whether the scanner marked any construct in `words` as one it could not resolve faithfully. */
 export function hasUnsoundWord(words: readonly string[]): boolean {
-	return words.includes(UNSOUND);
+	return words.includes(UNSOUND) || words.includes(REPARSED);
 }
 
 /** Command operators: split words and end a command segment. */
@@ -268,9 +272,9 @@ function markReparsers(words: string[]): void {
 		if (first !== undefined) {
 			const base = wordBasename(first);
 			if (base === "eval") {
-				words[segStart] = UNSOUND;
+				words[segStart] = REPARSED;
 			} else if (base === "env" && envSplitsString(words.slice(segStart + 1, i))) {
-				words[segStart] = UNSOUND;
+				words[segStart] = REPARSED;
 			}
 		}
 		segStart = i + 1;
@@ -617,7 +621,7 @@ function outputMayRun(text: string, words: readonly string[]): boolean {
 function reparsesWords(seg: readonly string[]): boolean {
 	return seg.some((word, k) => {
 		const base = wordBasename(word);
-		return base === "eval" || (base === "env" && envSplitsString(seg.slice(k + 1)));
+		return word === REPARSED || base === "eval" || (base === "env" && envSplitsString(seg.slice(k + 1)));
 	});
 }
 
