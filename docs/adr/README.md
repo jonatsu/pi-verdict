@@ -27,3 +27,4 @@ The status column repeats each record's own status and adds what its amendments 
 | [0011](0011-code-loading-ask.md) | Code-loading ask: writes where the host loads code ask the user | Accepted | 2026-10-24 |
 | [0012](0012-shared-shell-reading.md) | Shell reading: close the expansion gaps locally, pin residuals, defer a shared reader until the replay tool exists | Accepted (reduced after two architecture reviews; decisions 1-4 built, 5 deferred) | 2026-11-02 |
 | [0013](0013-configurable-rules.md) | Configurable command rules (deny or ask), per-rule floor overrides, wider secret signatures with exemptions, recursive deletes graded by target | Accepted (revised after an architecture review) | 2026-11-02 |
+| [0014](0014-shell-reads-of-secret-files.md) | The floor denies a shell command that reads a secret file | Proposed | 2026-11-10 |
